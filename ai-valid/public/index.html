@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Valid | AI Readiness Audit</title>
+    <link rel="stylesheet" href="/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <meta name="description" content="AI-Valid: AI Readiness Audit for websites. Validates llms.txt, API Catalogs, MCP, and AI bot accessibility.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23050b14'/%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%233b82f6' stroke-width='2' /%3E%3Cpath d='M11 16 L14 19 L21 12' fill='none' stroke='%2310b981' stroke-width='3' stroke-linecap='round' stroke-linejoin='round' /%3E%3C/svg%3E">
+</head>
+<body>
+    <a href="https://github.com/SecH0us3/ai-valid" target="_blank" class="github-corner" aria-label="View source on GitHub">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+        </svg>
+    </a>
+    <div class="background-grid"></div>
+    <div class="blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <main class="container">
+        <header class="hero">
+            <div class="hero-badge">secmy.app ecosystem</div>
+            <h1 class="hero-title">AI-Ready <br><span class="text-gradient">Platform Audit</span></h1>
+            <p class="hero-subtitle">Instant analysis of your site's accessibility for intelligent agents, OpenAI crawlers, and Web3/AI standards.</p>
+        </header>
+
+        <section class="scanner-section">
+            <form id="audit-form" class="audit-form">
+                <div class="input-wrapper">
+                    <span class="protocol-prefix">https://</span>
+                    <input type="text" id="url-input" placeholder="example.com" required autocomplete="off" spellcheck="false" autofocus>
+                    <button type="submit" id="submit-btn" class="glow-button">
+                        <span class="btn-text">RUN SCAN</span>
+                        <div class="loader-spinner" id="btn-loader"></div>
+                    </button>
+                </div>
+            </form>
+            <div id="error-message" class="error-toast hidden"></div>
+        </section>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-state hidden">
+            <div class="radar-container">
+                <div class="radar"></div>
+                <div class="radar-scan"></div>
+            </div>
+            <div class="terminal-loader">
+                <p>> Initializing protocol reconnaissance...</p>
+                <p>> Deploying OAI-SearchBot...</p>
+                <p id="dynamic-loading-text" class="glow-text">> Waiting for network response...</p>
+            </div>
+        </div>
+
+        <!-- Results Dashboard -->
+        <section id="results-dashboard" class="dashboard hidden">
+            <div class="score-card glass-panel">
+                <div class="score-circle">
+                    <svg viewBox="0 0 36 36" class="circular-chart">
+                        <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                        <path class="circle" id="score-circle-path" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                        <text x="18" y="20.35" class="percentage" id="total-score">0%</text>
+                    </svg>
+                </div>
+                <div class="score-details">
+                    <h2 class="score-title">AI Readiness Index</h2>
+                    <p class="score-desc" id="score-verdict">Overall compatibility score for autonomous agents.</p>
+                </div>
+            </div>
+
+            <div class="metrics-grid">
+                <!-- Check 1: Passed -->
+                <div class="metric-card glass-panel">
+                    <div class="metric-header">
+                        <h3 class="metric-title">✅ Passed Checks</h3>
+                        <span class="metric-status" id="status-passed">Waiting</span>
+                    </div>
+                    <div class="protocols-grid" id="passed-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Check 2: Warnings -->
+                <div class="metric-card glass-panel">
+                    <div class="metric-header">
+                        <h3 class="metric-title">⚠️ Warnings</h3>
+                        <span class="metric-status" id="status-warn">Waiting</span>
+                    </div>
+                    <div class="protocols-grid" id="warn-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Check 3: Failed -->
+                <div class="metric-card glass-panel">
+                    <div class="metric-header">
+                        <h3 class="metric-title">❌ Action Required</h3>
+                        <span class="metric-status" id="status-failed">Waiting</span>
+                    </div>
+                    <div class="protocols-grid" id="failed-grid">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Global Info Modal -->
+    <div id="info-modal" class="modal-overlay">
+        <div class="modal-content glass-panel">
+            <button id="modal-close" class="modal-close-btn">&times;</button>
+            <h3 id="modal-title" class="modal-title"></h3>
+            <div id="modal-body" class="modal-body"></div>
+            <div id="modal-footer" style="margin-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem; text-align: right;"></div>
+        </div>
+    </div>
+
+    <script src="/app.client.js" type="module"></script>
+</body>
+</html>

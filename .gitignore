@@ -1,0 +1,7 @@
+docs.txt
+ready.py
+node_modules
+tmp/
+.wrangler/
+.DS_Store
+.dev.vars
