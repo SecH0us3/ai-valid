@@ -2,6 +2,7 @@ import htmlTemplate from '../public/index.html';
 import cssContent from '../public/style.css';
 import jsContent from '../public/app.client.js';
 import faviconSvg from '../public/favicon.svg';
+import ogImage from '../public/og-image.png';
 
 export default {
     async fetch(request, env, ctx) {
@@ -27,6 +28,11 @@ export default {
             if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico") {
                 return new Response(faviconSvg, {
                     headers: { "Content-Type": "image/svg+xml" },
+                });
+            }
+            if (url.pathname === "/og-image.png") {
+                return new Response(ogImage, {
+                    headers: { "Content-Type": "image/png" },
                 });
             }
         }
