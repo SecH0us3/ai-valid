@@ -2,7 +2,7 @@
 
 **AI-Valid** is a professional, high-fidelity auditing tool designed to evaluate how "AI-ready" your website or platform is. As the web transitions from human-only consumption to autonomous agent interaction, AI-Valid helps developers and business owners ensure their data is accessible, correctly signaled, and compatible with modern AI standards.
 
-![AI-Valid Dashboard](public/favicon.svg)
+![AI-Valid Demo](demo.png)
 
 ## 🌟 Key Features
 
