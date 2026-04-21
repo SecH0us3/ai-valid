@@ -34,12 +34,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    function openModal(title, content, spec) {
+    function openModal(title, content, spec, prompt) {
         modalTitle.textContent = title;
         modalBody.innerHTML = content;
+        
+        modalFooter.innerHTML = '';
+
+        if (prompt) {
+            const btn = document.createElement('button');
+            btn.className = 'glow-button';
+            btn.style.padding = '0.4rem 1rem';
+            btn.style.fontSize = '0.9rem';
+            btn.innerHTML = '📋 Copy AI Prompt';
+            btn.onclick = () => {
+                navigator.clipboard.writeText(prompt);
+                btn.innerHTML = '✅ Copied!';
+                setTimeout(() => { btn.innerHTML = '📋 Copy AI Prompt'; }, 2000);
+            };
+            modalFooter.appendChild(btn);
+        }
+
         if (spec) {
-            modalFooter.innerHTML = `<a href="${spec}" target="_blank" class="proto-link" style="font-size: 0.9rem;">📖 Read the full Specification &rarr;</a>`;
-            modalFooter.style.display = 'block';
+            const link = document.createElement('a');
+            link.href = spec;
+            link.target = '_blank';
+            link.className = 'proto-link';
+            link.style.fontSize = '0.9rem';
+            link.style.marginLeft = 'auto';
+            link.innerHTML = '📖 Read the full Specification &rarr;';
+            modalFooter.appendChild(link);
+        }
+        
+        if (spec || prompt) {
+            modalFooter.style.display = 'flex';
+            modalFooter.style.alignItems = 'center';
+            modalFooter.style.gap = '1rem';
         } else {
             modalFooter.style.display = 'none';
         }
@@ -183,7 +212,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const btn = card.querySelector('.learn-more-btn');
             if (btn) {
                 btn.addEventListener('click', () => {
-                    openModal(p.name, p.tooltip, p.spec);
+                    const finalPrompt = p.spec && p.prompt ? `${p.prompt}\n\nFor reference, please consult the official specification: ${p.spec}` : p.prompt;
+                    openModal(p.name, p.tooltip, p.spec, finalPrompt);
                 });
             }
             grid.appendChild(card);
