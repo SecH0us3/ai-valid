@@ -1,0 +1,68 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "AI-Valid API",
+    "description": "API for analyzing site accessibility for intelligent agents and AI protocols.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Relative server URL"
+    }
+  ],
+  "paths": {
+    "/api/audit": {
+      "post": {
+        "summary": "Perform an AI readiness audit on a given URL.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "targetUrl": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "The URL of the website to audit."
+                  }
+                },
+                "required": ["targetUrl"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audit results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "score": {
+                      "type": "object",
+                      "properties": {
+                        "total": { "type": "number" }
+                      }
+                    },
+                    "bots": { "type": "object" },
+                    "content": { "type": "object" },
+                    "protocols": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid URL"
+          },
+          "500": {
+            "description": "Server Error"
+          }
+        }
+      }
+    }
+  }
+}

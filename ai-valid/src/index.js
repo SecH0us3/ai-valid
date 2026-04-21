@@ -4,6 +4,8 @@ import jsContent from '../public/app.client.js';
 import faviconSvg from '../public/favicon.svg';
 import ogImage from '../public/og-image.png';
 import llmsTxt from '../public/llms.txt';
+import openApiJson from '../public/openapi.json';
+import apiCatalogTxt from '../public/api-catalog.txt';
 
 export default {
     async fetch(request, env, ctx) {
@@ -51,6 +53,16 @@ async function handleRequest(request, env, ctx) {
             if (url.pathname === "/llms.txt") {
                 return new Response(llmsTxt, {
                     headers: { "Content-Type": "text/markdown; charset=utf-8" },
+                });
+            }
+            if (url.pathname === "/openapi.json") {
+                return new Response(openApiJson, {
+                    headers: { "Content-Type": "application/json; charset=utf-8" },
+                });
+            }
+            if (url.pathname === "/.well-known/api-catalog") {
+                return new Response(apiCatalogTxt, {
+                    headers: { "Content-Type": "text/plain; charset=utf-8" },
                 });
             }
             if (url.pathname === "/.well-known/agent-skills/index.json") {
