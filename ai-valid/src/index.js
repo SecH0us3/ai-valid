@@ -11,6 +11,13 @@ export default {
         // --- Static File Routing ---
         if (request.method === "GET") {
             if (url.pathname === "/") {
+                const accept = request.headers.get("Accept") || "";
+                if (accept.includes("text/markdown")) {
+                    const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
+                    return new Response(mdContent, {
+                        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+                    });
+                }
                 return new Response(htmlTemplate, {
                     headers: { "Content-Type": "text/html; charset=utf-8" },
                 });
