@@ -35,6 +35,21 @@ export default {
                     headers: { "Content-Type": "image/png" },
                 });
             }
+            if (url.pathname === "/.well-known/agent-skills/index.json") {
+                const agentSkills = {
+                    "skills": [
+                        {
+                            "name": "AuditPlatform",
+                            "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
+                            "endpoint": "/api/audit",
+                            "method": "POST"
+                        }
+                    ]
+                };
+                return new Response(JSON.stringify(agentSkills, null, 2), {
+                    headers: { "Content-Type": "application/json; charset=utf-8" },
+                });
+            }
         }
 
         // --- API Route ---
