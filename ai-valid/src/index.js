@@ -142,6 +142,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     // 2. Content Accessibility
     let supportsMarkdown = false;
     let hasContentSignal = false;
+    let hasSchema = false;
+    let schemaType = "";
+
     try {
         const r_home = await internalFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
@@ -151,6 +154,38 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
         if (r_home.headers.has('content-signal')) {
             hasContentSignal = true;
+            totalScore += 10;
+        }
+
+        const htmlText = await r_home.text();
+        const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+        let match;
+        while ((match = scriptRegex.exec(htmlText)) !== null) {
+            try {
+                const json = JSON.parse(match[1]);
+                const checkSchema = (obj) => {
+                    if (!obj || typeof obj !== 'object') return;
+                    if (obj['@type']) {
+                        hasSchema = true;
+                        if (typeof obj['@type'] === 'string') {
+                            schemaType = obj['@type'];
+                        } else if (Array.isArray(obj['@type'])) {
+                            schemaType = obj['@type'][0];
+                        }
+                    }
+                };
+                
+                if (Array.isArray(json)) {
+                    json.forEach(checkSchema);
+                } else if (json['@graph'] && Array.isArray(json['@graph'])) {
+                    json['@graph'].forEach(checkSchema);
+                } else {
+                    checkSchema(json);
+                }
+            } catch (e) { /* ignore parse error */ }
+        }
+        
+        if (hasSchema) {
             totalScore += 10;
         }
     } catch (e) { /* silent fail */ }
@@ -386,14 +421,63 @@ Allow: /
                 },
                 {
                     name: "Content-Signal",
-                    prompt: `Please analyze my server configuration or application middleware. If a \`Content-Signal\` response header is already set, update it; otherwise, implement logic to add it. This header explicitly declares AI scraping and training policies. 
-Example header to add to responses: 
-\`Content-Signal: ai-train=no, search=yes\``,
+                    prompt: `Please analyze my server configuration or application middleware. If a \`Content-Signal\` response header is already set, update it; otherwise, implement logic to add it. This header explicitly declares AI scraping and training policies.
+                Example header to add to responses:
+                \`Content-Signal: ai-train=no, search=yes\``,
                     status: hasContentSignal ? 'ok' : 'warn',
                     message: "Usage policies header.",
                     spec: "https://contentsignals.org/",
                     tooltip: `<strong>What it is:</strong> An explicit HTTP Header signaling legal and policy usage metadata for machine consumers.<br/><br/><strong>Why it's critical:</strong> It informs scraping bots at the network level whether your content is free for LLM training, requires attribution, or is completely restricted copyright.<br/><br/><strong>Impact of missing it:</strong> Machine agents assume 'fair game' for all scraped data. Without signal compliance, you have no technical ground to prevent proprietary data from becoming automated training fodder.<br/><br/><strong>Implementation Example:</strong> Ensure your server responses (especially for content heavy pages) include the header: <code>Content-Signal: ai-train=no, search=yes</code> to explicitly block big tech from stealing IP for training while retaining search indexing.`,
                     code: hasContentSignal ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Semantic JSON-LD",
+                    prompt: `Please check my website's HTML and implement appropriate Schema.org JSON-LD markup. First, ask me for a description of my service/business. Then, please consult https://schema.org/LocalBusiness to find the most specific and relevant \`@type\` for my business (e.g., Store, FinancialService, MedicalClinic, etc.), and generate the correct \`application/ld+json\` script block to help AI agents semantically understand my content.
+
+Examples of specific types:
+
+**For a Financial Service (https://schema.org/FinancialService):**
+\`\`\`html
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FinancialService",
+  "name": "Trusty Bank",
+  "description": "A trusted local bank offering loans and savings accounts.",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "123 Finance St",
+    "addressLocality": "Moneyville",
+    "addressRegion": "NY",
+    "postalCode": "10001"
+  }
+}
+</script>
+\`\`\`
+
+**For a Retail Store (https://schema.org/Store):**
+\`\`\`html
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Store",
+  "name": "Super Electronics",
+  "description": "The best place to buy gadgets and gizmos.",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "456 Tech Ave",
+    "addressLocality": "Silicon City",
+    "addressRegion": "CA",
+    "postalCode": "94000"
+  }
+}
+</script>
+\`\`\``,
+                    status: hasSchema ? 'ok' : 'err',
+                    message: hasSchema ? `Found ${schemaType} markup` : "No JSON-LD markup found",
+                    spec: "https://schema.org/docs/documents.html",
+                    tooltip: `<strong>What it is:</strong> Schema.org JSON-LD semantic markup.<br/><br/><strong>Why it's critical:</strong> AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.<br/><br/><strong>Impact of missing it:</strong> The AI will have to "guess" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.<br/><br/><strong>Implementation Example:</strong> Add a JSON-LD script block defining your core entity, such as <code>@type: "Organization"</code> or <code>@type: "WebSite"</code>.`,
+                    code: hasSchema ? 'Found' : 'Missing'
                 }
             ]
         },
