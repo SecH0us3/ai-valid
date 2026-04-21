@@ -1,0 +1,6 @@
+# AI-Valid Docs
+> AI-Valid is a tool that performs an AI readiness audit on websites, validating protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.
+
+- [Main Application](https://ai-valid.secmy.app/)
+- [API Reference](/api/audit)
+- [Repository](https://github.com/SecH0us3/ai-valid)

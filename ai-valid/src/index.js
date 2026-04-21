@@ -3,9 +3,15 @@ import cssContent from '../public/style.css';
 import jsContent from '../public/app.client.js';
 import faviconSvg from '../public/favicon.svg';
 import ogImage from '../public/og-image.png';
+import llmsTxt from '../public/llms.txt';
 
 export default {
     async fetch(request, env, ctx) {
+        return await handleRequest(request, env, ctx);
+    }
+};
+
+async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
@@ -42,6 +48,11 @@ export default {
                     headers: { "Content-Type": "image/png" },
                 });
             }
+            if (url.pathname === "/llms.txt") {
+                return new Response(llmsTxt, {
+                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
+                });
+            }
             if (url.pathname === "/.well-known/agent-skills/index.json") {
                 const agentSkills = {
                     "skills": [
@@ -69,7 +80,7 @@ export default {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
                 }
 
-                const result = await performAudit(targetUrl);
+                const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json" }
                 });
@@ -80,10 +91,9 @@ export default {
         }
 
         return new Response("Not Found", { status: 404 });
-    }
-};
+}
 
-async function performAudit(baseUrl) {
+async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
     
@@ -92,11 +102,19 @@ async function performAudit(baseUrl) {
 
     let totalScore = 0;
 
+    const internalFetch = async (url, options = {}) => {
+        if (base === requestOrigin) {
+            const req = new Request(url, options);
+            return await handleRequest(req, env, ctx);
+        }
+        return await fetch(url, options);
+    };
+
     // 1. Discoverability & Bots
     let robotsFound = false;
     let hasAI = false;
     try {
-        const r_robots = await fetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
+        const r_robots = await internalFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
@@ -113,7 +131,7 @@ async function performAudit(baseUrl) {
     let supportsMarkdown = false;
     let hasContentSignal = false;
     try {
-        const r_home = await fetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        const r_home = await internalFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
@@ -252,7 +270,7 @@ Example format:
         let message = '';
         let code = null;
         try {
-            const req = await fetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
+            const req = await internalFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
             code = req.status;
             let cType = (req.headers.get('content-type') || '').toLowerCase();
             let isSoft404 = code === 200 && cType.includes('text/html');
