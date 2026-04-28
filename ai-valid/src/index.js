@@ -94,6 +94,14 @@ async function handleRequest(request, env, ctx) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
                 }
 
+                // Domain existence check
+                try {
+                    const parsedUrl = new URL(targetUrl);
+                    await fetch(parsedUrl.origin, { method: 'HEAD' });
+                } catch (e) {
+                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
+                }
+
                 const result = await performAudit(targetUrl, url.origin, env, ctx, handleRequest);
                 return new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json" }
