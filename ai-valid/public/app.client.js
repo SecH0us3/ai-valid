@@ -3,6 +3,9 @@
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('audit-form');
     const input = document.getElementById('url-input');
+    input.addEventListener('input', () => {
+        input.value = input.value.replace(/\s+/g, '');
+    });
     const btn = document.getElementById('submit-btn');
     const loader = document.getElementById('btn-loader');
     const btnText = document.querySelector('.btn-text');
