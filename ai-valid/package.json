@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "description": "AI-Ready Validation Web App",
   "main": "src/index.js",
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test src/audit.test.js"
   },
   "devDependencies": {
     "wrangler": "^4.83.0"
