@@ -13,7 +13,7 @@ export default {
     }
 };
 
-async function handleRequest(request, env, ctx) {
+export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
