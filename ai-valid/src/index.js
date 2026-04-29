@@ -96,7 +96,7 @@ async function handleRequest(request, env, ctx) {
                 try {
                     const parsedUrl = new URL(targetUrl);
                     await fetch(parsedUrl.origin, { method: 'HEAD' });
-                } catch (e) {
+                } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
 
@@ -145,7 +145,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 totalScore += 5;
             }
         }
-    } catch (e) { /* silent fail */ }
+    } catch { /* silent fail */ }
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
@@ -190,13 +190,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 } else {
                     checkSchema(json);
                 }
-            } catch (e) { /* ignore parse error */ }
+            } catch { /* ignore parse error */ }
         }
         
         if (hasSchema) {
             totalScore += 10;
         }
-    } catch (e) { /* silent fail */ }
+    } catch { /* silent fail */ }
 
     // 3. Protocol Discovery Detailed Tooltips
     const wellKnownFiles = [
@@ -357,7 +357,7 @@ Example format:
             } else {
                 message = `Not found (${code})`;
             }
-        } catch (e) {
+        } catch {
             message = 'Network error';
         }
 
