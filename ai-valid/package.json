@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --loader ./test-loader.mjs --test src/*.test.js"
+    "test": "vitest run"
   },
   "devDependencies": {
+    "jsdom": "^29.1.0",
+    "miniflare": "^4.20260426.0",
+    "vitest": "^4.1.5",
     "wrangler": "^4.83.0"
   }
 }
