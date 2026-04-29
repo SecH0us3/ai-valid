@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --loader ./test-loader.mjs --test src/*.test.js"
   },
   "devDependencies": {
     "wrangler": "^4.83.0"
