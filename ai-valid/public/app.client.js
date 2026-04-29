@@ -242,19 +242,26 @@ document.addEventListener('DOMContentLoaded', () => {
         let current = 0;
         circle.style.strokeDasharray = `0, 100`;
         
-        const duration = 1500; 
-        const interval = 20;
-        const steps = duration / interval;
-        const increment = targetScore / steps;
+        const duration = 1500;
+        let startTimestamp = null;
 
-        const timer = setInterval(() => {
-            current += increment;
-            if (current >= targetScore) {
-                current = targetScore;
-                clearInterval(timer);
-            }
+        const step = (timestamp) => {
+            if (!startTimestamp) startTimestamp = timestamp;
+            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+            current = progress * targetScore;
+
             text.textContent = Math.round(current) + '%';
             circle.style.strokeDasharray = `${current}, 100`;
-        }, interval);
+
+            if (progress < 1) {
+                window.requestAnimationFrame(step);
+            } else {
+                current = targetScore;
+                text.textContent = Math.round(current) + '%';
+                circle.style.strokeDasharray = `${current}, 100`;
+            }
+        };
+
+        window.requestAnimationFrame(step);
     }
 });
