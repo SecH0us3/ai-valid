@@ -106,7 +106,11 @@ async function handleRequest(request, env, ctx) {
                 });
 
             } catch(e) {
-                return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+                console.error('Audit API Error:', e);
+                return new Response(JSON.stringify({ error: "Internal Server Error" }), {
+                    status: 500,
+                    headers: { "Content-Type": "application/json" }
+                });
             }
         }
 
