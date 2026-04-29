@@ -322,53 +322,57 @@ Example format:
         }
     ];
 
-    // Fetch all protocols concurrently for max speed
-    const protoPromises = wellKnownFiles.map(async (data) => {
-        const url = `${base}${data.path}`;
-        let status = 'err';
-        let message = '';
-        let code = null;
-        try {
-            const req = await internalFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
-            code = req.status;
-            let cType = (req.headers.get('content-type') || '').toLowerCase();
-            let isSoft404 = code === 200 && cType.includes('text/html');
+    // Fetch protocols in batches to avoid unbounded concurrency
+    const protoResults = [];
+    const batchSize = 4;
+    for (let i = 0; i < wellKnownFiles.length; i += batchSize) {
+        const batch = wellKnownFiles.slice(i, i + batchSize);
+        const batchResults = await Promise.all(batch.map(async (data) => {
+            const url = `${base}${data.path}`;
+            let status = 'err';
+            let message = '';
+            let code = null;
+            try {
+                const req = await internalFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
+                code = req.status;
+                let cType = (req.headers.get('content-type') || '').toLowerCase();
+                let isSoft404 = code === 200 && cType.includes('text/html');
 
-            if (code === 200 && !isSoft404) {
-                if (data.isJson) {
-                    try {
-                        const jsonBody = await req.json();
-                        status = 'ok';
-                        message = 'Valid JSON found';
-                        totalScore += data.points;
-                    } catch (err) {
-                        message = 'Invalid JSON content';
-                    }
-                } else {
-                    if (!cType.includes('text/html')) {
-                        status = 'ok';
-                        message = 'Readable format found';
-                        totalScore += data.points;
+                if (code === 200 && !isSoft404) {
+                    if (data.isJson) {
+                        try {
+                            const jsonBody = await req.json();
+                            status = 'ok';
+                            message = 'Valid JSON found';
+                            totalScore += data.points;
+                        } catch (err) {
+                            message = 'Invalid JSON content';
+                        }
                     } else {
-                        message = 'Received HTML (Soft 404)';
+                        if (!cType.includes('text/html')) {
+                            status = 'ok';
+                            message = 'Readable format found';
+                            totalScore += data.points;
+                        } else {
+                            message = 'Received HTML (Soft 404)';
+                        }
                     }
+                } else if (isSoft404) {
+                    message = 'Soft 404 (Placeholder page)';
+                } else if ([401, 403].includes(code)) {
+                    status = 'warn';
+                    message = 'Authorization required';
+                } else {
+                    message = `Not found (${code})`;
                 }
-            } else if (isSoft404) {
-                message = 'Soft 404 (Placeholder page)';
-            } else if ([401, 403].includes(code)) {
-                status = 'warn';
-                message = 'Authorization required';
-            } else {
-                message = `Not found (${code})`;
+            } catch (e) {
+                message = 'Network error';
             }
-        } catch {
-            message = 'Network error';
-        }
 
-        return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
-    });
-
-    const protoResults = await Promise.all(protoPromises);
+            return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
+        }));
+        protoResults.push(...batchResults);
+    }
 
     return {
         score: {
