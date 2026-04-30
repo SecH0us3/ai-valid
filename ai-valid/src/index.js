@@ -319,6 +319,23 @@ Example format:
 - [API Reference](https://example.com/docs/api.md)
 \`\`\``, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10, 
             tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.` 
+        },
+        {
+            name: "LLMs-Full.txt",
+                    prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation.
+Example format:
+\`\`\`markdown
+# My App Docs Full
+> A comprehensive guide to the application.
+
+## Getting Started
+To install the application...
+
+## API Reference
+### \`GET /api/users\`
+Returns a list of users...
+\`\`\``, path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
+            tooltip: `<strong>What it is:</strong> A complete, machine-readable export of your entire documentation in structured Markdown format.<br/><br/><strong>Why it's critical:</strong> It provides LLMs and agents with all context in a single file, eliminating the need for multiple API calls or web scraping.<br/><br/><strong>Impact of missing it:</strong> AI systems might miss critical details if they only read summaries or have to navigate multiple links, increasing the chance of hallucinations and degraded agentic capabilities.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms-full.txt</code> to your root. Include all relevant documentation content (e.g., tutorials, API references, code samples) concatenated in clear, structured Markdown.`
         }
     ];
 
