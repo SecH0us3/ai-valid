@@ -4,6 +4,7 @@ import jsContent from '../public/app.client.js';
 import faviconSvg from '../public/favicon.svg';
 import ogImage from '../public/og-image.png';
 import llmsTxt from '../public/llms.txt';
+import llmsFullTxt from '../public/llms-full.txt';
 import openApiJson from '../public/openapi.json';
 import apiCatalogTxt from '../public/api-catalog.txt';
 
@@ -48,6 +49,11 @@ export async function handleRequest(request, env, ctx) {
             if (url.pathname === "/og-image.png") {
                 return new Response(ogImage, {
                     headers: { "Content-Type": "image/png" },
+                });
+            }
+            if (url.pathname === "/llms-full.txt") {
+                return new Response(llmsFullTxt, {
+                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
                 });
             }
             if (url.pathname === "/llms.txt") {
