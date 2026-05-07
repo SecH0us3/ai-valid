@@ -14,6 +14,14 @@ export default {
     }
 };
 
+async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
+    if (base === requestOrigin) {
+        const req = new Request(url, options);
+        return await handleRequest(req, env, ctx);
+    }
+    return await fetch(url, options);
+}
+
 export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
@@ -101,7 +109,7 @@ export async function handleRequest(request, env, ctx) {
                 // Domain existence check
                 try {
                     const parsedUrl = new URL(targetUrl);
-                    await fetch(parsedUrl.origin, { method: 'HEAD' });
+                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
@@ -132,19 +140,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     let totalScore = 0;
 
-    const internalFetch = async (url, options = {}) => {
-        if (base === requestOrigin) {
-            const req = new Request(url, options);
-            return await handleRequest(req, env, ctx);
-        }
-        return await fetch(url, options);
-    };
+    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
 
     // 1. Discoverability & Bots
     let robotsFound = false;
     let hasAI = false;
     try {
-        const r_robots = await internalFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
+        const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
@@ -164,7 +166,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let schemaType = "";
 
     try {
-        const r_home = await internalFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
@@ -368,7 +370,7 @@ Example:
             let message = '';
             let code = null;
             try {
-                const req = await internalFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
+                const req = await iFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
                 code = req.status;
                 let cType = (req.headers.get('content-type') || '').toLowerCase();
                 let isSoft404 = code === 200 && cType.includes('text/html');
