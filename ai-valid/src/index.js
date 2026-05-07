@@ -6,6 +6,7 @@ import ogImage from '../public/og-image.png';
 import llmsTxt from '../public/llms.txt';
 import llmsFullTxt from '../public/llms-full.txt';
 import openApiJson from '../public/openapi.json';
+import tdmrepJson from "../public/.well-known/tdmrep.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 
 export default {
@@ -69,6 +70,11 @@ export async function handleRequest(request, env, ctx) {
             if (url.pathname === "/.well-known/api-catalog") {
                 return new Response(apiCatalogTxt, {
                     headers: { "Content-Type": "text/plain; charset=utf-8" },
+                });
+            }
+            if (url.pathname === "/.well-known/tdmrep.json") {
+                return new Response(tdmrepJson, {
+                    headers: { "Content-Type": "application/json; charset=utf-8" },
                 });
             }
             if (url.pathname === "/.well-known/agent-skills/index.json") {
