@@ -228,6 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const fragment = document.createDocumentFragment();
         items.forEach(p => {
             const card = document.createElement('div');
             card.className = 'protocol-card';
@@ -289,6 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 specLink.textContent = '📖 Spec →';
                 actionArea.appendChild(specLink);
             }
+            fragment.appendChild(card);
 
             card.appendChild(protoTop);
             card.appendChild(protoMsg);
@@ -296,6 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             grid.appendChild(card);
         });
+        grid.appendChild(fragment);
     }
 
     function animateScore(targetScore) {
