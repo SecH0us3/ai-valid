@@ -64,3 +64,41 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
         expect(data.error).toBeDefined(); // should be an error message like "Unexpected token"
     });
 });
+
+describe('AI-Valid Worker - 404 Not Found', () => {
+    const env = {};
+    const ctx = {};
+
+    it('should return 404 for unknown GET path', async () => {
+        const req = new Request('https://localhost/non-existent-path', {
+            method: 'GET'
+        });
+        const res = await index.fetch(req, env, ctx);
+
+        expect(res.status).toBe(404);
+        const text = await res.text();
+        expect(text).toBe('Not Found');
+    });
+
+    it('should return 404 for POST request to root', async () => {
+        const req = new Request('https://localhost/', {
+            method: 'POST'
+        });
+        const res = await index.fetch(req, env, ctx);
+
+        expect(res.status).toBe(404);
+        const text = await res.text();
+        expect(text).toBe('Not Found');
+    });
+
+    it('should return 404 for GET request to /api/audit', async () => {
+        const req = new Request('https://localhost/api/audit', {
+            method: 'GET'
+        });
+        const res = await index.fetch(req, env, ctx);
+
+        expect(res.status).toBe(404);
+        const text = await res.text();
+        expect(text).toBe('Not Found');
+    });
+});

@@ -1,0 +1,12 @@
+--- ai-valid/src/index.js
++++ ai-valid/src/index.js
+@@ -354,8 +354,9 @@
+-            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training.
++            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.
+ Example:
+ \`\`\`json
+ {
+   "tdm-reservation": 1,
+   "tdm-policy": "https://ai-valid.secmy.app/policies/tdm-policy.json"
+ }
+ \`\`\``, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,

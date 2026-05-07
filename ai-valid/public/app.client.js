@@ -14,6 +14,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const dashboard = document.getElementById('results-dashboard');
     const container = document.querySelector('.container');
 
+    /**
+     * Safe HTML Sanitizer
+     * Whitelists only safe tags: strong, code, br, em
+     */
+    function sanitizeHTML(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const whitelist = ['STRONG', 'CODE', 'BR', 'EM'];
+
+        function clean(node) {
+            const children = Array.from(node.childNodes);
+            for (const child of children) {
+                if (child.nodeType === Node.ELEMENT_NODE) {
+                    if (!whitelist.includes(child.tagName)) {
+                        const text = document.createTextNode(child.textContent);
+                        node.replaceChild(text, child);
+                    } else {
+                        // Strip all attributes
+                        while (child.attributes.length > 0) {
+                            child.removeAttribute(child.attributes[0].name);
+                        }
+                        clean(child);
+                    }
+                }
+            }
+        }
+
+        clean(doc.body);
+        return doc.body.innerHTML;
+    }
+
     // Modal elements
     const modalOverlay = document.getElementById('info-modal');
     const modalCloseBtn = document.getElementById('modal-close');
@@ -39,9 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function openModal(title, content, spec, prompt) {
         modalTitle.textContent = title;
-        modalBody.innerHTML = content;
+        modalBody.innerHTML = sanitizeHTML(content);
         
-        modalFooter.innerHTML = '';
+        modalFooter.textContent = '';
 
         if (prompt) {
             const btn = document.createElement('button');
@@ -181,13 +212,19 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderGridList(containerId, statusId, items, overallStatusClass, overallStatusText) {
         const grid = document.getElementById(containerId);
         const statusBadge = document.getElementById(statusId);
-        grid.innerHTML = '';
+        grid.textContent = '';
         
         statusBadge.className = `metric-status ${overallStatusClass}`;
         statusBadge.textContent = overallStatusText;
 
         if (items.length === 0) {
-            grid.innerHTML = `<div style="color: var(--text-secondary); font-size: 0.9rem; text-align: center; margin-top: 1rem;">No items in this category.</div>`;
+            const emptyMsg = document.createElement('div');
+            emptyMsg.style.color = 'var(--text-secondary)';
+            emptyMsg.style.fontSize = '0.9rem';
+            emptyMsg.style.textAlign = 'center';
+            emptyMsg.style.marginTop = '1rem';
+            emptyMsg.textContent = 'No items in this category.';
+            grid.appendChild(emptyMsg);
             return;
         }
 
@@ -199,28 +236,67 @@ document.addEventListener('DOMContentLoaded', () => {
             let statusIcon = p.status === 'ok' ? '✅' : (p.status === 'warn' ? '⚠️' : '❌');
             let statusClass = p.status === 'ok' ? 'icon-ok' : (p.status === 'warn' ? 'icon-warn' : 'icon-err');
             
-            card.innerHTML = `
-                <div class="proto-top">
-                    <span class="proto-name">
-                        <span class="${statusClass} icon">${statusIcon}</span> 
-                        ${p.name}
-                    </span>
-                    <span class="proto-badge">${p.code || 'Soft 404'}</span>
-                </div>
-                <div class="proto-msg">${p.message}</div>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
-                    ${p.tooltip ? `<button class="learn-more-btn">Learn more</button>` : '<div></div>'}
-                    ${p.spec ? `<a href="${p.spec}" target="_blank" class="proto-link" style="margin: 0; font-size: 0.8rem;">📖 Spec &rarr;</a>` : ''}
-                </div>
-            `;
-            const btn = card.querySelector('.learn-more-btn');
-            if (btn) {
-                btn.addEventListener('click', () => {
+            // Build card structure using DOM methods to avoid innerHTML vulnerabilities
+            const protoTop = document.createElement('div');
+            protoTop.className = 'proto-top';
+
+            const protoName = document.createElement('span');
+            protoName.className = 'proto-name';
+
+            const iconSpan = document.createElement('span');
+            iconSpan.className = `${statusClass} icon`;
+            iconSpan.textContent = statusIcon;
+
+            protoName.appendChild(iconSpan);
+            protoName.appendChild(document.createTextNode(` ${p.name}`));
+
+            const protoBadge = document.createElement('span');
+            protoBadge.className = 'proto-badge';
+            protoBadge.textContent = p.code || 'Soft 404';
+
+            protoTop.appendChild(protoName);
+            protoTop.appendChild(protoBadge);
+
+            const protoMsg = document.createElement('div');
+            protoMsg.className = 'proto-msg';
+            protoMsg.textContent = p.message;
+
+            const actionArea = document.createElement('div');
+            actionArea.style.display = 'flex';
+            actionArea.style.justifyContent = 'space-between';
+            actionArea.style.alignItems = 'center';
+            actionArea.style.marginTop = '0.5rem';
+
+            if (p.tooltip) {
+                const learnMoreBtn = document.createElement('button');
+                learnMoreBtn.className = 'learn-more-btn';
+                learnMoreBtn.textContent = 'Learn more';
+                learnMoreBtn.addEventListener('click', () => {
                     const finalPrompt = p.spec && p.prompt ? `${p.prompt}\n\nFor reference, please consult the official specification: ${p.spec}` : p.prompt;
                     openModal(p.name, p.tooltip, p.spec, finalPrompt);
                 });
+                actionArea.appendChild(learnMoreBtn);
+            } else {
+                actionArea.appendChild(document.createElement('div'));
+            }
+
+            if (p.spec) {
+                const specLink = document.createElement('a');
+                specLink.href = p.spec;
+                specLink.target = '_blank';
+                specLink.className = 'proto-link';
+                specLink.style.margin = '0';
+                specLink.style.fontSize = '0.8rem';
+                specLink.textContent = '📖 Spec →';
+                actionArea.appendChild(specLink);
             }
             fragment.appendChild(card);
+
+            card.appendChild(protoTop);
+            card.appendChild(protoMsg);
+            card.appendChild(actionArea);
+
+            grid.appendChild(card);
         });
         grid.appendChild(fragment);
     }
