@@ -191,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const fragment = document.createDocumentFragment();
         items.forEach(p => {
             const card = document.createElement('div');
             card.className = 'protocol-card';
@@ -219,8 +220,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     openModal(p.name, p.tooltip, p.spec, finalPrompt);
                 });
             }
-            grid.appendChild(card);
+            fragment.appendChild(card);
         });
+        grid.appendChild(fragment);
     }
 
     function animateScore(targetScore) {
