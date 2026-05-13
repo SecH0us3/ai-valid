@@ -295,8 +295,6 @@ document.addEventListener('DOMContentLoaded', () => {
             card.appendChild(protoTop);
             card.appendChild(protoMsg);
             card.appendChild(actionArea);
-
-            grid.appendChild(card);
         });
         grid.appendChild(fragment);
     }
