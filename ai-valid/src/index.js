@@ -11,6 +11,68 @@ import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 
 const FETCH_TIMEOUT = 5000;
+const STATIC_ROUTES = {
+    "/": (request) => {
+        const accept = request.headers.get("Accept") || "";
+        if (accept.includes("text/markdown")) {
+            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
+            return new Response(mdContent, {
+                headers: { "Content-Type": "text/markdown; charset=utf-8" },
+            });
+        }
+        return new Response(htmlTemplate, {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+    },
+    "/style.css": () => new Response(cssContent, {
+        headers: { "Content-Type": "text/css; charset=utf-8" },
+    }),
+    "/app.client.js": () => new Response(jsContent, {
+        headers: { "Content-Type": "application/javascript; charset=utf-8" },
+    }),
+    "/favicon.svg": () => new Response(faviconSvg, {
+        headers: { "Content-Type": "image/svg+xml" },
+    }),
+    "/favicon.ico": () => new Response(faviconSvg, {
+        headers: { "Content-Type": "image/svg+xml" },
+    }),
+    "/og-image.png": () => new Response(ogImage, {
+        headers: { "Content-Type": "image/png" },
+    }),
+    "/llms-full.txt": () => new Response(llmsFullTxt, {
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    }),
+    "/llms.txt": () => new Response(llmsTxt, {
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    }),
+    "/openapi.json": () => new Response(openApiJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+    "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/.well-known/agent-skills/index.json": () => {
+        const agentSkills = {
+            "skills": [
+                {
+                    "name": "AuditPlatform",
+                    "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
+                    "endpoint": "/api/audit",
+                    "method": "POST"
+                }
+            ]
+        };
+        return new Response(JSON.stringify(agentSkills, null, 2), {
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+    }
+};
 
 export default {
     async fetch(request, env, ctx) {
@@ -30,84 +92,8 @@ export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
-        if (request.method === "GET") {
-            if (url.pathname === "/") {
-                const accept = request.headers.get("Accept") || "";
-                if (accept.includes("text/markdown")) {
-                    const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
-                    return new Response(mdContent, {
-                        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                    });
-                }
-                return new Response(htmlTemplate, {
-                    headers: { "Content-Type": "text/html; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/style.css") {
-                return new Response(cssContent, {
-                    headers: { "Content-Type": "text/css; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/app.client.js") {
-                return new Response(jsContent, {
-                    headers: { "Content-Type": "application/javascript; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico") {
-                return new Response(faviconSvg, {
-                    headers: { "Content-Type": "image/svg+xml" },
-                });
-            }
-            if (url.pathname === "/og-image.png") {
-                return new Response(ogImage, {
-                    headers: { "Content-Type": "image/png" },
-                });
-            }
-            if (url.pathname === "/llms-full.txt") {
-                return new Response(llmsFullTxt, {
-                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/llms.txt") {
-                return new Response(llmsTxt, {
-                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/openapi.json") {
-                return new Response(openApiJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/api-catalog") {
-                return new Response(apiCatalogTxt, {
-                    headers: { "Content-Type": "text/plain; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/tdmrep.json") {
-                return new Response(tdmrepJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/policies/tdm-policy.json") {
-                return new Response(tdmPolicyJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/agent-skills/index.json") {
-                const agentSkills = {
-                    "skills": [
-                        {
-                            "name": "AuditPlatform",
-                            "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
-                            "endpoint": "/api/audit",
-                            "method": "POST"
-                        }
-                    ]
-                };
-                return new Response(JSON.stringify(agentSkills, null, 2), {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
+        if (request.method === "GET" && STATIC_ROUTES[url.pathname]) {
+            return STATIC_ROUTES[url.pathname](request);
         }
 
         // --- API Route ---
