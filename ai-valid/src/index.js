@@ -10,6 +10,8 @@ import tdmrepJson from "../public/.well-known/tdmrep.json";
 import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 
+const FETCH_TIMEOUT = 5000;
+
 export default {
     async fetch(request, env, ctx) {
         return await handleRequest(request, env, ctx);
@@ -21,7 +23,7 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    return await fetch(url, options);
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 }
 
 export async function handleRequest(request, env, ctx) {
