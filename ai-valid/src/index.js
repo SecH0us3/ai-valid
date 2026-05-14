@@ -145,19 +145,43 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     // 1. Discoverability & Bots
     let robotsFound = false;
     let hasAI = false;
+    let sitemapFound = false;
+    let robotsText = "";
+
     try {
         const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
-            const text = await r_robots.text();
-            const lowerText = text.toLowerCase();
+            robotsText = await r_robots.text();
+            const lowerText = robotsText.toLowerCase();
             if (['oai-searchbot', 'gptbot', 'perplexitybot'].some(bot => lowerText.includes(bot))) {
                 hasAI = true;
                 totalScore += 5;
             }
         }
     } catch { /* silent fail */ }
+
+    try {
+        let sitemapUrl = `${base}/sitemap.xml`;
+        if (robotsText) {
+            const sitemapMatch = robotsText.match(/^Sitemap:\s*(.*)$/im);
+            if (sitemapMatch && sitemapMatch[1]) {
+                sitemapUrl = sitemapMatch[1].trim();
+
+                // Handle relative sitemap URL edge case
+                if (sitemapUrl.startsWith('/')) {
+                    sitemapUrl = `${base}${sitemapUrl}`;
+                }
+            }
+        }
+
+        const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
+        if (r_sitemap.status === 200) {
+            sitemapFound = true;
+            totalScore += 5;
+        }
+    } catch { /* silent fail for sitemap */ }
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
@@ -418,6 +442,7 @@ Example:
         bots: {
             robotsFound,
             hasAI,
+            sitemapFound,
             results: [
                 {
                     name: "robots.txt",
@@ -456,6 +481,15 @@ Allow: /
                     spec: "https://platform.openai.com/docs/bots",
                     tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAI ? 'Found' : 'Missing'
+                },
+                {
+                    name: "sitemap.xml",
+                    prompt: `Please generate a \`sitemap.xml\` for my project if it doesn't exist, and ensure my \`/robots.txt\` includes a \`Sitemap: <url>\` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.`,
+                    status: sitemapFound ? 'ok' : 'err',
+                    message: sitemapFound ? "Sitemap found" : "No Sitemap found",
+                    spec: "https://www.sitemaps.org/protocol.html",
+                    tooltip: `<strong>What it is:</strong> An XML file that lists URLs for a site along with additional metadata about each URL.<br/><br/><strong>Why it's critical:</strong> It allows AI search bots (like SearchGPT and Perplexity) and traditional search engines to discover your content efficiently without having to guess paths or follow every link blindly.<br/><br/><strong>Impact of missing it:</strong> AI crawlers might miss critical new or updated content on your platform, significantly reducing your visibility in AI-generated answers and search results.<br/><br/><strong>Implementation Example:</strong> Host a <code>/sitemap.xml</code> and add <code>Sitemap: https://yourdomain.com/sitemap.xml</code> to your <code>robots.txt</code>.`,
+                    code: sitemapFound ? 'Found' : 'Missing'
                 }
             ]
         },

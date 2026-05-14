@@ -10,94 +10,90 @@ import tdmrepJson from "../public/.well-known/tdmrep.json";
 import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 
+const FETCH_TIMEOUT = 5000;
+const STATIC_ROUTES = {
+    "/": (request) => {
+        const accept = request.headers.get("Accept") || "";
+        if (accept.includes("text/markdown")) {
+            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
+            return new Response(mdContent, {
+                headers: { "Content-Type": "text/markdown; charset=utf-8" },
+            });
+        }
+        return new Response(htmlTemplate, {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+    },
+    "/style.css": () => new Response(cssContent, {
+        headers: { "Content-Type": "text/css; charset=utf-8" },
+    }),
+    "/app.client.js": () => new Response(jsContent, {
+        headers: { "Content-Type": "application/javascript; charset=utf-8" },
+    }),
+    "/favicon.svg": () => new Response(faviconSvg, {
+        headers: { "Content-Type": "image/svg+xml" },
+    }),
+    "/favicon.ico": () => new Response(faviconSvg, {
+        headers: { "Content-Type": "image/svg+xml" },
+    }),
+    "/og-image.png": () => new Response(ogImage, {
+        headers: { "Content-Type": "image/png" },
+    }),
+    "/llms-full.txt": () => new Response(llmsFullTxt, {
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    }),
+    "/llms.txt": () => new Response(llmsTxt, {
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    }),
+    "/openapi.json": () => new Response(openApiJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }),
+    "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+    "/.well-known/agent-skills/index.json": () => {
+        const agentSkills = {
+            "skills": [
+                {
+                    "name": "AuditPlatform",
+                    "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
+                    "endpoint": "/api/audit",
+                    "method": "POST"
+                }
+            ]
+        };
+        return new Response(JSON.stringify(agentSkills, null, 2), {
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+    }
+};
+
 export default {
     async fetch(request, env, ctx) {
         return await handleRequest(request, env, ctx);
     }
 };
 
+async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
+    if (base === requestOrigin) {
+        const req = new Request(url, options);
+        return await handleRequest(req, env, ctx);
+    }
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+}
+
 export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
 
         // --- Static File Routing ---
-        if (request.method === "GET") {
-            if (url.pathname === "/") {
-                const accept = request.headers.get("Accept") || "";
-                if (accept.includes("text/markdown")) {
-                    const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
-                    return new Response(mdContent, {
-                        headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                    });
-                }
-                return new Response(htmlTemplate, {
-                    headers: { "Content-Type": "text/html; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/style.css") {
-                return new Response(cssContent, {
-                    headers: { "Content-Type": "text/css; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/app.client.js") {
-                return new Response(jsContent, {
-                    headers: { "Content-Type": "application/javascript; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico") {
-                return new Response(faviconSvg, {
-                    headers: { "Content-Type": "image/svg+xml" },
-                });
-            }
-            if (url.pathname === "/og-image.png") {
-                return new Response(ogImage, {
-                    headers: { "Content-Type": "image/png" },
-                });
-            }
-            if (url.pathname === "/llms-full.txt") {
-                return new Response(llmsFullTxt, {
-                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/llms.txt") {
-                return new Response(llmsTxt, {
-                    headers: { "Content-Type": "text/markdown; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/openapi.json") {
-                return new Response(openApiJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/api-catalog") {
-                return new Response(apiCatalogTxt, {
-                    headers: { "Content-Type": "text/plain; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/tdmrep.json") {
-                return new Response(tdmrepJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/policies/tdm-policy.json") {
-                return new Response(tdmPolicyJson, {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
-            if (url.pathname === "/.well-known/agent-skills/index.json") {
-                const agentSkills = {
-                    "skills": [
-                        {
-                            "name": "AuditPlatform",
-                            "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
-                            "endpoint": "/api/audit",
-                            "method": "POST"
-                        }
-                    ]
-                };
-                return new Response(JSON.stringify(agentSkills, null, 2), {
-                    headers: { "Content-Type": "application/json; charset=utf-8" },
-                });
-            }
+        if (request.method === "GET" && STATIC_ROUTES[url.pathname]) {
+            return STATIC_ROUTES[url.pathname](request);
         }
 
         // --- API Route ---
@@ -113,7 +109,7 @@ export async function handleRequest(request, env, ctx) {
                 // Domain existence check
                 try {
                     const parsedUrl = new URL(targetUrl);
-                    await fetch(parsedUrl.origin, { method: 'HEAD' });
+                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
@@ -144,30 +140,43 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     let totalScore = 0;
 
-    const internalFetch = async (url, options = {}) => {
-        if (base === requestOrigin) {
-            const req = new Request(url, options);
-            return await handleRequest(req, env, ctx);
-        }
-        return await fetch(url, options);
-    };
+    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
 
     // 1. Discoverability & Bots
     let robotsFound = false;
     let hasAI = false;
+    let sitemapFound = false;
+    let robotsText = "";
+
     try {
-        const r_robots = await internalFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
+        const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
-            const text = await r_robots.text();
-            const lowerText = text.toLowerCase();
+            robotsText = await r_robots.text();
+            const lowerText = robotsText.toLowerCase();
             if (['oai-searchbot', 'gptbot', 'perplexitybot'].some(bot => lowerText.includes(bot))) {
                 hasAI = true;
                 totalScore += 5;
             }
         }
     } catch { /* silent fail */ }
+
+    try {
+        let sitemapUrl = `${base}/sitemap.xml`;
+        if (robotsText) {
+            const sitemapMatch = robotsText.match(/^Sitemap:\s*(.*)$/im);
+            if (sitemapMatch && sitemapMatch[1]) {
+                sitemapUrl = sitemapMatch[1].trim();
+            }
+        }
+
+        const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
+        if (r_sitemap.status === 200) {
+            sitemapFound = true;
+            totalScore += 5;
+        }
+    } catch { /* silent fail for sitemap */ }
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
@@ -176,7 +185,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let schemaType = "";
 
     try {
-        const r_home = await internalFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
@@ -357,7 +366,7 @@ Returns a list of users...
         },
         {
             name: "TDM Reservation",
-            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the `/policies/tdm-policy.json` file referenced in the `tdm-policy` field if it does not already exist.
+            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.
 Example:
 \`\`\`json
 {
@@ -380,7 +389,7 @@ Example:
             let message = '';
             let code = null;
             try {
-                const req = await internalFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
+                const req = await iFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
                 code = req.status;
                 let cType = (req.headers.get('content-type') || '').toLowerCase();
                 let isSoft404 = code === 200 && cType.includes('text/html');
@@ -428,6 +437,7 @@ Example:
         bots: {
             robotsFound,
             hasAI,
+            sitemapFound,
             results: [
                 {
                     name: "robots.txt",
@@ -466,6 +476,15 @@ Allow: /
                     spec: "https://platform.openai.com/docs/bots",
                     tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAI ? 'Found' : 'Missing'
+                },
+                {
+                    name: "sitemap.xml",
+                    prompt: `Please generate a \`sitemap.xml\` for my project if it doesn't exist, and ensure my \`/robots.txt\` includes a \`Sitemap: <url>\` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.`,
+                    status: sitemapFound ? 'ok' : 'err',
+                    message: sitemapFound ? "Sitemap found" : "No Sitemap found",
+                    spec: "https://www.sitemaps.org/protocol.html",
+                    tooltip: `<strong>What it is:</strong> An XML file that lists URLs for a site along with additional metadata about each URL.<br/><br/><strong>Why it's critical:</strong> It allows AI search bots (like SearchGPT and Perplexity) and traditional search engines to discover your content efficiently without having to guess paths or follow every link blindly.<br/><br/><strong>Impact of missing it:</strong> AI crawlers might miss critical new or updated content on your platform, significantly reducing your visibility in AI-generated answers and search results.<br/><br/><strong>Implementation Example:</strong> Host a <code>/sitemap.xml</code> and add <code>Sitemap: https://yourdomain.com/sitemap.xml</code> to your <code>robots.txt</code>.`,
+                    code: sitemapFound ? 'Found' : 'Missing'
                 }
             ]
         },

@@ -51,6 +51,15 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
         expect(data.error).toBe('Invalid URL');
     });
 
+    it('should return 200 for a valid targetUrl', async () => {
+        const req = createRequest({ targetUrl: 'https://example.com' });
+        const res = await index.fetch(req, env, ctx);
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.score).toBeDefined();
+    });
+
     it('should catch JSON parsing errors and return 500', async () => {
         const req = new Request('https://localhost/api/audit', {
             method: 'POST',
