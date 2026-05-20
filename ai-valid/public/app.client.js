@@ -19,30 +19,19 @@ document.addEventListener('DOMContentLoaded', () => {
      * Whitelists only safe tags: strong, code, br, em
      */
     function sanitizeHTML(html) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const whitelist = ['STRONG', 'CODE', 'BR', 'EM'];
-
-        function clean(node) {
-            const children = Array.from(node.childNodes);
-            for (const child of children) {
-                if (child.nodeType === Node.ELEMENT_NODE) {
-                    if (!whitelist.includes(child.tagName)) {
-                        const text = document.createTextNode(child.textContent);
-                        node.replaceChild(text, child);
-                    } else {
-                        // Strip all attributes
-                        while (child.attributes.length > 0) {
-                            child.removeAttribute(child.attributes[0].name);
-                        }
-                        clean(child);
-                    }
-                }
-            }
+        // Use DOMPurify to securely sanitize HTML, whitelisting only safe tags.
+        // This prevents mXSS vulnerabilities associated with manual DOM parsing and .innerHTML serialization.
+        if (typeof DOMPurify !== 'undefined') {
+            return DOMPurify.sanitize(html, {
+                ALLOWED_TAGS: ['strong', 'code', 'br', 'em'],
+                ALLOWED_ATTR: [] // Strip all attributes just like the original logic
+            });
         }
 
-        clean(doc.body);
-        return doc.body.innerHTML;
+        // Fallback that explicitly removes all HTML if DOMPurify is unavailable (fail closed)
+        const div = document.createElement('div');
+        div.textContent = html;
+        return div.innerHTML;
     }
 
     // Modal elements
