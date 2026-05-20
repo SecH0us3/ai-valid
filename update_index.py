@@ -27,13 +27,24 @@ def replace_with_prompt(match):
     return match.group(0)
 
 # Replace in wellKnownFiles
-for name, prompt in prompts.items():
-    if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
-        content = re.sub(rf'name:\s*"{re.escape(name)}",', f'name: "{name}",\n                    prompt: `{prompt}`,', content)
-    else:
-        content = re.sub(rf'name:\s*\'{re.escape(name)}\',', f'name: \'{name}\', prompt: `{prompt}`,', content)
+names_pattern = "|".join(map(re.escape, prompts.keys()))
+pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
 
-# Return prompt in protoResults mapping
+def repl(match):
+    quote = match.group(1)
+    name = match.group(2)
+    prompt = prompts[name]
+
+    if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
+        if quote == '"':
+            return f'name: "{name}",\n                    prompt: `{prompt}`,'
+    else:
+        if quote == "'":
+            return f"name: '{name}', prompt: `{prompt}`,"
+
+    return match.group(0)
+
+content = pattern.sub(repl, content)
 content = content.replace(
     "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
     "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
