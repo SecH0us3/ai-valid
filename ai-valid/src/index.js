@@ -88,6 +88,91 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 }
 
+
+function isPrivateIP(ip) {
+    if (!ip) return false;
+    ip = ip.replace(/^\[/, '').replace(/\]$/, '');
+    const ipv4Patterns = [
+        /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
+        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
+    ];
+    for (const pattern of ipv4Patterns) {
+        if (pattern.test(ip)) return true;
+    }
+    if (ip.includes(':')) {
+        ip = ip.split('%')[0];
+        if (ip === '::1' || ip === '::' || ip === '::0') return true;
+        let fullIp = ip;
+        if (fullIp.includes('::')) {
+            const parts = fullIp.split('::');
+            const leftCount = parts[0] ? parts[0].split(':').length : 0;
+            const rightCount = parts[1] ? parts[1].split(':').length : 0;
+            const missing = 8 - (leftCount + rightCount);
+            const zeroes = new Array(missing).fill('0000').join(':');
+            fullIp = `${parts[0] ? parts[0] + ':' : ''}${zeroes}${parts[1] ? ':' + parts[1] : ''}`;
+        }
+        fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
+
+        // 0000:0000:0000:0000:0000:ffff:7f00:0001
+        if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
+            return true;
+        }
+
+        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
+            // IPv4-mapped
+            const hex = fullIp.substring(30).replace(':', '');
+            const ipv4 = [
+                parseInt(hex.substring(0, 2), 16),
+                parseInt(hex.substring(2, 4), 16),
+                parseInt(hex.substring(4, 6), 16),
+                parseInt(hex.substring(6, 8), 16)
+            ].join('.');
+            for (const pattern of ipv4Patterns) {
+                if (pattern.test(ipv4)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+async function isSafeUrl(targetUrl) {
+    try {
+        const parsedUrl = new URL(targetUrl);
+        const hostname = parsedUrl.hostname;
+
+        if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+            return false;
+        }
+
+        if (isPrivateIP(hostname)) {
+            return false;
+        }
+
+        // Only do DNS resolution for non-IP hostnames
+        if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
+            // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
+            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
+            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.Answer) {
+                    for (const record of data.Answer) {
+                        if (record.type === 1 || record.type === 28) { // A or AAAA
+                            if (isPrivateIP(record.data)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
@@ -104,6 +189,12 @@ export async function handleRequest(request, env, ctx) {
                 
                 if (!targetUrl || !targetUrl.startsWith('http')) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
+                }
+
+                // SSRF Protection
+                const safeUrl = await isSafeUrl(targetUrl);
+                if (!safeUrl) {
+                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
                 }
 
                 // Domain existence check
