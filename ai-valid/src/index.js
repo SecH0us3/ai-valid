@@ -112,10 +112,25 @@ function isPrivateIP(ip) {
             fullIp = `${parts[0] ? parts[0] + ':' : ''}${zeroes}${parts[1] ? ':' + parts[1] : ''}`;
         }
         fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
+
+        // 0000:0000:0000:0000:0000:ffff:7f00:0001
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
-            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb') ||
-            fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
             return true;
+        }
+
+        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
+            // IPv4-mapped
+            const hex = fullIp.substring(30).replace(':', '');
+            const ipv4 = [
+                parseInt(hex.substring(0, 2), 16),
+                parseInt(hex.substring(2, 4), 16),
+                parseInt(hex.substring(4, 6), 16),
+                parseInt(hex.substring(6, 8), 16)
+            ].join('.');
+            for (const pattern of ipv4Patterns) {
+                if (pattern.test(ipv4)) return true;
+            }
         }
     }
     return false;
