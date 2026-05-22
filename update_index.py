@@ -21,14 +21,11 @@ prompts = {
 
 special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
 
-# 1. First, remove ALL existing prompt keys for the names we manage to avoid duplicates
+# 1. First, remove existing prompt keys to avoid duplicates
 for name in prompts.keys():
-    # Match name: '...' or name: "..."
-    # Then match any sequence of prompt: `...`, (including escaped versions)
-    # We use a non-greedy match for the prompt content.
     content = re.sub(rf'(name:\s*["\']{re.escape(name)}["\'],)(\s*prompt:\s*\\?`.*?`,)+', r'\1', content, flags=re.DOTALL)
 
-# 2. Add/Update the prompts correctly
+# 2. Add/Update the prompts correctly using a single pass for performance
 names_pattern = "|".join(map(re.escape, prompts.keys()))
 pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
 
@@ -36,10 +33,7 @@ def repl(match):
     quote = match.group(1)
     name = match.group(2)
     prompt_text = prompts[name]
-
-    # Escape backticks and dollar signs for JS template literal
     escaped_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
-
     if name in special_names:
         return f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
     else:
@@ -55,7 +49,6 @@ if "prompt: data.prompt," not in content:
     )
 
 # 4. Fix pre-existing syntax errors in prompts NOT managed by this script
-# (Specifically ai.txt and tdmrep.json which were broken in original source)
 content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`, path: '/ai.txt'")
 content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`, path: '/.well-known/tdmrep.json'")
 
