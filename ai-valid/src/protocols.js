@@ -45,7 +45,7 @@ export const wellKnownFiles = [
         name: "API Catalog",
         path: '/.well-known/api-catalog',
         spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt',
-        isJson: true,
+        isJson: false,
         points: 5,
         prompt: formatPrompt({
             path: '/.well-known/api-catalog',
