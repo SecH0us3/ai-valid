@@ -52,12 +52,32 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
     });
 
     it('should return 200 for a valid targetUrl', async () => {
-        const req = createRequest({ targetUrl: 'https://example.com' });
-        const res = await index.fetch(req, env, ctx);
+        // Mock DoH response
+        const originalFetch = global.fetch;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({
+                    Answer: [{ type: 1, data: '93.184.216.34' }]
+                }), { status: 200, headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            // For example.com we might get requests for robots.txt, sitemap.xml, etc.
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('OK', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return originalFetch(url, options);
+        };
 
-        expect(res.status).toBe(200);
-        const data = await res.json();
-        expect(data.score).toBeDefined();
+        try {
+            const req = createRequest({ targetUrl: 'https://example.com' });
+            const res = await index.fetch(req, env, ctx);
+
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            expect(data.score).toBeDefined();
+        } finally {
+            global.fetch = originalFetch;
+        }
     });
 
     it('should catch JSON parsing errors and return 500', async () => {
