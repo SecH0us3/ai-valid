@@ -347,10 +347,10 @@ Example structure:
         { 
             name: "API Catalog",
                     prompt: `Please check if \`/.well-known/api-catalog\` exists in my project. If it does, modify it; otherwise, create it. It should be formatted as an RFC 9727 HTTP API Catalog linking to my OpenAPI or Swagger documentation.
-                    Example content:
-                    \`\`\`http
-                    Link: <https://example.com/openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json;version=3.0"
-                    \`\`\``, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: true, points: 5,            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.` 
+Example content:
+\`\`\`http
+Link: <https://example.com/openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json;version=3.0"
+\`\`\``, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: true, points: 5,            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.`
         },
         { 
             name: "Agent Skills",
@@ -567,15 +567,10 @@ Allow: /
                 },
                 {
                     name: "AI Directives",
-                    prompt: `Please update my existing \`/robots.txt\` file to strategically manage generative AI scraping. The configuration should depend on the type of my project:
-- If this is a **landing page, marketing site, or open-source documentation**, ALLOW both AI search bots (for real-time discoverability) AND training data scrapers (like GPTBot, CCBot) to increase future brand awareness.
-- If this is a **web application, forum, or contains proprietary/user-generated content (UGC)**, ALLOW AI search bots (e.g., OAI-SearchBot) for real-time citations, but DISALLOW training data scrapers (e.g., GPTBot, CCBot) to protect my intellectual property.
-
-Example for a web application/forum:
+                    prompt: `Please check if \`/robots.txt\` exists. If it exists, update it; otherwise, create it. Add explicit directives to strategically manage generative AI scraping. Allow search bots while disallowing training data scrapers.
+Example:
 \`\`\`text
 User-agent: GPTBot
-Disallow: /
-User-agent: CCBot
 Disallow: /
 
 User-agent: OAI-SearchBot
@@ -603,7 +598,7 @@ Allow: /
             results: [
                 {
                     name: "Content Neg. (MD)",
-                    prompt: `Please analyze my server's routing or middleware logic. If content negotiation exists, update it; otherwise, implement it. When a client request includes the header \`Accept: text/markdown\`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
+                    prompt: `Please analyze my server's routing or middleware logic. If content negotiation exists, update it; otherwise, implement it. When a client request includes the header \`Accept: text/markdown\`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
                     status: supportsMarkdown ? 'ok' : 'err',
                     message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
@@ -613,8 +608,8 @@ Allow: /
                 {
                     name: "Content-Signal",
                     prompt: `Please analyze my server configuration or application middleware. If a \`Content-Signal\` response header is already set, update it; otherwise, implement logic to add it. This header explicitly declares AI scraping and training policies.
-                Example header to add to responses:
-                \`Content-Signal: ai-train=no, search=yes\``,
+Example header to add to responses:
+\`Content-Signal: ai-train=no, search=yes\``,
                     status: hasContentSignal ? 'ok' : 'warn',
                     message: "Usage policies header.",
                     spec: "https://contentsignals.org/",

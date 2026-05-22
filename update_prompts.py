@@ -115,22 +115,14 @@ with open("ai-valid/src/index.js", "r") as f:
 
 for name, prompt in prompts.items():
     # regex match exactly the old prompt property
-    # We'll replace the prompt value inside
-    # Since we used backticks before, we can match prompt: `...`
-    pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],\s*prompt:\s*`.*?`,'
+    # Optimized: Removed redundant re.search and using re.sub directly.
+    # The regex matches name then prompt up to the END of the template literal, correctly handling escaped backticks.
+    pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],\s*prompt:\s*`(\\.|[^`])*`,'
     
-    escaped_prompt = prompt.replace('`', '\\`').replace('$', '\\$')
+    escaped_prompt = prompt.replace("`", "\\`").replace("$", "\\$")
     
-    # Check if pattern is found
-    if re.search(pattern, content, re.DOTALL):
-        content = re.sub(pattern, f'name: "{name}",\n                    prompt: `{escaped_prompt}`,', content, flags=re.DOTALL)
-    else:
-        # Fallback if pattern matching fails due to some spacing differences
-        # Find where name is defined
-        name_pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],'
-        if re.search(name_pattern, content):
-            # This shouldn't happen since we already have prompt: `...` but just in case
-            pass
+    # We use a lambda for replacement to avoid backslash issues in the replacement string.
+    content = re.sub(pattern, lambda m: f'name: "{name}",\n                    prompt: `{escaped_prompt}`,', content, flags=re.DOTALL)
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
