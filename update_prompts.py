@@ -110,27 +110,42 @@ Example header to add to responses:
 `Content-Signal: ai-train=no, search=yes`"""
 }
 
+# We add ai.txt to the prompts map to fix the bug in index.js as well
+prompts["ai.txt"] = """Please check if `/ai.txt` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
+Example:
+```text
+# ai.txt - Spawning format
+# Declares TDM permissions per EU CDSM Article 4
+
+User-Agent: GPTBot
+Disallow: /
+```"""
+
 with open("ai-valid/src/index.js", "r") as f:
     content = f.read()
 
+# Known keys that follow the prompt property in the JS objects
+next_keys = "(?:path|spec|isJson|points|tooltip|status|message|code|results)"
+
 for name, prompt in prompts.items():
-    # regex match exactly the old prompt property
-    # We'll replace the prompt value inside
-    # Since we used backticks before, we can match prompt: `...`
-    pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],\s*prompt:\s*`.*?`,'
+    # Robust regex: matches name then prompt.
+    # It handles potentially corrupted prompts by looking ahead for the next property key.
+    pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],\s*prompt:\s*`.*?`.*?,(?=\s*{next_keys}\s*:)'
     
+    # Fallback pattern for cases where prompt might be the last property (though unlikely in this file)
+    pattern_fallback = rf'name:\s*[\'"]{re.escape(name)}[\'"],\s*prompt:\s*`.*?`,'
+
     escaped_prompt = prompt.replace('`', '\\`').replace('$', '\\$')
     
-    # Check if pattern is found
-    if re.search(pattern, content, re.DOTALL):
-        content = re.sub(pattern, f'name: "{name}",\n                    prompt: `{escaped_prompt}`,', content, flags=re.DOTALL)
-    else:
-        # Fallback if pattern matching fails due to some spacing differences
-        # Find where name is defined
-        name_pattern = rf'name:\s*[\'"]{re.escape(name)}[\'"],'
-        if re.search(name_pattern, content):
-            # This shouldn't happen since we already have prompt: `...` but just in case
-            pass
+    replacement = f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
+
+    # Optimized: One pass replacement.
+    # We try the robust pattern first.
+    new_content, count = re.subn(pattern, lambda m: replacement, content, flags=re.DOTALL)
+    if count == 0:
+        new_content, count = re.subn(pattern_fallback, lambda m: replacement, content, flags=re.DOTALL)
+
+    content = new_content
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
