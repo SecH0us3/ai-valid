@@ -19,37 +19,36 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-def replace_with_prompt(match):
-    name = match.group(1)
-    prompt = prompts.get(name, "")
-    if prompt:
-        return f"name: '{name}', prompt: `{prompt}`,"
-    return match.group(0)
-
-# Replace in wellKnownFiles
+# Replace in wellKnownFiles using a single pass for performance
+special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
 names_pattern = "|".join(map(re.escape, prompts.keys()))
-pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
+# This pattern optionally matches an existing prompt to avoid duplication and allow updates.
+# It uses non-greedy matching for the prompt content to be safe.
+pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,(?:\s*prompt:\s*`.*?`,)?', re.DOTALL)
 
 def repl(match):
     quote = match.group(1)
     name = match.group(2)
-    prompt = prompts[name]
+    prompt = prompts.get(name)
 
-    if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
-        if quote == '"':
-            return f'name: "{name}",\n                    prompt: `{prompt}`,'
+    if not prompt:
+        return match.group(0)
+
+    if name in special_names:
+        # Standardize on double quotes and multiline format for special entries
+        return f'name: "{name}",\n                    prompt: `{prompt}`,'
     else:
-        if quote == "'":
-            return f"name: '{name}', prompt: `{prompt}`,"
-
-    return match.group(0)
+        # Standardize on single quotes and inline format for other entries
+        return f"name: '{name}', prompt: `{prompt}`,"
 
 content = pattern.sub(repl, content)
-content = content.replace(
-    "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
-    "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
-)
+
+# Update the return object to include the prompt field (idempotent)
+if "prompt: data.prompt," not in content:
+    content = content.replace(
+        "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
+        "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
+    )
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
-
