@@ -1,0 +1,26 @@
+
+> ai-valid@1.0.0 dev
+> wrangler dev
+
+
+ ⛅️ wrangler 4.83.0
+───────────────────
+⎔ Starting local server...
+[wrangler:info] Ready on http://localhost:8787
+[wrangler:info] GET / 200 OK (14ms)
+[wrangler:info] GET /style.css 200 OK (6ms)
+[wrangler:info] GET /app.client.js 200 OK (5ms)
+[wrangler:info] GET / 200 OK (4ms)
+[wrangler:info] GET / 200 OK (4ms)
+[wrangler:info] GET /style.css 200 OK (4ms)
+[wrangler:info] GET /app.client.js 200 OK (4ms)
+[wrangler:info] POST /api/audit 403 Forbidden (5ms)
+[wrangler:info] POST /api/audit 403 Forbidden (4ms)
+[wrangler:info] GET / 200 OK (4ms)
+[wrangler:info] GET /style.css 200 OK (4ms)
+[wrangler:info] GET /app.client.js 200 OK (5ms)
+[wrangler:info] POST /api/audit 200 OK (479ms)
+[wrangler:info] GET / 200 OK (4ms)
+[wrangler:info] GET /style.css 200 OK (5ms)
+[wrangler:info] GET /app.client.js 200 OK (6ms)
+[wrangler:info] POST /api/audit 200 OK (446ms)

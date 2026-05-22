@@ -2,16 +2,143 @@
  * Centralized Protocol Definitions for AI Readiness Audit
  */
 
-export const formatTooltip = ({ what, why, impact, example }) => {
+const formatTooltip = ({ what, why, impact, example }) => {
     return `<strong>What it is:</strong> ${what}<br/><br/><strong>Why it's critical:</strong> ${why}<br/><br/><strong>Impact of missing it:</strong> ${impact}<br/><br/><strong>Implementation Example:</strong> ${example}`;
 };
 
-export const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
-    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description.trim()}
-Example:
+const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
+    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description}
+Example structure:
 \`\`\`${exampleFormat}
-${example.trim()}
+${example}
 \`\`\``;
+};
+
+export const botsMetadata = {
+    robots: {
+        name: "Robots.txt",
+        spec: "https://www.robotstxt.org/robotstxt.html",
+        prompt: "Please check if `robots.txt` exists in my project root. If it does, update it; otherwise, create it. It should define which bots are allowed to crawl my site and where my sitemap is located.",
+        tooltip: formatTooltip({
+            what: "Standard web protocol (RFC 9309) telling search engines and AI bots which parts of your content they are allowed to index or scrape.",
+            why: "It's the first file any well-behaved AI agent (like SearchGPT or Perplexity) checks before interacting with your site. It defines the 'rules of engagement'.",
+            impact: "AI bots may either scrape data you wish to keep private (training models on your intellectual property), or they might adopt a strict default and completely ignore your site in AI search results (like Perplexity or SearchGPT).",
+            example: "Add explicit bot designations in your <code>robots.txt</code>, such as: <br><code>User-agent: OAI-SearchBot<br>Allow: /</code>"
+        })
+    },
+    aiDirectives: {
+        name: "AI Directives",
+        spec: "https://platform.openai.com/docs/bots",
+        prompt: `Please update my existing \`/robots.txt\` file to strategically manage generative AI scraping. The configuration should depend on the type of my project:
+- If this is a **landing page, marketing site, or open-source documentation**, ALLOW both AI search bots (for real-time discoverability) AND training data scrapers (like GPTBot, CCBot) to increase future brand awareness.
+- If this is a **web application, forum, or contains proprietary/user-generated content (UGC)**, ALLOW AI search bots (e.g., OAI-SearchBot) for real-time citations, but DISALLOW training data scrapers (e.g., GPTBot, CCBot) to protect my intellectual property.
+
+Example for a web application/forum:
+\`\`\`text
+User-agent: GPTBot
+Disallow: /
+User-agent: CCBot
+Disallow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+\`\`\``,
+        tooltip: formatTooltip({
+            what: "Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>).",
+            why: "Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.",
+            impact: "You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.",
+            example: "Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>"
+        })
+    },
+    sitemap: {
+        name: "sitemap.xml",
+        spec: "https://www.sitemaps.org/protocol.html",
+        prompt: "Please generate a `sitemap.xml` for my project if it doesn't exist, and ensure my `/robots.txt` includes a `Sitemap: <url>` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.",
+        tooltip: formatTooltip({
+            what: "An XML file that lists URLs for a site along with additional metadata about each URL.",
+            why: "It allows AI search bots (like SearchGPT and Perplexity) and traditional search engines to discover your content efficiently without having to guess paths or follow every link blindly.",
+            impact: "AI crawlers might miss critical new or updated content on your platform, significantly reducing your visibility in AI-generated answers and search results.",
+            example: "Host a <code>/sitemap.xml</code> and add <code>Sitemap: https://yourdomain.com/sitemap.xml</code> to your <code>robots.txt</code>."
+        })
+    }
+};
+
+export const contentMetadata = {
+    markdown: {
+        name: "Content Neg. (MD)",
+        spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
+        prompt: "Please analyze my server's routing or middleware logic. If content negotiation exists, update it; otherwise, implement it. When a client request includes the header `Accept: text/markdown`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).",
+        tooltip: formatTooltip({
+            what: "Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.",
+            why: "LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.",
+            impact: "Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.",
+            example: "Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps."
+        })
+    },
+    signal: {
+        name: "Content-Signal",
+        spec: "https://contentsignals.org/",
+        prompt: `Please analyze my server configuration or application middleware. If a \`Content-Signal\` response header is already set, update it; otherwise, implement logic to add it. This header explicitly declares AI scraping and training policies.
+                Example header to add to responses:
+                \`Content-Signal: ai-train=no, search=yes\``,
+        tooltip: formatTooltip({
+            what: "An explicit HTTP Header signaling legal and policy usage metadata for machine consumers.",
+            why: "It informs scraping bots at the network level whether your content is free for LLM training, requires attribution, or is completely restricted copyright.",
+            impact: "Machine agents assume 'fair game' for all scraped data. Without signal compliance, you have no technical ground to prevent proprietary data from becoming automated training fodder.",
+            example: "Ensure your server responses (especially for content heavy pages) include the header: <code>Content-Signal: ai-train=no, search=yes</code> to explicitly block big tech from stealing IP for training while retaining search indexing."
+        })
+    },
+    jsonld: {
+        name: "Semantic JSON-LD",
+        spec: "https://schema.org/docs/documents.html",
+        prompt: `Please check my website's HTML and implement appropriate Schema.org JSON-LD markup. First, ask me for a description of my service/business. Then, please consult https://schema.org/LocalBusiness to find the most specific and relevant \`@type\` for my business (e.g., Store, FinancialService, MedicalClinic, etc.), and generate the correct \`application/ld+json\` script block to help AI agents semantically understand my content.
+
+Examples of specific types:
+
+**For a Financial Service (https://schema.org/FinancialService):**
+\`\`\`html
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FinancialService",
+  "name": "Trusty Bank",
+  "description": "A trusted local bank offering loans and savings accounts.",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "123 Finance St",
+    "addressLocality": "Moneyville",
+    "addressRegion": "NY",
+    "postalCode": "10001"
+  }
+}
+</script>
+\`\`\`
+
+**For a Retail Store (https://schema.org/Store):**
+\`\`\`html
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Store",
+  "name": "Super Electronics",
+  "description": "The best place to buy gadgets and gizmos.",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "456 Tech Ave",
+    "addressLocality": "Silicon City",
+    "addressRegion": "CA",
+    "postalCode": "94000"
+  }
+}
+</script>
+\`\`\``,
+        tooltip: formatTooltip({
+            what: "Schema.org JSON-LD semantic markup.",
+            why: "AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.",
+            impact: "The AI will have to \"guess\" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.",
+            example: "Add a JSON-LD script block defining your core entity, such as <code>@type: \"Organization\"</code> or <code>@type: \"WebSite\"</code>."
+        })
+    }
 };
 
 export const wellKnownFiles = [
