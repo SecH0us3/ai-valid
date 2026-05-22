@@ -80,117 +80,57 @@ export default {
     }
 };
 
-async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, resolvedIP = null) {
+async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     if (base === requestOrigin) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-
-    let currentUrl = url;
-    let currentResolvedIP = resolvedIP;
-    let redirects = 0;
-
-    while (redirects < 5) {
-        let fetchUrl = currentUrl;
-        const fetchOptions = {
-            ...options,
-            redirect: 'manual',
-            signal: AbortSignal.timeout(FETCH_TIMEOUT)
-        };
-
-        if (currentResolvedIP) {
-            const parsedUrl = new URL(currentUrl);
-            const originalHost = parsedUrl.host;
-
-            if (currentResolvedIP.includes(':')) {
-                parsedUrl.hostname = `[${currentResolvedIP}]`;
-            } else {
-                parsedUrl.hostname = currentResolvedIP;
-            }
-            fetchUrl = parsedUrl.toString();
-
-            // Normalize headers
-            const headers = new Headers(options.headers || {});
-            headers['Host'] = originalHost;
-            fetchOptions.headers = headers;
-        }
-
-        const response = await fetch(fetchUrl, fetchOptions);
-
-        if ([301, 302, 303, 307, 308].includes(response.status)) {
-            redirects++;
-            let location = response.headers.get('Location');
-            if (!location) return response;
-
-            const absoluteLocation = new URL(location, currentUrl).toString();
-            currentUrl = absoluteLocation;
-
-            // Re-validate new location
-            const safety = await isSafeUrl(currentUrl);
-            if (!safety.safe) {
-                throw new Error("SSRF blocked during redirect");
-            }
-            currentResolvedIP = safety.resolvedIP;
-            continue;
-        }
-        return response;
-    }
-    throw new Error("Too many redirects");
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 }
 
 
 function isPrivateIP(ip) {
     if (!ip) return false;
     ip = ip.replace(/^\[/, '').replace(/\]$/, '');
-
-    // IPv4 check
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
-        const parts = ip.split('.').map(p => parseInt(p, 10));
-        if (parts[0] === 127) return true; // 127.0.0.0/8
-        if (parts[0] === 10) return true;  // 10.0.0.0/8
-        if (parts[0] === 172 && (parts[1] >= 16 && parts[1] <= 31)) return true; // 172.16.0.0/12
-        if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
-        if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16
-        if (parts[0] === 0) return true;   // 0.0.0.0/8
-        if (parts[0] >= 224) return true;  // Multicast & Reserved
-        return false;
+    const ipv4Patterns = [
+        /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
+        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
+    ];
+    for (const pattern of ipv4Patterns) {
+        if (pattern.test(ip)) return true;
     }
-
     if (ip.includes(':')) {
         ip = ip.split('%')[0];
-        if (ip === '::1' || ip === '::' || ip === '::0' || ip === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
+        if (ip === '::1' || ip === '::' || ip === '::0') return true;
         let fullIp = ip;
         if (fullIp.includes('::')) {
             const parts = fullIp.split('::');
-            const left = parts[0] ? parts[0].split(':') : [];
-            const right = parts[1] ? parts[1].split(':') : [];
-            const missing = 8 - (left.length + right.length);
-            const zeroes = new Array(missing).fill('0000');
-            fullIp = [...left, ...zeroes, ...right].map(s => s.padStart(4, '0')).join(':').toLowerCase();
-        } else {
-            fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
+            const leftCount = parts[0] ? parts[0].split(':').length : 0;
+            const rightCount = parts[1] ? parts[1].split(':').length : 0;
+            const missing = 8 - (leftCount + rightCount);
+            const zeroes = new Array(missing).fill('0000').join(':');
+            fullIp = `${parts[0] ? parts[0] + ':' : ''}${zeroes}${parts[1] ? ':' + parts[1] : ''}`;
         }
+        fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
 
-        // fc00::/7 (Unique Local Address)
-        // fe80::/10 (Link-Local Unicast)
+        // 0000:0000:0000:0000:0000:ffff:7f00:0001
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
             fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
             return true;
         }
 
-        // ff00::/8 (Multicast)
-        if (fullIp.startsWith('ff')) return true;
-
         if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
             // IPv4-mapped
-            const hex = fullIp.substring(30).replace(/:/g, '');
+            const hex = fullIp.substring(30).replace(':', '');
             const ipv4 = [
                 parseInt(hex.substring(0, 2), 16),
                 parseInt(hex.substring(2, 4), 16),
                 parseInt(hex.substring(4, 6), 16),
                 parseInt(hex.substring(6, 8), 16)
             ].join('.');
-            return isPrivateIP(ipv4);
+            for (const pattern of ipv4Patterns) {
+                if (pattern.test(ipv4)) return true;
+            }
         }
     }
     return false;
@@ -202,46 +142,34 @@ async function isSafeUrl(targetUrl) {
         const hostname = parsedUrl.hostname;
 
         if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
-            return { safe: false };
+            return false;
         }
 
         if (isPrivateIP(hostname)) {
-            return { safe: false };
+            return false;
         }
-
-        let resolvedIP = null;
 
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
-            const types = ['A', 'AAAA'];
-            const dnsPromises = types.map(type =>
-                fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`, {
-                    headers: { 'accept': 'application/dns-json' }
-                }).then(res => res.ok ? res.json() : null)
-            );
-
-            const results = await Promise.all(dnsPromises);
-            for (const data of results) {
+            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
+            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+            if (res.ok) {
+                const data = await res.json();
                 if (data && data.Answer) {
                     for (const record of data.Answer) {
                         if (record.type === 1 || record.type === 28) { // A or AAAA
                             if (isPrivateIP(record.data)) {
-                                return { safe: false };
-                            }
-                            if (!resolvedIP) {
-                                resolvedIP = record.data;
+                                return false;
                             }
                         }
                     }
                 }
             }
-        } else {
-            resolvedIP = hostname;
         }
-        return { safe: true, resolvedIP };
+        return true;
     } catch {
-        return { safe: false };
+        return false;
     }
 }
 
@@ -264,20 +192,20 @@ export async function handleRequest(request, env, ctx) {
                 }
 
                 // SSRF Protection
-                const safety = await isSafeUrl(targetUrl);
-                if (!safety.safe) {
+                const safeUrl = await isSafeUrl(targetUrl);
+                if (!safeUrl) {
                     return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
                 }
 
                 // Domain existence check
                 try {
                     const parsedUrl = new URL(targetUrl);
-                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx, safety.resolvedIP);
-                } catch (e) {
+                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
+                } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
 
-                const result = await performAudit(targetUrl, url.origin, env, ctx, safety.resolvedIP);
+                const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json" }
                 });
@@ -294,7 +222,7 @@ export async function handleRequest(request, env, ctx) {
         return new Response("Not Found", { status: 404 });
 }
 
-async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP = null) {
+async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
 
@@ -303,18 +231,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP 
 
     let totalScore = 0;
 
-    const iFetch = async (url, options = {}) => {
-        let currentUrl = url;
-        let resolvedIP = null;
-        if (currentUrl.startsWith(base)) {
-            resolvedIP = initialResolvedIP;
-        } else {
-            const safety = await isSafeUrl(currentUrl);
-            if (!safety.safe) throw new Error("SSRF blocked");
-            resolvedIP = safety.resolvedIP;
-        }
-        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx, resolvedIP);
-    };
+    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
 
     // 1. Discoverability & Bots
     let robotsFound = false;
@@ -472,15 +389,15 @@ Example:
         },
         {
             name: "ai.txt",
-                    prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
+            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
 Example:
 \`\`\`text
-# ai.txt - Spawning format
+# ai.txt — Spawning format
 # Declares TDM permissions per EU CDSM Article 4
 
 User-Agent: GPTBot
 Disallow: /
-\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+\`\`\`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         }
     ];
