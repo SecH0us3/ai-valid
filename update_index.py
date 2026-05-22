@@ -3,7 +3,7 @@ import re
 with open("ai-valid/src/index.js", "r") as f:
     content = f.read()
 
-# Add prompts to wellKnownFiles
+# All prompts to be managed by this script
 prompts = {
     "A2A Agent Card": "Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.",
     "API Catalog": "Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.",
@@ -19,41 +19,45 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-# Replace in wellKnownFiles using a single pass for performance
 special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
-names_pattern = "|".join(map(re.escape, prompts.keys()))
 
-# This regex matches the name and optionally an existing prompt.
-# It uses a non-greedy match for the prompt content, but we ensure it doesn't
-# stop prematurely by looking ahead for a known attribute or comma.
-pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
+# 1. First, remove ALL existing prompt keys for the names we manage to avoid duplicates
+for name in prompts.keys():
+    # Match name: '...' or name: "..."
+    # Then match any sequence of prompt: `...`, (including escaped versions)
+    # We use a non-greedy match for the prompt content.
+    content = re.sub(rf'(name:\s*["\']{re.escape(name)}["\'],)(\s*prompt:\s*\\?`.*?`,)+', r'\1', content, flags=re.DOTALL)
+
+# 2. Add/Update the prompts correctly
+names_pattern = "|".join(map(re.escape, prompts.keys()))
+pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
 
 def repl(match):
     quote = match.group(1)
     name = match.group(2)
-    prompt = prompts.get(name)
+    prompt_text = prompts[name]
 
-    if not prompt:
-        return match.group(0)
-
-    # Escape backticks and dollar signs in the prompt for template literals
-    escaped_prompt = prompt.replace("`", "\\`").replace("$", "\\$")
+    # Escape backticks and dollar signs for JS template literal
+    escaped_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
 
     if name in special_names:
-        # Standardize on double quotes and multiline format for special entries
         return f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
     else:
-        # Standardize on single quotes and inline format for other entries
         return f"name: '{name}', prompt: `{escaped_prompt}`,"
 
 content = pattern.sub(repl, content)
 
-# Idempotent return object update
+# 3. Ensure the return object includes prompt (idempotent)
 if "prompt: data.prompt," not in content:
     content = content.replace(
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
     )
+
+# 4. Fix pre-existing syntax errors in prompts NOT managed by this script
+# (Specifically ai.txt and tdmrep.json which were broken in original source)
+content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`, path: '/ai.txt'")
+content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`, path: '/.well-known/tdmrep.json'")
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)

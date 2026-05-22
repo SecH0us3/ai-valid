@@ -1,0 +1,38 @@
+
+> ai-valid@1.0.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.5 [39m[90m/app/ai-valid[39m
+
+ [31m❯[39m tests/static-routes.test.js [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/ssrf.test.js [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/index.test.js [2m([22m[2m0 test[22m[2m)[22m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 3 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/index.test.js[2m [ tests/index.test.js ][22m
+[41m[1m FAIL [22m[49m tests/ssrf.test.js[2m [ tests/ssrf.test.js ][22m
+[41m[1m FAIL [22m[49m tests/static-routes.test.js[2m [ tests/static-routes.test.js ][22m
+[31m[1mError[22m: Failed to parse source for import analysis because the content contains invalid JS syntax. If you are using JSX, make sure to name the file with the .jsx or .tsx extension.[39m
+  Plugin: [35mvite:import-analysis[39m
+  File: [36m/app/ai-valid/src/index.js[39m:401:764
+[33m  399 |  Disallow: /
+  400 |  \`\`\`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+  401 |  ...ctives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>\`
+      |                                                                 ^
+  402 |          }
+  403 |      ];[39m
+[90m [2m❯[22m TransformPluginContext._formatLog node_modules/vite/dist/node/chunks/node.js:[2m30375:39[22m[39m
+[90m [2m❯[22m TransformPluginContext.error node_modules/vite/dist/node/chunks/node.js:[2m30372:14[22m[39m
+[90m [2m❯[22m TransformPluginContext.transform node_modules/vite/dist/node/chunks/node.js:[2m27618:10[22m[39m
+[90m [2m❯[22m EnvironmentPluginContainer.transform node_modules/vite/dist/node/chunks/node.js:[2m30164:14[22m[39m
+[90m [2m❯[22m loadAndTransform node_modules/vite/dist/node/chunks/node.js:[2m24512:26[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m3 failed[39m[22m[90m (3)[39m
+[2m      Tests [22m [2mno tests[22m
+[2m   Start at [22m 08:08:26
+[2m   Duration [22m 1.64s[2m (transform 121ms, setup 0ms, import 0ms, tests 0ms, environment 3.39s)[22m
