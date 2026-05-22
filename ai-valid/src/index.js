@@ -110,14 +110,7 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, r
             fetchUrl = parsedUrl.toString();
 
             // Normalize headers
-            const headers = {};
-            if (options.headers) {
-                if (typeof options.headers.forEach === 'function') {
-                    options.headers.forEach((v, k) => { headers[k] = v; });
-                } else {
-                    Object.assign(headers, options.headers);
-                }
-            }
+            const headers = new Headers(options.headers || {});
             headers['Host'] = originalHost;
             fetchOptions.headers = headers;
         }
