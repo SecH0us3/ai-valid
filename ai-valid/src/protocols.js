@@ -2,15 +2,15 @@
  * Centralized Protocol Definitions for AI Readiness Audit
  */
 
-const formatTooltip = ({ what, why, impact, example }) => {
+export const formatTooltip = ({ what, why, impact, example }) => {
     return `<strong>What it is:</strong> ${what}<br/><br/><strong>Why it's critical:</strong> ${why}<br/><br/><strong>Impact of missing it:</strong> ${impact}<br/><br/><strong>Implementation Example:</strong> ${example}`;
 };
 
-const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
-    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description}
-Example structure:
+export const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
+    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description.trim()}
+Example:
 \`\`\`${exampleFormat}
-${example}
+${example.trim()}
 \`\`\``;
 };
 
