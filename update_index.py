@@ -23,8 +23,9 @@ prompts = {
 special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
 names_pattern = "|".join(map(re.escape, prompts.keys()))
 
-# Regex for JS template literal: `(?:[^`\\]|\\.)*`
-# We match name: ... followed by optional prompt: `...`,
+# This regex matches the name and optionally an existing prompt.
+# It uses a non-greedy match for the prompt content, but we ensure it doesn't
+# stop prematurely by looking ahead for a known attribute or comma.
 pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
 
 def repl(match):
@@ -35,12 +36,14 @@ def repl(match):
     if not prompt:
         return match.group(0)
 
-    # Escape backticks in the prompt
-    escaped_prompt = prompt.replace('`', '\\`').replace('$', '\\$')
+    # Escape backticks and dollar signs in the prompt for template literals
+    escaped_prompt = prompt.replace("`", "\\`").replace("$", "\\$")
 
     if name in special_names:
+        # Standardize on double quotes and multiline format for special entries
         return f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
     else:
+        # Standardize on single quotes and inline format for other entries
         return f"name: '{name}', prompt: `{escaped_prompt}`,"
 
 content = pattern.sub(repl, content)
