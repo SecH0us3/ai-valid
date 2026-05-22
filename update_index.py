@@ -22,9 +22,10 @@ prompts = {
 # Replace in wellKnownFiles using a single pass for performance
 special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
 names_pattern = "|".join(map(re.escape, prompts.keys()))
-# This pattern optionally matches an existing prompt to avoid duplication and allow updates.
-# It uses non-greedy matching for the prompt content to be safe.
-pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,(?:\s*prompt:\s*`.*?`,)?', re.DOTALL)
+
+# Regex for JS template literal: `(?:[^`\\]|\\.)*`
+# We match name: ... followed by optional prompt: `...`,
+pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
 
 def repl(match):
     quote = match.group(1)
@@ -34,16 +35,17 @@ def repl(match):
     if not prompt:
         return match.group(0)
 
+    # Escape backticks in the prompt
+    escaped_prompt = prompt.replace('`', '\\`').replace('$', '\\$')
+
     if name in special_names:
-        # Standardize on double quotes and multiline format for special entries
-        return f'name: "{name}",\n                    prompt: `{prompt}`,'
+        return f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
     else:
-        # Standardize on single quotes and inline format for other entries
-        return f"name: '{name}', prompt: `{prompt}`,"
+        return f"name: '{name}', prompt: `{escaped_prompt}`,"
 
 content = pattern.sub(repl, content)
 
-# Update the return object to include the prompt field (idempotent)
+# Idempotent return object update
 if "prompt: data.prompt," not in content:
     content = content.replace(
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",

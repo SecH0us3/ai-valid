@@ -88,6 +88,91 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
 }
 
+
+function isPrivateIP(ip) {
+    if (!ip) return false;
+    ip = ip.replace(/^\[/, '').replace(/\]$/, '');
+    const ipv4Patterns = [
+        /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
+        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
+    ];
+    for (const pattern of ipv4Patterns) {
+        if (pattern.test(ip)) return true;
+    }
+    if (ip.includes(':')) {
+        ip = ip.split('%')[0];
+        if (ip === '::1' || ip === '::' || ip === '::0') return true;
+        let fullIp = ip;
+        if (fullIp.includes('::')) {
+            const parts = fullIp.split('::');
+            const leftCount = parts[0] ? parts[0].split(':').length : 0;
+            const rightCount = parts[1] ? parts[1].split(':').length : 0;
+            const missing = 8 - (leftCount + rightCount);
+            const zeroes = new Array(missing).fill('0000').join(':');
+            fullIp = `${parts[0] ? parts[0] + ':' : ''}${zeroes}${parts[1] ? ':' + parts[1] : ''}`;
+        }
+        fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
+
+        // 0000:0000:0000:0000:0000:ffff:7f00:0001
+        if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
+            return true;
+        }
+
+        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
+            // IPv4-mapped
+            const hex = fullIp.substring(30).replace(':', '');
+            const ipv4 = [
+                parseInt(hex.substring(0, 2), 16),
+                parseInt(hex.substring(2, 4), 16),
+                parseInt(hex.substring(4, 6), 16),
+                parseInt(hex.substring(6, 8), 16)
+            ].join('.');
+            for (const pattern of ipv4Patterns) {
+                if (pattern.test(ipv4)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+async function isSafeUrl(targetUrl) {
+    try {
+        const parsedUrl = new URL(targetUrl);
+        const hostname = parsedUrl.hostname;
+
+        if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+            return false;
+        }
+
+        if (isPrivateIP(hostname)) {
+            return false;
+        }
+
+        // Only do DNS resolution for non-IP hostnames
+        if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
+            // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
+            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
+            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.Answer) {
+                    for (const record of data.Answer) {
+                        if (record.type === 1 || record.type === 28) { // A or AAAA
+                            if (isPrivateIP(record.data)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
 
@@ -104,6 +189,12 @@ export async function handleRequest(request, env, ctx) {
 
                 if (!targetUrl || !targetUrl.startsWith('http')) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
+                }
+
+                // SSRF Protection
+                const safeUrl = await isSafeUrl(targetUrl);
+                if (!safeUrl) {
+                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
                 }
 
                 // Domain existence check
@@ -168,6 +259,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             const sitemapMatch = robotsText.match(/^Sitemap:\s*(.*)$/im);
             if (sitemapMatch && sitemapMatch[1]) {
                 sitemapUrl = sitemapMatch[1].trim();
+
+                // Handle relative sitemap URL edge case
+                if (sitemapUrl.startsWith('/')) {
+                    sitemapUrl = `${base}${sitemapUrl}`;
+                }
             }
         }
 
@@ -290,6 +386,19 @@ Example:
 }
 \`\`\``, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> The W3C Text and Data Mining (TDM) Reservation Protocol.<br/><br/><strong>Why it's critical:</strong> It provides a machine-readable way to formally opt-out of or set policies for AI model training and automated scraping, which is critical for compliance with the EU CDSM Directive Article 4.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and scrapers may assume they have the right to scrape your data for model training purposes. You lack a standardized mechanism to declare your copyright reservation.<br/><br/><strong>Implementation Example:</strong> Host a JSON file at <code>/.well-known/tdmrep.json</code> with a <code>tdm-reservation</code> flag and an optional link to your licensing policy.`
+        },
+        {
+            name: "ai.txt",
+            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
+Example:
+\`\`\`text
+# ai.txt — Spawning format
+# Declares TDM permissions per EU CDSM Article 4
+
+User-Agent: GPTBot
+Disallow: /
+```, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         }
     ];
 
