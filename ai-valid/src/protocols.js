@@ -2,10 +2,30 @@
  * Centralized Protocol Definitions for AI Readiness Audit
  */
 
+/**
+ * Helper to format consistent audit tooltips.
+ *
+ * @param {Object} params
+ * @param {string} params.what - Description of the protocol or standard.
+ * @param {string} params.why - Explanation of its importance for AI readiness.
+ * @param {string} params.impact - Potential consequences if the protocol is missing.
+ * @param {string} params.example - Actionable steps to implement the protocol.
+ * @returns {string} Formatted HTML string for tooltips.
+ */
 const formatTooltip = ({ what, why, impact, example }) => {
     return `<strong>What it is:</strong> ${what}<br/><br/><strong>Why it's critical:</strong> ${why}<br/><br/><strong>Impact of missing it:</strong> ${impact}<br/><br/><strong>Implementation Example:</strong> ${example}`;
 };
 
+/**
+ * Helper to format consistent AI prompts for file creation/modification.
+ *
+ * @param {Object} params
+ * @param {string} params.path - Target file path (e.g., '/.well-known/ai-plugin.json').
+ * @param {string} params.description - Instructions on what the file should contain.
+ * @param {string} params.example - Code snippet showing the expected structure.
+ * @param {string} [params.exampleFormat='json'] - Language for the markdown code block.
+ * @returns {string} Formatted markdown string for AI instructions.
+ */
 const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
     return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description}
 Example structure:
@@ -14,6 +34,9 @@ ${example}
 \`\`\``;
 };
 
+/**
+ * Metadata for AI Bot and Crawler discoverability checks.
+ */
 export const botsMetadata = {
     robots: {
         name: "Robots.txt",
@@ -63,6 +86,9 @@ Allow: /
     }
 };
 
+/**
+ * Metadata for Content Accessibility and Semantic Markup checks.
+ */
 export const contentMetadata = {
     markdown: {
         name: "Content Neg. (MD)",
@@ -141,6 +167,9 @@ Examples of specific types:
     }
 };
 
+/**
+ * List of Well-Known files and protocols to be audited for AI readiness.
+ */
 export const wellKnownFiles = [
     {
         name: "A2A Agent Card",

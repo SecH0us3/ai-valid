@@ -24,3 +24,9 @@
 [wrangler:info] GET /style.css 200 OK (5ms)
 [wrangler:info] GET /app.client.js 200 OK (6ms)
 [wrangler:info] POST /api/audit 200 OK (446ms)
+⎔ Reloading local server...
+⎔ Local server updated and ready
+⎔ Reloading local server...
+⎔ Local server updated and ready
+⎔ Reloading local server...
+⎔ Local server updated and ready

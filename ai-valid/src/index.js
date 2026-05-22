@@ -81,6 +81,17 @@ export default {
     }
 };
 
+/**
+ * Helper to perform fetch requests with timeout and loopback handling.
+ *
+ * @param {string} url - Target URL.
+ * @param {Object} [options={}] - Fetch options.
+ * @param {string} base - The origin of the audit target.
+ * @param {string} requestOrigin - The origin of the current request.
+ * @param {Object} env - Environment variables.
+ * @param {Object} ctx - Context object.
+ * @returns {Promise<Response>} Fetch response.
+ */
 async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     if (base === requestOrigin) {
         const req = new Request(url, options);
@@ -137,6 +148,12 @@ function isPrivateIP(ip) {
     return false;
 }
 
+/**
+ * SSRF protection: Check if the target URL resolves to a safe (non-internal) IP.
+ *
+ * @param {string} targetUrl - The URL to validate.
+ * @returns {Promise<boolean>} True if safe, false otherwise.
+ */
 async function isSafeUrl(targetUrl) {
     try {
         const parsedUrl = new URL(targetUrl);
@@ -174,7 +191,16 @@ async function isSafeUrl(targetUrl) {
     }
 }
 
-export async function handleRequest(request, env, ctx) {
+export /**
+ * Main request handler for the AI-Valid Worker.
+ * Handles static routing, API endpoints, and SSRF protection.
+ *
+ * @param {Request} request - Incoming fetch request.
+ * @param {Object} env - Environment variables and bindings.
+ * @param {Object} ctx - Context object.
+ * @returns {Promise<Response>} HTTP Response.
+ */
+async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
@@ -223,6 +249,15 @@ export async function handleRequest(request, env, ctx) {
         return new Response("Not Found", { status: 404 });
 }
 
+/**
+ * Executes the full AI Readiness Audit for a given base URL.
+ *
+ * @param {string} baseUrl - The target domain to audit.
+ * @param {string} requestOrigin - Origin of the current worker request.
+ * @param {Object} env - Environment variables.
+ * @param {Object} ctx - Context object.
+ * @returns {Promise<Object>} Audit results and score.
+ */
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
@@ -234,7 +269,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
 
-    // 1. Discoverability & Bots
+    // 1. Analyze Discoverability & AI Bot Permissions
     let robotsFound = false;
     let hasAI = false;
     let sitemapFound = false;
@@ -275,7 +310,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
     } catch { /* silent fail for sitemap */ }
 
-    // 2. Content Accessibility
+    // 2. Evaluate Content Accessibility & Semantic Markup
     let supportsMarkdown = false;
     let hasContentSignal = false;
     let hasSchema = false;
@@ -326,7 +361,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
     } catch { /* silent fail */ }
 
-    // 3. Protocol Discovery Detailed Tooltips
+    // 3. Protocol Discovery & Verification
 
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
