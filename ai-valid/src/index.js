@@ -165,7 +165,7 @@ function isPrivateIP(ip) {
 
     if (ip.includes(':')) {
         ip = ip.split('%')[0];
-        if (ip === '::1' || ip === '::' || ip === '::0') return true;
+        if (ip === '::1' || ip === '::' || ip === '::0' || ip === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
         let fullIp = ip;
         if (fullIp.includes('::')) {
             const parts = fullIp.split('::');
