@@ -80,14 +80,13 @@ export default {
     }
 };
 
-async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, resolvedIP = null) {
+async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     if (base === requestOrigin) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
 
     let currentUrl = url;
-    let currentResolvedIP = resolvedIP;
     let redirects = 0;
 
     while (redirects < 5) {
@@ -97,23 +96,6 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, r
             redirect: 'manual',
             signal: AbortSignal.timeout(FETCH_TIMEOUT)
         };
-
-        if (currentResolvedIP) {
-            const parsedUrl = new URL(currentUrl);
-            const originalHost = parsedUrl.host;
-
-            if (currentResolvedIP.includes(':')) {
-                parsedUrl.hostname = `[${currentResolvedIP}]`;
-            } else {
-                parsedUrl.hostname = currentResolvedIP;
-            }
-            fetchUrl = parsedUrl.toString();
-
-            // Normalize headers
-            const headers = new Headers(options.headers || {});
-            headers['Host'] = originalHost;
-            fetchOptions.headers = headers;
-        }
 
         const response = await fetch(fetchUrl, fetchOptions);
 
@@ -130,7 +112,6 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, r
             if (!safety.safe) {
                 throw new Error("SSRF blocked during redirect");
             }
-            currentResolvedIP = safety.resolvedIP;
             continue;
         }
         return response;
@@ -272,12 +253,13 @@ export async function handleRequest(request, env, ctx) {
                 // Domain existence check
                 try {
                     const parsedUrl = new URL(targetUrl);
-                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx, safety.resolvedIP);
+                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch (e) {
+                    console.error("Domain check error:", e);
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
 
-                const result = await performAudit(targetUrl, url.origin, env, ctx, safety.resolvedIP);
+                const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json" }
                 });
@@ -294,7 +276,7 @@ export async function handleRequest(request, env, ctx) {
         return new Response("Not Found", { status: 404 });
 }
 
-async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP = null) {
+async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
     
@@ -305,15 +287,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP 
 
     const iFetch = async (url, options = {}) => {
         let currentUrl = url;
-        let resolvedIP = null;
-        if (currentUrl.startsWith(base)) {
-            resolvedIP = initialResolvedIP;
-        } else {
+        if (!currentUrl.startsWith(base)) {
             const safety = await isSafeUrl(currentUrl);
             if (!safety.safe) throw new Error("SSRF blocked");
-            resolvedIP = safety.resolvedIP;
         }
-        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx, resolvedIP);
+        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx);
     };
 
     // 1. Discoverability & Bots
