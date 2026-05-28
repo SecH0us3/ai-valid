@@ -98,11 +98,6 @@ document.addEventListener('DOMContentLoaded', () => {
         modalOverlay.classList.add('active');
     }
 
-    /**
-     * Initiates the audit process for a given domain.
-     *
-     * @param {string} domain - The target domain to audit.
-     */
     async function startAudit(domain) {
         const baseDomain = domain.trim().replace(/^https?:\/\//i, '').replace(/\/$/, '');
         if (!baseDomain) return;
@@ -174,11 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Renders the audit results into the dashboard UI.
-     *
-     * @param {Object} data - The audit result data from the API.
-     */
     function renderResults(data) {
         loadingOverlay.classList.add('hidden');
         dashboard.classList.remove('hidden');
@@ -215,14 +205,6 @@ document.addEventListener('DOMContentLoaded', () => {
         
         statusBadge.className = `metric-status ${overallStatusClass}`;
         statusBadge.textContent = overallStatusText;
-        // Update Vulnerabilities title with count when rendering failed grid
-        if (containerId === 'failed-grid') {
-            const titleElem = document.getElementById('title-failed');
-            if (titleElem) {
-                const count = items.length;
-                titleElem.innerHTML = `❌ Vulnerabilities <span class="count-badge">(${count})</span>`;
-            }
-        }
 
         if (items.length === 0) {
             const emptyMsg = document.createElement('div');
