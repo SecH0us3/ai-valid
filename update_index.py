@@ -16,10 +16,14 @@ prompts = {
     "robots.txt": "Create or update my robots.txt file to explicitly allow OAI-SearchBot and other relevant AI bots while setting standard rules for web crawlers.",
     "AI Directives": "Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data.",
     "Content Neg. (MD)": "Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.",
-    "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
+    "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training.",
+    "security.txt": "Create an RFC 9116 security.txt file at /.well-known/security.txt with security contact and expiration details.",
+    "Semantic Tags": "Ensure the main content of my HTML is wrapped in semantic HTML5 tags like <article> or <main> instead of generic <div> tags.",
+    "Heading Structure": "Ensure my HTML content uses a logical heading hierarchy (H1, H2, H3) with at least one <h1> tag representing the main title.",
+    "Mobile Viewport": 'Add a valid viewport meta tag (e.g., <meta name="viewport" content="width=device-width, initial-scale=1.0">) to my HTML head to optimize the page for mobile devices.'
 }
 
-special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
+special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal", "security.txt", "Semantic Tags", "Heading Structure", "Mobile Viewport"}
 
 # 1. Remove existing prompts to avoid duplicates
 for name in prompts.keys():

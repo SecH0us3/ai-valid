@@ -306,8 +306,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             robotsFound = true;
             totalScore += 5;
             robotsText = await r_robots.text();
-            const lowerText = robotsText.toLowerCase();
-            if (['oai-searchbot', 'gptbot', 'perplexitybot'].some(bot => lowerText.includes(bot))) {
+            if (/user-agent:\s*(oai-searchbot|gptbot|perplexitybot|claudebot|google-extended)\b/i.test(robotsText)) {
                 hasAI = true;
                 totalScore += 5;
             }
@@ -340,6 +339,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasContentSignal = false;
     let hasSchema = false;
     let schemaType = "";
+    let hasSemanticTags = false;
+    let hasHeadings = false;
+    let hasViewport = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -354,6 +356,22 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
         const htmlText = await r_home.text();
+
+        if (/<article[\s>/]/i.test(htmlText) || /<main[\s>/]/i.test(htmlText)) {
+            hasSemanticTags = true;
+            totalScore += 5;
+        }
+
+        if (/<h[1-6][\s>/]/i.test(htmlText)) {
+            hasHeadings = true;
+            totalScore += 5;
+        }
+
+        if (/<meta[^>]*name=["']viewport["'][^>]*>/i.test(htmlText)) {
+            hasViewport = true;
+            totalScore += 5;
+        }
+
         const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
         let match;
         while ((match = scriptRegex.exec(htmlText)) !== null) {
@@ -460,6 +478,11 @@ User-Agent: GPTBot
 Disallow: /
 \`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
+        },
+        {
+            name: "security.txt",
+                    prompt: `Create an RFC 9116 security.txt file at /.well-known/security.txt with security contact and expiration details.`, path: '/.well-known/security.txt', spec: 'https://www.rfc-editor.org/rfc/rfc9116', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> RFC 9116 standard defining a standard location for security policies and contact information.<br/><br/><strong>Why it's critical:</strong> It acts as a strong Trust and E-E-A-T (Experience, Expertise, Authoritativeness, and Trustworthiness) signal. AI models and evaluators look for standard organizational transparency. <br/><br/><strong>Impact of missing it:</strong> Can incrementally lower the inferred trustworthiness of your domain, potentially reducing citation probability in generative answers.<br/><br/><strong>Implementation Example:</strong> Host a text file at <code>/.well-known/security.txt</code> with your security contact email and expiration date.`
         }
     ];
 
@@ -535,10 +558,11 @@ Disallow: /
                 },
                 {
                     name: "AI Directives",
-                    prompt: `Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data.`,                    status: hasAI ? 'ok' : 'warn',
-                    message: "Rules for OAI-SearchBot/GPTBot.",
+                    prompt: `Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data.`,
+                    status: hasAI ? 'ok' : 'warn',
+                    message: "Rules for specific AI crawlers.",
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>, <code>ClaudeBot</code>, <code>Google-Extended</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAI ? 'Found' : 'Missing'
                 },
                 {
@@ -555,6 +579,9 @@ Disallow: /
         content: {
             supportsMarkdown,
             hasContentSignal,
+            hasSemanticTags,
+            hasHeadings,
+            hasViewport,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -622,6 +649,33 @@ Examples of specific types:
                     spec: "https://schema.org/docs/documents.html",
                     tooltip: `<strong>What it is:</strong> Schema.org JSON-LD semantic markup.<br/><br/><strong>Why it's critical:</strong> AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.<br/><br/><strong>Impact of missing it:</strong> The AI will have to "guess" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.<br/><br/><strong>Implementation Example:</strong> Add a JSON-LD script block defining your core entity, such as <code>@type: "Organization"</code> or <code>@type: "WebSite"</code>.`,
                     code: hasSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Semantic Tags",
+                    prompt: `Ensure the main content of my HTML is wrapped in semantic HTML5 tags like <article> or <main> instead of generic <div> tags.`,
+                    status: hasSemanticTags ? 'ok' : 'err',
+                    message: hasSemanticTags ? "Found semantic HTML tags" : "No semantic tags found",
+                    spec: "https://developer.mozilla.org/en-US/docs/Glossary/Semantics#semantics_in_html",
+                    tooltip: `<strong>What it is:</strong> Usage of semantic HTML5 tags such as <code>&lt;article&gt;</code> or <code>&lt;main&gt;</code> to enclose core content.<br/><br/><strong>Why it's critical:</strong> AI agents parse HTML to extract facts and meaning. Semantic tags clearly define the primary content area, drastically reducing the noise from headers, footers, and sidebars.<br/><br/><strong>Impact of missing it:</strong> Crawlers may struggle to differentiate your primary content from navigation links or advertisements, leading to poor summarization or lower citation rates in Generative Engines.<br/><br/><strong>Implementation Example:</strong> Wrap your core blog post or service description in an <code>&lt;article&gt;</code> tag instead of a generic <code>&lt;div id="content"&gt;</code>.`,
+                    code: hasSemanticTags ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Heading Structure",
+                    prompt: `Ensure my HTML content uses a logical heading hierarchy (H1, H2, H3) with at least one <h1> tag representing the main title.`,
+                    status: hasHeadings ? 'ok' : 'err',
+                    message: hasHeadings ? "Found heading hierarchy" : "Missing heading tags",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements",
+                    tooltip: `<strong>What it is:</strong> A logical sequence of heading tags (H1 to H6) that outlines the structure of the page.<br/><br/><strong>Why it's critical:</strong> LLMs love structured, clear hierarchies. Headings allow them to chunk the document into indexable sections, making passages easier to retrieve and cite.<br/><br/><strong>Impact of missing it:</strong> Content appears as a monolithic wall of text to bots, making it difficult to extract specific answers to user queries.<br/><br/><strong>Implementation Example:</strong> Use an <code>&lt;h1&gt;</code> for the main title, <code>&lt;h2&gt;</code> for major sections, and <code>&lt;h3&gt;</code> for sub-topics.`,
+                    code: hasHeadings ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Mobile Viewport",
+                    prompt: `Add a valid viewport meta tag (e.g., <meta name="viewport" content="width=device-width, initial-scale=1.0">) to my HTML head to optimize the page for mobile devices.`,
+                    status: hasViewport ? 'ok' : 'warn',
+                    message: hasViewport ? "Viewport meta tag present" : "Missing viewport tag",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag",
+                    tooltip: `<strong>What it is:</strong> A meta tag that controls the layout on mobile browsers.<br/><br/><strong>Why it's critical:</strong> Search engines heavily penalize pages that are not mobile-friendly. While AI bots primarily consume text, they are often built on top of traditional search crawler infrastructure (like Googlebot) which evaluates mobile readiness as a baseline quality signal.<br/><br/><strong>Impact of missing it:</strong> Your page may be de-prioritized in indexing, meaning your latest content might never reach the AI models.<br/><br/><strong>Implementation Example:</strong> Add <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;</code> to the <code>&lt;head&gt;</code> of your HTML.`,
+                    code: hasViewport ? 'Found' : 'Missing'
                 }
             ]
         },
