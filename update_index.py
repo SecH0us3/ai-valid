@@ -20,21 +20,25 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-# 1. CLEANING & OPTIMIZATION:
-# We use a single regex pass that correctly identifies and REPLACES existing prompts.
-# This prevents duplication and ensures valid syntax.
+# Build the alternation pattern from the known names (escaped for regex)
+# Must be defined BEFORE the pattern that uses it.
+names_pattern = '|'.join(re.escape(name) for name in prompts.keys())
 
-pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(\s*prompt:\s*`(\\.|[^`])*`,)?', re.DOTALL)
-# Matches name: "..." followed by an optional prompt: `...`
-# Regex for JS template literal: `(?:[^`\\]|\\.)*`
-pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
+# 1. CLEANING & OPTIMIZATION:
+# Robust regex that handles escaped backticks (\`) inside template literals.
+# Pattern: matches name: "..." or name: '...' followed by an optional prompt: `...`
+# The template literal body handles: escaped chars (\\.) OR any non-backtick char ([^`])
+pattern = re.compile(
+    rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`(?:\\.|[^`])*`,)?',
+    re.DOTALL
+)
 
 def replacer(match):
     name = match.group(3)
     prompt_text = prompts[name]
 
     # Escape backticks and dollar signs for safe inclusion in JS template literals
-    safe_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
+    safe_prompt = prompt_text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
 
     if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
         # Multiline format for results objects
@@ -52,10 +56,7 @@ if "prompt: data.prompt," not in content:
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
     )
 
-# 3. FIX PRE-EXISTING SYNTAX ERRORS (ai.txt and tdmrep.json)
-# These are broken in the original source because they contain unescaped triple backticks.
-content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`, path: '/ai.txt'")
-content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`, path: '/.well-known/tdmrep.json'")
-
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
+
+print("Done. Prompts updated successfully.")

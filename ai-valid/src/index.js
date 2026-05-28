@@ -85,7 +85,15 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    const response = await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT), redirect: 'manual' });
+    if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('Location');
+        if (!location) throw new Error('SSRF blocked during redirect');
+        const resolvedLocation = new URL(location, url).toString();
+        const safe = await isSafeUrl(resolvedLocation);
+        if (!safe) throw new Error('SSRF blocked during redirect');
+    }
+    return response;
 }
 
 
@@ -113,9 +121,10 @@ function isPrivateIP(ip) {
         }
         fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
 
-        // 0000:0000:0000:0000:0000:ffff:7f00:0001
+        // Block ULA (fc00::/7), link-local (fe80::/10), and multicast (ff00::/8)
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
-            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb') ||
+            fullIp.startsWith('ff')) {
             return true;
         }
 
