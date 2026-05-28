@@ -81,27 +81,13 @@ export default {
     }
 };
 
-
-/**
- * Helper to perform fetch requests with timeout and loopback handling.
- *
- * @param {string} url - Target URL.
- * @param {Object} [options={}] - Fetch options.
- * @param {string} base - The origin of the audit target.
- * @param {string} requestOrigin - The origin of the current request.
- * @param {Object} env - Environment variables.
- * @param {Object} ctx - Context object.
- * @returns {Promise<Response>} Fetch response.
- */
-async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, resolvedIP) {
-
+async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     if (base === requestOrigin) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
 
     let currentUrl = url;
-    let currentResolvedIP = resolvedIP;
     let redirects = 0;
 
     while (redirects < 5) {
@@ -111,23 +97,6 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, r
             redirect: 'manual',
             signal: AbortSignal.timeout(FETCH_TIMEOUT)
         };
-
-        if (currentResolvedIP) {
-            const parsedUrl = new URL(currentUrl);
-            const originalHost = parsedUrl.host;
-
-            if (currentResolvedIP.includes(':')) {
-                parsedUrl.hostname = `[${currentResolvedIP}]`;
-            } else {
-                parsedUrl.hostname = currentResolvedIP;
-            }
-            fetchUrl = parsedUrl.toString();
-
-            // Normalize headers
-            const headers = new Headers(options.headers || {});
-            headers['Host'] = originalHost;
-            fetchOptions.headers = headers;
-        }
 
         const response = await fetch(fetchUrl, fetchOptions);
 
@@ -144,7 +113,6 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx, r
             if (!safety.safe) {
                 throw new Error("SSRF blocked during redirect");
             }
-            currentResolvedIP = safety.resolvedIP;
             continue;
         }
         return response;
@@ -210,12 +178,6 @@ function isPrivateIP(ip) {
     return false;
 }
 
-/**
- * SSRF protection: Check if the target URL resolves to a safe (non-internal) IP.
- *
- * @param {string} targetUrl - The URL to validate.
- * @returns {Promise<boolean>} True if safe, false otherwise.
- */
 async function isSafeUrl(targetUrl) {
     try {
         const parsedUrl = new URL(targetUrl);
@@ -265,16 +227,7 @@ async function isSafeUrl(targetUrl) {
     }
 }
 
-export /**
- * Main request handler for the AI-Valid Worker.
- * Handles static routing, API endpoints, and SSRF protection.
- *
- * @param {Request} request - Incoming fetch request.
- * @param {Object} env - Environment variables and bindings.
- * @param {Object} ctx - Context object.
- * @returns {Promise<Response>} HTTP Response.
- */
-async function handleRequest(request, env, ctx) {
+export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
@@ -301,12 +254,13 @@ async function handleRequest(request, env, ctx) {
                 // Domain existence check
                 try {
                     const parsedUrl = new URL(targetUrl);
-                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx, safety.resolvedIP);
+                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch (e) {
+                    console.error("Domain check error:", e);
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
 
-                const result = await performAudit(targetUrl, url.origin, env, ctx, safety.resolvedIP);
+                const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json" }
                 });
@@ -323,18 +277,7 @@ async function handleRequest(request, env, ctx) {
         return new Response("Not Found", { status: 404 });
 }
 
-
-/**
- * Executes the full AI Readiness Audit for a given base URL.
- *
- * @param {string} baseUrl - The target domain to audit.
- * @param {string} requestOrigin - Origin of the current worker request.
- * @param {Object} env - Environment variables.
- * @param {Object} ctx - Context object.
- * @returns {Promise<Object>} Audit results and score.
- */
-async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP) {
-
+async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
     
@@ -345,18 +288,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP)
 
     const iFetch = async (url, options = {}) => {
         let currentUrl = url;
-        let resolvedIP = null;
-        if (currentUrl.startsWith(base)) {
-            resolvedIP = initialResolvedIP;
-        } else {
+        if (!currentUrl.startsWith(base)) {
             const safety = await isSafeUrl(currentUrl);
             if (!safety.safe) throw new Error("SSRF blocked");
-            resolvedIP = safety.resolvedIP;
         }
-        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx, resolvedIP);
+        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx);
     };
 
-    // 1. Analyze Discoverability & AI Bot Permissions
+    // 1. Discoverability & Bots
     let robotsFound = false;
     let hasAI = false;
     let sitemapFound = false;
@@ -397,7 +336,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP)
         }
     } catch { /* silent fail for sitemap */ }
 
-    // 2. Evaluate Content Accessibility & Semantic Markup
+    // 2. Content Accessibility
     let supportsMarkdown = false;
     let hasContentSignal = false;
     let hasSchema = false;
@@ -448,9 +387,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP)
         }
     } catch { /* silent fail */ }
 
-
     // 3. Protocol Discovery & Verification
-
 
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
@@ -520,10 +457,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP)
                     code: robotsFound ? 'Found' : 'Missing'
                 },
                 {
-
                     ...botsMetadata.aiDirectives,
                     status: hasAI ? 'ok' : 'warn',
-
                     message: "Rules for OAI-SearchBot/GPTBot.",
                     code: hasAI ? 'Found' : 'Missing'
                 },
@@ -546,9 +481,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx, initialResolvedIP)
                     code: supportsMarkdown ? 'Supported' : 'Failed'
                 },
                 {
-
                     ...contentMetadata.signal,
-
                     status: hasContentSignal ? 'ok' : 'warn',
                     message: "Usage policies header.",
                     code: hasContentSignal ? 'Found' : 'Missing'
