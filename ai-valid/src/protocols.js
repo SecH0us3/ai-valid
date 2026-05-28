@@ -12,7 +12,7 @@
  * @param {string} params.example - Actionable steps to implement the protocol.
  * @returns {string} Formatted HTML string for tooltips.
  */
-const formatTooltip = ({ what, why, impact, example }) => {
+export const formatTooltip = ({ what, why, impact, example }) => {
     return `<strong>What it is:</strong> ${what}<br/><br/><strong>Why it's critical:</strong> ${why}<br/><br/><strong>Impact of missing it:</strong> ${impact}<br/><br/><strong>Implementation Example:</strong> ${example}`;
 };
 
@@ -26,11 +26,11 @@ const formatTooltip = ({ what, why, impact, example }) => {
  * @param {string} [params.exampleFormat='json'] - Language for the markdown code block.
  * @returns {string} Formatted markdown string for AI instructions.
  */
-const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
-    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description}
-Example structure:
+export const formatPrompt = ({ path, description, example, exampleFormat = 'json' }) => {
+    return `Please check if \`${path}\` exists in my project. If it does, update it; otherwise, create it. ${description.trim()}
+Example:
 \`\`\`${exampleFormat}
-${example}
+${example.trim()}
 \`\`\``;
 };
 
