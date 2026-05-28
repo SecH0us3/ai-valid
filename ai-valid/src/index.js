@@ -306,8 +306,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             robotsFound = true;
             totalScore += 5;
             robotsText = await r_robots.text();
-            const lowerText = robotsText.toLowerCase();
-            if (['oai-searchbot', 'gptbot', 'perplexitybot', 'claudebot', 'google-extended'].some(bot => lowerText.includes(bot))) {
+            if (/user-agent:\s*(oai-searchbot|gptbot|perplexitybot|claudebot|google-extended)\b/i.test(robotsText)) {
                 hasAI = true;
                 totalScore += 5;
             }
@@ -358,12 +357,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         const htmlText = await r_home.text();
 
-        if (/<article/i.test(htmlText) || /<main/i.test(htmlText)) {
+        if (/<article[\s>/]/i.test(htmlText) || /<main[\s>/]/i.test(htmlText)) {
             hasSemanticTags = true;
             totalScore += 5;
         }
 
-        if (/<h[1-6]/i.test(htmlText)) {
+        if (/<h[1-6][\s>/]/i.test(htmlText)) {
             hasHeadings = true;
             totalScore += 5;
         }
