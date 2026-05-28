@@ -231,7 +231,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     let totalScore = 0;
 
-    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
+    const iFetch = async (url, options = {}) => {
+        if (!url.startsWith(base)) {
+            const safe = await isSafeUrl(url);
+            if (!safe) throw new Error("SSRF blocked");
+        }
+        return await internalFetch(url, options, base, requestOrigin, env, ctx);
+    };
 
     // 1. Discoverability & Bots
     let robotsFound = false;
