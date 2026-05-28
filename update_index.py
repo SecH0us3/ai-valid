@@ -4,6 +4,7 @@ with open("ai-valid/src/index.js", "r") as f:
     content = f.read()
 
 # PROMPTS DEFINITION
+# These are the prompts we want to manage via this script.
 prompts = {
     "A2A Agent Card": "Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.",
     "API Catalog": "Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.",
@@ -19,41 +20,40 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-# 1. OPTIMIZATION & IDEMPOTENCY: Use a regex that replaces existing prompts or adds new ones.
-# We match name: "..." followed by an optional prompt: `...`
+# 1. CLEANING & OPTIMIZATION:
+# We use a single regex pass that correctly identifies and REPLACES existing prompts.
+# This prevents duplication and ensures valid syntax.
+
 names_pattern = "|".join(map(re.escape, prompts.keys()))
-# This pattern matches name and POSSIBLY an existing prompt key that follows it.
-# JS objects usually have properties separated by commas and whitespace.
-pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(\s*prompt:\s*`.*?`,)?', re.DOTALL)
+# Matches name: "..." followed by an optional prompt: `...`
+# Regex for JS template literal: `(?:[^`\\]|\\.)*`
+pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
 
 def replacer(match):
-    name_entry = match.group(1)
-    quote = match.group(2)
     name = match.group(3)
     prompt_text = prompts[name]
 
-    # Escape backticks and dollar signs for template literal safety
-    escaped_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
+    # Escape backticks and dollar signs for safe inclusion in JS template literals
+    safe_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
 
     if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
-        # Standardize on double quotes for names and multiline format for these specific ones
-        # We rewrite the name part too to ensure consistency
-        return f'name: "{name}",\n                    prompt: `{escaped_prompt}`,'
+        # Multiline format for results objects
+        return f'name: "{name}",\n                    prompt: `{safe_prompt}`,'
     else:
-        # Standardize on single quotes and inline format for the rest
-        return f"name: '{name}', prompt: `{escaped_prompt}`,"
+        # Inline format for well-knowns list
+        return f"name: '{name}', prompt: `{safe_prompt}`,"
 
 content = pattern.sub(replacer, content)
 
-# 2. SCHEMA UPDATE: Ensure return object includes prompt (idempotent)
+# 2. SCHEMA UPDATE: Ensure the return object includes the prompt field (idempotent)
 if "prompt: data.prompt," not in content:
     content = content.replace(
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
     )
 
-# 3. FIX PRE-EXISTING SYNTAX ERRORS: Manually escape triple backticks in specific files
-# that are known to break JS template literals.
+# 3. FIX PRE-EXISTING SYNTAX ERRORS (ai.txt and tdmrep.json)
+# These are broken in the original source because they contain unescaped triple backticks.
 content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`, path: '/ai.txt'")
 content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`, path: '/.well-known/tdmrep.json'")
 

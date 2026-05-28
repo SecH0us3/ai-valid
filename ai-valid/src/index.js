@@ -389,7 +389,15 @@ Example:
         },
         {
             name: "ai.txt",
-            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format. Example (ai.txt Spawning format, EU CDSM Article 4): User-Agent: GPTBot / Disallow: /`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
+Example:
+\`\`\`text
+# ai.txt — Spawning format
+# Declares TDM permissions per EU CDSM Article 4
+
+User-Agent: GPTBot
+Disallow: /
+\`\`\`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         }
     ];
@@ -489,7 +497,7 @@ Example:
             results: [
                 {
                     name: "Content Neg. (MD)",
-                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML. The server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
+                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`,
                     status: supportsMarkdown ? 'ok' : 'err',
                     message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
