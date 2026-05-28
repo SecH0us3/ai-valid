@@ -23,7 +23,7 @@ special_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Si
 
 # 1. Remove existing prompts to avoid duplicates
 for name in prompts.keys():
-    content = re.sub(rf'(name:\s*["\']{re.escape(name)}["\'],)(\s*prompt:\s*\\?`.*?`,)+', r'\1', content, flags=re.DOTALL)
+    content = re.sub(rf'(name:\s*["\']{re.escape(name)}["\'],)(\s*prompt:\s*\\?`(?:[^`\\]|\\.)*`,)+', r'\1', content, flags=re.DOTALL)
 
 # 2. Add/Update correctly in one pass
 names_pattern = "|".join(map(re.escape, prompts.keys()))
@@ -49,8 +49,8 @@ if "prompt: data.prompt," not in content:
     )
 
 # 4. Fix pre-existing unescaped backticks
-content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`, path: '/ai.txt'")
-content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`, path: '/.well-known/tdmrep.json'")
+content = content.replace("```, path: '/ai.txt'", "\\`\\`\\`" + "`, path: '/ai.txt'")
+content = content.replace("```, path: '/.well-known/tdmrep.json'", "\\`\\`\\`" + "`, path: '/.well-known/tdmrep.json'")
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)

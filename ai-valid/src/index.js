@@ -85,52 +85,93 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+
+    let currentUrl = url;
+    let redirects = 0;
+
+    while (redirects < 5) {
+        let fetchUrl = currentUrl;
+        const fetchOptions = {
+            ...options,
+            redirect: 'manual',
+            signal: AbortSignal.timeout(FETCH_TIMEOUT)
+        };
+
+        const response = await fetch(fetchUrl, fetchOptions);
+
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+            redirects++;
+            let location = response.headers.get('Location');
+            if (!location) return response;
+
+            const absoluteLocation = new URL(location, currentUrl).toString();
+            currentUrl = absoluteLocation;
+
+            // Re-validate new location
+            const safety = await isSafeUrl(currentUrl);
+            if (!safety.safe) {
+                throw new Error("SSRF blocked during redirect");
+            }
+            continue;
+        }
+        return response;
+    }
+    throw new Error("Too many redirects");
 }
 
 
 function isPrivateIP(ip) {
     if (!ip) return false;
     ip = ip.replace(/^\[/, '').replace(/\]$/, '');
-    const ipv4Patterns = [
-        /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
-        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
-    ];
-    for (const pattern of ipv4Patterns) {
-        if (pattern.test(ip)) return true;
+
+    // IPv4 check
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+        const parts = ip.split('.').map(p => parseInt(p, 10));
+        if (parts[0] === 127) return true; // 127.0.0.0/8
+        if (parts[0] === 10) return true;  // 10.0.0.0/8
+        if (parts[0] === 172 && (parts[1] >= 16 && parts[1] <= 31)) return true; // 172.16.0.0/12
+        if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+        if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16
+        if (parts[0] === 0) return true;   // 0.0.0.0/8
+        if (parts[0] >= 224) return true;  // Multicast & Reserved
+        return false;
     }
+
     if (ip.includes(':')) {
         ip = ip.split('%')[0];
-        if (ip === '::1' || ip === '::' || ip === '::0') return true;
+        if (ip === '::1' || ip === '::' || ip === '::0' || ip === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
         let fullIp = ip;
         if (fullIp.includes('::')) {
             const parts = fullIp.split('::');
-            const leftCount = parts[0] ? parts[0].split(':').length : 0;
-            const rightCount = parts[1] ? parts[1].split(':').length : 0;
-            const missing = 8 - (leftCount + rightCount);
-            const zeroes = new Array(missing).fill('0000').join(':');
-            fullIp = `${parts[0] ? parts[0] + ':' : ''}${zeroes}${parts[1] ? ':' + parts[1] : ''}`;
+            const left = parts[0] ? parts[0].split(':') : [];
+            const right = parts[1] ? parts[1].split(':') : [];
+            const missing = 8 - (left.length + right.length);
+            const zeroes = new Array(missing).fill('0000');
+            fullIp = [...left, ...zeroes, ...right].map(s => s.padStart(4, '0')).join(':').toLowerCase();
+        } else {
+            fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
         }
-        fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
 
-        // 0000:0000:0000:0000:0000:ffff:7f00:0001
+        // fc00::/7 (Unique Local Address)
+        // fe80::/10 (Link-Local Unicast)
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
             fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
             return true;
         }
 
+        // ff00::/8 (Multicast)
+        if (fullIp.startsWith('ff')) return true;
+
         if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
             // IPv4-mapped
-            const hex = fullIp.substring(30).replace(':', '');
+            const hex = fullIp.substring(30).replace(/:/g, '');
             const ipv4 = [
                 parseInt(hex.substring(0, 2), 16),
                 parseInt(hex.substring(2, 4), 16),
                 parseInt(hex.substring(4, 6), 16),
                 parseInt(hex.substring(6, 8), 16)
             ].join('.');
-            for (const pattern of ipv4Patterns) {
-                if (pattern.test(ipv4)) return true;
-            }
+            return isPrivateIP(ipv4);
         }
     }
     return false;
@@ -142,40 +183,52 @@ async function isSafeUrl(targetUrl) {
         const hostname = parsedUrl.hostname;
 
         if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
-            return false;
+            return { safe: false };
         }
 
         if (isPrivateIP(hostname)) {
-            return false;
+            return { safe: false };
         }
+
+        let resolvedIP = null;
 
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
-            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
-            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
-            if (res.ok) {
-                const data = await res.json();
+            const types = ['A', 'AAAA'];
+            const dnsPromises = types.map(type =>
+                fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`, {
+                    headers: { 'accept': 'application/dns-json' }
+                }).then(res => res.ok ? res.json() : null)
+            );
+
+            const results = await Promise.all(dnsPromises);
+            for (const data of results) {
                 if (data && data.Answer) {
                     for (const record of data.Answer) {
                         if (record.type === 1 || record.type === 28) { // A or AAAA
                             if (isPrivateIP(record.data)) {
-                                return false;
+                                return { safe: false };
+                            }
+                            if (!resolvedIP) {
+                                resolvedIP = record.data;
                             }
                         }
                     }
                 }
             }
+        } else {
+            resolvedIP = hostname;
         }
-        return true;
+        return { safe: true, resolvedIP };
     } catch {
-        return false;
+        return { safe: false };
     }
 }
 
 export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
-
+        
         // --- Static File Routing ---
         if (request.method === "GET" && STATIC_ROUTES[url.pathname]) {
             return STATIC_ROUTES[url.pathname](request);
@@ -186,14 +239,14 @@ export async function handleRequest(request, env, ctx) {
             try {
                 let body = await request.json();
                 let targetUrl = body.targetUrl;
-
+                
                 if (!targetUrl || !targetUrl.startsWith('http')) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
                 }
 
                 // SSRF Protection
-                const safeUrl = await isSafeUrl(targetUrl);
-                if (!safeUrl) {
+                const safety = await isSafeUrl(targetUrl);
+                if (!safety.safe) {
                     return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
                 }
 
@@ -201,7 +254,8 @@ export async function handleRequest(request, env, ctx) {
                 try {
                     const parsedUrl = new URL(targetUrl);
                     await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
-                } catch {
+                } catch (e) {
+                    console.error("Domain check error:", e);
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
                 }
 
@@ -225,13 +279,20 @@ export async function handleRequest(request, env, ctx) {
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
-
+    
     // Ensure baseUrl doesn't end with slash securely
     const base = new URL(baseUrl).origin;
 
     let totalScore = 0;
 
-    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
+    const iFetch = async (url, options = {}) => {
+        let currentUrl = url;
+        if (!currentUrl.startsWith(base)) {
+            const safety = await isSafeUrl(currentUrl);
+            if (!safety.safe) throw new Error("SSRF blocked");
+        }
+        return await internalFetch(currentUrl, options, base, requestOrigin, env, ctx);
+    };
 
     // 1. Discoverability & Bots
     let robotsFound = false;
@@ -309,7 +370,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         }
                     }
                 };
-
+                
                 if (Array.isArray(json)) {
                     json.forEach(checkSchema);
                 } else if (json['@graph'] && Array.isArray(json['@graph'])) {
@@ -319,7 +380,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             } catch { /* ignore parse error */ }
         }
-
+        
         if (hasSchema) {
             totalScore += 10;
         }
@@ -327,36 +388,36 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     // 3. Protocol Discovery Detailed Tooltips
     const wellKnownFiles = [
-        {
-            name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 10,
-            tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/agent-card.json</code>, this is the standard Agent-to-Agent (A2A) protocol entry point.<br/><br/><strong>Why it's critical:</strong> It details exactly what your application is capable of doing from a machine's perspective, listing supported actions and state schemas.<br/><br/><strong>Impact of missing it:</strong> Other autonomous agents cannot dynamically negotiate data exchanges with your platform, isolating you from the agentic economy. You lose machine-to-machine traffic.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing your agent's name, capabilities (Skills), endpoints, and OAuth 2.0 authorization rules.`
+        { 
+            name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 10, 
+            tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/agent-card.json</code>, this is the standard Agent-to-Agent (A2A) protocol entry point.<br/><br/><strong>Why it's critical:</strong> It details exactly what your application is capable of doing from a machine's perspective, listing supported actions and state schemas.<br/><br/><strong>Impact of missing it:</strong> Other autonomous agents cannot dynamically negotiate data exchanges with your platform, isolating you from the agentic economy. You lose machine-to-machine traffic.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing your agent's name, capabilities (Skills), endpoints, and OAuth 2.0 authorization rules.` 
         },
-        {
+        { 
             name: 'API Catalog', prompt: `Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.`, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: true, points: 5,            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.`
         },
-        {
-            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 10,
-            tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.`
+        { 
+            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 10, 
+            tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.` 
         },
-        {
-            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json that exposes my application's core functions as tools.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 10,
-            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.`
+        { 
+            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json that exposes my application's core functions as tools.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 10, 
+            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.` 
         },
-        {
-            name: 'OAuth Discovery', prompt: `Create an OAuth 2.0 discovery metadata file at /.well-known/oauth-authorization-server following RFC 8414.`, path: '/.well-known/oauth-authorization-server', spec: 'https://www.rfc-editor.org/rfc/rfc8414.txt', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> RFC 8414 standard for OAuth 2.0 discovery.<br/><br/><strong>Why it's critical:</strong> Allows agents to understand exactly how to authenticate, which scopes are available, and where token endpoints live.<br/><br/><strong>Impact of missing it:</strong> Agents will be completely blocked out of secure/private areas of your platform. They cannot dynamically request user consent to perform actions on their behalf.<br/><br/><strong>Implementation Example:</strong> Serve metadata at <code>/.well-known/oauth-authorization-server</code> highlighting your issuer URI and token endpoints so LLM apps can securely acquire human user consent.`
+        { 
+            name: 'OAuth Discovery', prompt: `Create an OAuth 2.0 discovery metadata file at /.well-known/oauth-authorization-server following RFC 8414.`, path: '/.well-known/oauth-authorization-server', spec: 'https://www.rfc-editor.org/rfc/rfc8414.txt', isJson: true, points: 5, 
+            tooltip: `<strong>What it is:</strong> RFC 8414 standard for OAuth 2.0 discovery.<br/><br/><strong>Why it's critical:</strong> Allows agents to understand exactly how to authenticate, which scopes are available, and where token endpoints live.<br/><br/><strong>Impact of missing it:</strong> Agents will be completely blocked out of secure/private areas of your platform. They cannot dynamically request user consent to perform actions on their behalf.<br/><br/><strong>Implementation Example:</strong> Serve metadata at <code>/.well-known/oauth-authorization-server</code> highlighting your issuer URI and token endpoints so LLM apps can securely acquire human user consent.` 
         },
-        {
-            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 10,
-            tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.`
+        { 
+            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 10, 
+            tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.` 
         },
-        {
-            name: 'Universal Commerce', prompt: `Create a Universal Commerce Protocol (UCP) configuration at /.well-known/ucp pointing to my headless commerce endpoints.`, path: '/.well-known/ucp', spec: 'http://ucp.dev/', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> Protocol specifically designed for agent-based e-commerce operations.<br/><br/><strong>Why it's critical:</strong> It formats product data, checkout flows, and inventory constraints transparently for AI shopping agents.<br/><br/><strong>Impact of missing it:</strong> If your site sells goods or services, AI purchasing agents will not be able to seamlessly 'click' through your funnel or verify prices, losing you fully automated AI-driven revenue.<br/><br/><strong>Implementation Example:</strong> Place a configuration at <code>/.well-known/ucp</code> pointing agents to your headless commerce endpoints, allowing autonomous bots to load shopping carts.`
+        { 
+            name: 'Universal Commerce', prompt: `Create a Universal Commerce Protocol (UCP) configuration at /.well-known/ucp pointing to my headless commerce endpoints.`, path: '/.well-known/ucp', spec: 'http://ucp.dev/', isJson: true, points: 5, 
+            tooltip: `<strong>What it is:</strong> Protocol specifically designed for agent-based e-commerce operations.<br/><br/><strong>Why it's critical:</strong> It formats product data, checkout flows, and inventory constraints transparently for AI shopping agents.<br/><br/><strong>Impact of missing it:</strong> If your site sells goods or services, AI purchasing agents will not be able to seamlessly 'click' through your funnel or verify prices, losing you fully automated AI-driven revenue.<br/><br/><strong>Implementation Example:</strong> Place a configuration at <code>/.well-known/ucp</code> pointing agents to your headless commerce endpoints, allowing autonomous bots to load shopping carts.` 
         },
-        {
-            name: 'LLMs.txt', prompt: `Create an llms.txt file for my root directory containing an H1 title, a summary quote box, and a Markdown list of links to my technical documentation.`, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
-            tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.`
+        { 
+            name: 'LLMs.txt', prompt: `Create an llms.txt file for my root directory containing an H1 title, a summary quote box, and a Markdown list of links to my technical documentation.`, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10, 
+            tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.` 
         },
         {
             name: "LLMs-Full.txt",
@@ -389,15 +450,15 @@ Example:
         },
         {
             name: "ai.txt",
-            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
+                    prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
 Example:
 \`\`\`text
-# ai.txt — Spawning format
+# ai.txt - Spawning format
 # Declares TDM permissions per EU CDSM Article 4
 
 User-Agent: GPTBot
 Disallow: /
-\`\`\`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         }
     ];
@@ -497,7 +558,7 @@ Disallow: /
             results: [
                 {
                     name: "Content Neg. (MD)",
-                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
+                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`,
                     status: supportsMarkdown ? 'ok' : 'err',
                     message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
