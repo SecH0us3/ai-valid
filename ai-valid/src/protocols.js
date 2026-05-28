@@ -164,6 +164,39 @@ Examples of specific types:
             impact: "The AI will have to \"guess\" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.",
             example: "Add a JSON-LD script block defining your core entity, such as <code>@type: \"Organization\"</code> or <code>@type: \"WebSite\"</code>."
         })
+    },
+    semanticTags: {
+        name: "Semantic Tags",
+        spec: "https://developer.mozilla.org/en-US/docs/Glossary/Semantics#semantics_in_html",
+        prompt: "Please review my HTML templates and ensure the main content is wrapped in semantic HTML5 tags like `<article>` or `<main>` instead of generic `<div>` tags.",
+        tooltip: formatTooltip({
+            what: "Usage of semantic HTML5 tags such as <code>&lt;article&gt;</code> or <code>&lt;main&gt;</code> to enclose core content.",
+            why: "AI agents parse HTML to extract facts and meaning. Semantic tags clearly define the primary content area, drastically reducing the noise from headers, footers, and sidebars.",
+            impact: "Crawlers may struggle to differentiate your primary content from navigation links or advertisements, leading to poor summarization or lower citation rates in Generative Engines.",
+            example: "Wrap your core blog post or service description in an <code>&lt;article&gt;</code> tag instead of a generic <code>&lt;div id=\"content\"&gt;</code>."
+        })
+    },
+    headings: {
+        name: "Heading Structure",
+        spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements",
+        prompt: "Please review my HTML content and ensure it uses a logical heading hierarchy (H1, H2, H3) to structure the document. Ensure there is at least one `<h1>` tag representing the main title.",
+        tooltip: formatTooltip({
+            what: "A logical sequence of heading tags (H1 to H6) that outlines the structure of the page.",
+            why: "LLMs love structured, clear hierarchies. Headings allow them to chunk the document into indexable sections, making passages easier to retrieve and cite.",
+            impact: "Content appears as a monolithic wall of text to bots, making it difficult to extract specific answers to user queries.",
+            example: "Use an <code>&lt;h1&gt;</code> for the main title, <code>&lt;h2&gt;</code> for major sections, and <code>&lt;h3&gt;</code> for sub-topics."
+        })
+    },
+    viewport: {
+        name: "Mobile Viewport",
+        spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag",
+        prompt: 'Please ensure my HTML `<head>` includes a valid viewport meta tag to optimize the page for mobile devices. \nExample: `<meta name="viewport" content="width=device-width, initial-scale=1.0">`',
+        tooltip: formatTooltip({
+            what: "A meta tag that controls the layout on mobile browsers.",
+            why: "Search engines heavily penalize pages that are not mobile-friendly. While AI bots primarily consume text, they are often built on top of traditional search crawler infrastructure (like Googlebot) which evaluates mobile readiness as a baseline quality signal.",
+            impact: "Your page may be de-prioritized in indexing, meaning your latest content might never reach the AI models.",
+            example: 'Add <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;</code> to the <code>&lt;head&gt;</code> of your HTML.'
+        })
     }
 };
 
@@ -431,6 +464,26 @@ Disallow: /`
             why: "It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.",
             impact: "AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.",
             example: "Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>"
+        })
+    },
+    {
+        name: "security.txt",
+        path: '/.well-known/security.txt',
+        spec: 'https://www.rfc-editor.org/rfc/rfc9116',
+        isJson: false,
+        points: 5,
+        prompt: formatPrompt({
+            path: '/.well-known/security.txt',
+            description: "It should provide security contact information.",
+            exampleFormat: 'text',
+            example: `Contact: mailto:security@example.com
+Expires: 2026-12-31T23:59:59Z`
+        }),
+        tooltip: formatTooltip({
+            what: "RFC 9116 standard defining a standard location for security policies and contact information.",
+            why: "It acts as a strong Trust and E-E-A-T (Experience, Expertise, Authoritativeness, and Trustworthiness) signal. AI models and evaluators look for standard organizational transparency.",
+            impact: "Can incrementally lower the inferred trustworthiness of your domain, potentially reducing citation probability in generative answers.",
+            example: "Host a text file at <code>/.well-known/security.txt</code> with your security contact email and expiration date."
         })
     }
 ];

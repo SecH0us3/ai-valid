@@ -307,8 +307,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             robotsFound = true;
             totalScore += 5;
             robotsText = await r_robots.text();
-            const lowerText = robotsText.toLowerCase();
-            if (['oai-searchbot', 'gptbot', 'perplexitybot'].some(bot => lowerText.includes(bot))) {
+            if (/user-agent:\s*(oai-searchbot|gptbot|perplexitybot|claudebot|google-extended)\b/i.test(robotsText)) {
                 hasAI = true;
                 totalScore += 5;
             }
@@ -341,6 +340,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasContentSignal = false;
     let hasSchema = false;
     let schemaType = "";
+    let hasSemanticTags = false;
+    let hasHeadings = false;
+    let hasViewport = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -355,6 +357,22 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
         const htmlText = await r_home.text();
+
+        if (/<article[\s>/]/i.test(htmlText) || /<main[\s>/]/i.test(htmlText)) {
+            hasSemanticTags = true;
+            totalScore += 5;
+        }
+
+        if (/<h[1-6][\s>/]/i.test(htmlText)) {
+            hasHeadings = true;
+            totalScore += 5;
+        }
+
+        if (/<meta[^>]*name=["']viewport["'][^>]*>/i.test(htmlText)) {
+            hasViewport = true;
+            totalScore += 5;
+        }
+
         const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
         let match;
         while ((match = scriptRegex.exec(htmlText)) !== null) {
@@ -387,8 +405,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
     } catch { /* silent fail */ }
 
-    // 3. Protocol Discovery & Verification
-
+    // 3. Protocol Discovery Detailed Tooltips
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
     const batchSize = 4;
@@ -459,7 +476,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 {
                     ...botsMetadata.aiDirectives,
                     status: hasAI ? 'ok' : 'warn',
-                    message: "Rules for OAI-SearchBot/GPTBot.",
+                    message: "Rules for specific AI crawlers.",
                     code: hasAI ? 'Found' : 'Missing'
                 },
                 {
@@ -473,6 +490,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         content: {
             supportsMarkdown,
             hasContentSignal,
+            hasSemanticTags,
+            hasHeadings,
+            hasViewport,
             results: [
                 {
                     ...contentMetadata.markdown,
@@ -491,6 +511,24 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     status: hasSchema ? 'ok' : 'err',
                     message: hasSchema ? `Found ${schemaType} markup` : "No JSON-LD markup found",
                     code: hasSchema ? 'Found' : 'Missing'
+                },
+                {
+                    ...contentMetadata.semanticTags,
+                    status: hasSemanticTags ? 'ok' : 'err',
+                    message: hasSemanticTags ? "Found semantic HTML tags" : "No semantic tags found",
+                    code: hasSemanticTags ? 'Found' : 'Missing'
+                },
+                {
+                    ...contentMetadata.headings,
+                    status: hasHeadings ? 'ok' : 'err',
+                    message: hasHeadings ? "Found heading hierarchy" : "Missing heading tags",
+                    code: hasHeadings ? 'Found' : 'Missing'
+                },
+                {
+                    ...contentMetadata.viewport,
+                    status: hasViewport ? 'ok' : 'warn',
+                    message: hasViewport ? "Viewport meta tag present" : "Missing viewport tag",
+                    code: hasViewport ? 'Found' : 'Missing'
                 }
             ]
         },
