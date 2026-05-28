@@ -9,6 +9,7 @@ import openApiJson from '../public/openapi.json';
 import tdmrepJson from "../public/.well-known/tdmrep.json";
 import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
+import { wellKnownFiles, botsMetadata, contentMetadata } from "./protocols.js";
 
 const FETCH_TIMEOUT = 5000;
 const STATIC_ROUTES = {
@@ -405,177 +406,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     } catch { /* silent fail */ }
 
     // 3. Protocol Discovery Detailed Tooltips
-    const wellKnownFiles = [
-        { 
-            name: "A2A Agent Card",
-                    prompt: `Please check if \`/.well-known/agent-card.json\` exists in my project. If it does, update it; otherwise, create it. It must follow the A2A protocol specification. Add a JSON structure detailing my application's capabilities, endpoint routes, and OAuth 2.0 authorization rules. 
-Example structure:
-\`\`\`json
-{
-  "agent_id": "my-app-id",
-  "version": "1.0.0",
-  "capabilities": ["search", "read"],
-  "oauth2": {
-    "authorization_endpoint": "https://example.com/oauth/authorize",
-    "token_endpoint": "https://example.com/oauth/token"
-  }
-}
-\`\`\``, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 10, 
-            tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/agent-card.json</code>, this is the standard Agent-to-Agent (A2A) protocol entry point.<br/><br/><strong>Why it's critical:</strong> It details exactly what your application is capable of doing from a machine's perspective, listing supported actions and state schemas.<br/><br/><strong>Impact of missing it:</strong> Other autonomous agents cannot dynamically negotiate data exchanges with your platform, isolating you from the agentic economy. You lose machine-to-machine traffic.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing your agent's name, capabilities (Skills), endpoints, and OAuth 2.0 authorization rules.` 
-        },
-        { 
-            name: "API Catalog",
-                    prompt: `Please check if \`/.well-known/api-catalog\` exists in my project. If it does, modify it; otherwise, create it. It should be formatted as an RFC 9727 HTTP API Catalog linking to my OpenAPI or Swagger documentation.
-Example content:
-\`\`\`http
-Link: <https://example.com/openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json;version=3.0"
-\`\`\``, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: true, points: 5,            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.`
-        },
-        { 
-            name: "Agent Skills",
-                    prompt: `Please check if \`/.well-known/agent-skills/index.json\` exists. If it exists, update it; if not, create it. It must map my REST endpoints to actionable AI skills. 
-Example structure:
-\`\`\`json
-{
-  "skills": [
-    {
-      "name": "SearchDocs",
-      "description": "Searches the documentation",
-      "endpoint": "/api/search",
-      "method": "GET"
-    }
-  ]
-}
-\`\`\``, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 10, 
-            tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.` 
-        },
-        { 
-            name: "MCP Server",
-                    prompt: `Please check if \`/.well-known/mcp/server-card.json\` exists. If it exists, update it; otherwise, create it. It must expose a Model Context Protocol (MCP) server manifest. 
-Example content:
-\`\`\`json
-{
-  "mcp_version": "1.0",
-  "server": {
-    "url": "https://example.com/mcp/sse",
-    "features": ["resources", "tools"]
-  }
-}
-\`\`\``, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 10, 
-            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.` 
-        },
-        { 
-            name: "OAuth Discovery",
-                    prompt: `Please check if \`/.well-known/oauth-authorization-server\` exists. If it exists, update it; otherwise, create it. It must provide OAuth 2.0 discovery metadata compliant with RFC 8414. 
-Example:
-\`\`\`json
-{
-  "issuer": "https://example.com",
-  "authorization_endpoint": "https://example.com/oauth/authorize",
-  "token_endpoint": "https://example.com/oauth/token",
-  "scopes_supported": ["read", "write"]
-}
-\`\`\``, path: '/.well-known/oauth-authorization-server', spec: 'https://www.rfc-editor.org/rfc/rfc8414.txt', isJson: true, points: 5, 
-            tooltip: `<strong>What it is:</strong> RFC 8414 standard for OAuth 2.0 discovery.<br/><br/><strong>Why it's critical:</strong> Allows agents to understand exactly how to authenticate, which scopes are available, and where token endpoints live.<br/><br/><strong>Impact of missing it:</strong> Agents will be completely blocked out of secure/private areas of your platform. They cannot dynamically request user consent to perform actions on their behalf.<br/><br/><strong>Implementation Example:</strong> Serve metadata at <code>/.well-known/oauth-authorization-server</code> highlighting your issuer URI and token endpoints so LLM apps can securely acquire human user consent.` 
-        },
-        { 
-            name: "AI Plugin",
-                    prompt: `Please check if \`/.well-known/ai-plugin.json\` exists. If it exists, update it; otherwise, create it. It should define an AI Plugin manifest with detailed instructions for LLMs. 
-Example:
-\`\`\`json
-{
-  "schema_version": "v1",
-  "name_for_human": "My App",
-  "name_for_model": "my_app",
-  "description_for_model": "Use this plugin to query my app's data.",
-  "api": {
-    "type": "openapi",
-    "url": "https://example.com/openapi.yaml"
-  }
-}
-\`\`\``, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 10, 
-            tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.` 
-        },
-        { 
-            name: "Universal Commerce",
-                    prompt: `Please check if \`/.well-known/ucp\` exists. If it exists, update it; otherwise, create it. It should contain a Universal Commerce Protocol (UCP) configuration pointing to my headless commerce API. 
-Example:
-\`\`\`json
-{
-  "ucp_version": "1.0",
-  "checkout_url": "https://example.com/checkout",
-  "inventory_url": "https://example.com/inventory"
-}
-\`\`\``, path: '/.well-known/ucp', spec: 'http://ucp.dev/', isJson: true, points: 5, 
-            tooltip: `<strong>What it is:</strong> Protocol specifically designed for agent-based e-commerce operations.<br/><br/><strong>Why it's critical:</strong> It formats product data, checkout flows, and inventory constraints transparently for AI shopping agents.<br/><br/><strong>Impact of missing it:</strong> If your site sells goods or services, AI purchasing agents will not be able to seamlessly 'click' through your funnel or verify prices, losing you fully automated AI-driven revenue.<br/><br/><strong>Implementation Example:</strong> Place a configuration at <code>/.well-known/ucp</code> pointing agents to your headless commerce endpoints, allowing autonomous bots to load shopping carts.` 
-        },
-        { 
-            name: "LLMs.txt",
-                    prompt: `Please check if \`/llms.txt\` exists in my project root. If it exists, update it; otherwise, create it. It must provide a clean Markdown map of my technical docs. 
-Example format:
-\`\`\`markdown
-# My App Docs
-> A summary of the application.
-
-- [Getting Started](https://example.com/docs/start.md)
-- [API Reference](https://example.com/docs/api.md)
-\`\`\``, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10, 
-            tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.` 
-        },
-        {
-            name: "LLMs-Full.txt",
-                    prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation.
-Example format:
-\`\`\`markdown
-# My App Docs Full
-> A comprehensive guide to the application.
-
-## Getting Started
-To install the application...
-
-## API Reference
-### \`GET /api/users\`
-Returns a list of users...
-\`\`\``, path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
-            tooltip: `<strong>What it is:</strong> A complete, machine-readable export of your entire documentation in structured Markdown format.<br/><br/><strong>Why it's critical:</strong> It provides LLMs and agents with all context in a single file, eliminating the need for multiple API calls or web scraping.<br/><br/><strong>Impact of missing it:</strong> AI systems might miss critical details if they only read summaries or have to navigate multiple links, increasing the chance of hallucinations and degraded agentic capabilities.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms-full.txt</code> to your root. Include all relevant documentation content (e.g., tutorials, API references, code samples) concatenated in clear, structured Markdown.`
-        },
-        {
-            name: "TDM Reservation",
-            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.
-Example:
-\`\`\`json
-{
-  "tdm-reservation": 1,
-  "tdm-policy": "https://ai-valid.secmy.app/policies/tdm-policy.json"
-}
-\`\`\``, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> The W3C Text and Data Mining (TDM) Reservation Protocol.<br/><br/><strong>Why it's critical:</strong> It provides a machine-readable way to formally opt-out of or set policies for AI model training and automated scraping, which is critical for compliance with the EU CDSM Directive Article 4.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and scrapers may assume they have the right to scrape your data for model training purposes. You lack a standardized mechanism to declare your copyright reservation.<br/><br/><strong>Implementation Example:</strong> Host a JSON file at <code>/.well-known/tdmrep.json</code> with a <code>tdm-reservation</code> flag and an optional link to your licensing policy.`
-        },
-        {
-            name: "ai.txt",
-                    prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
-Example:
-\`\`\`text
-# ai.txt - Spawning format
-# Declares TDM permissions per EU CDSM Article 4
-
-User-Agent: GPTBot
-Disallow: /
-\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
-            tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
-        },
-        {
-            name: "security.txt",
-                    prompt: `Please check if \`/.well-known/security.txt\` exists. If it does not, create it following RFC 9116. It should provide security contact information.
-Example:
-\`\`\`text
-Contact: mailto:security@example.com
-Expires: 2026-12-31T23:59:59Z
-\`\`\``, path: '/.well-known/security.txt', spec: 'https://www.rfc-editor.org/rfc/rfc9116', isJson: false, points: 5,
-            tooltip: `<strong>What it is:</strong> RFC 9116 standard defining a standard location for security policies and contact information.<br/><br/><strong>Why it's critical:</strong> It acts as a strong Trust and E-E-A-T (Experience, Expertise, Authoritativeness, and Trustworthiness) signal. AI models and evaluators look for standard organizational transparency. <br/><br/><strong>Impact of missing it:</strong> Can incrementally lower the inferred trustworthiness of your domain, potentially reducing citation probability in generative answers.<br/><br/><strong>Implementation Example:</strong> Host a text file at <code>/.well-known/security.txt</code> with your security contact email and expiration date.`
-        }
-    ];
-
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
     const batchSize = 4;
@@ -638,52 +468,21 @@ Expires: 2026-12-31T23:59:59Z
             sitemapFound,
             results: [
                 {
-                    name: "robots.txt",
-                    prompt: `Please check if \`/robots.txt\` exists. If it exists, modify it; otherwise, create it. Add explicit bot designations to allow OAI-SearchBot while setting standard rules for web crawlers. 
-Example:
-\`\`\`text
-User-agent: *
-Allow: /
-
-User-agent: OAI-SearchBot
-Allow: /
-\`\`\``,
+                    ...botsMetadata.robots,
                     status: robotsFound ? 'ok' : 'err',
                     message: robotsFound ? "Found manifest file" : "Not Found manifest file",
-                    spec: "https://developers.google.com/search/docs/crawling-indexing/robots/intro",
-                    tooltip: `<strong>What it is:</strong> Standard web crawler directives located at <code>/robots.txt</code>.<br/><br/><strong>Why it's critical:</strong> It is the first place legacy and modern bots look for permissions on what content they are allowed to index or scrape.<br/><br/><strong>Impact of missing it:</strong> AI bots may either scrape data you wish to keep private (training models on your intellectual property), or they might adopt a strict default and completely ignore your site in AI search results (like Perplexity or SearchGPT).<br/><br/><strong>Implementation Example:</strong> Add explicit bot designations in your <code>robots.txt</code>, such as: <br><code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: robotsFound ? 'Found' : 'Missing'
                 },
                 {
-                    name: "AI Directives",
-                    prompt: `Please check if \`/robots.txt\` exists. If it exists, update it; otherwise, create it. Add explicit directives to strategically manage generative AI scraping. Allow search bots while disallowing training data scrapers.
-Example:
-\`\`\`text
-User-agent: GPTBot
-Disallow: /
-
-User-agent: ClaudeBot
-Disallow: /
-
-User-agent: Google-Extended
-Disallow: /
-
-User-agent: OAI-SearchBot
-Allow: /
-\`\`\``,
+                    ...botsMetadata.aiDirectives,
                     status: hasAI ? 'ok' : 'warn',
                     message: "Rules for specific AI crawlers.",
-                    spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>, <code>ClaudeBot</code>, <code>Google-Extended</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAI ? 'Found' : 'Missing'
                 },
                 {
-                    name: "sitemap.xml",
-                    prompt: `Please generate a \`sitemap.xml\` for my project if it doesn't exist, and ensure my \`/robots.txt\` includes a \`Sitemap: <url>\` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.`,
+                    ...botsMetadata.sitemap,
                     status: sitemapFound ? 'ok' : 'err',
                     message: sitemapFound ? "Sitemap found" : "No Sitemap found",
-                    spec: "https://www.sitemaps.org/protocol.html",
-                    tooltip: `<strong>What it is:</strong> An XML file that lists URLs for a site along with additional metadata about each URL.<br/><br/><strong>Why it's critical:</strong> It allows AI search bots (like SearchGPT and Perplexity) and traditional search engines to discover your content efficiently without having to guess paths or follow every link blindly.<br/><br/><strong>Impact of missing it:</strong> AI crawlers might miss critical new or updated content on your platform, significantly reducing your visibility in AI-generated answers and search results.<br/><br/><strong>Implementation Example:</strong> Host a <code>/sitemap.xml</code> and add <code>Sitemap: https://yourdomain.com/sitemap.xml</code> to your <code>robots.txt</code>.`,
                     code: sitemapFound ? 'Found' : 'Missing'
                 }
             ]
@@ -696,99 +495,39 @@ Allow: /
             hasViewport,
             results: [
                 {
-                    name: "Content Neg. (MD)",
-                    prompt: `Please analyze my server's routing or middleware logic. If content negotiation exists, update it; otherwise, implement it. When a client request includes the header \`Accept: text/markdown\`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
+                    ...contentMetadata.markdown,
                     status: supportsMarkdown ? 'ok' : 'err',
                     message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
-                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
-                    tooltip: `<strong>What it is:</strong> Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.<br/><br/><strong>Why it's critical:</strong> LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.<br/><br/><strong>Impact of missing it:</strong> Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.<br/><br/><strong>Implementation Example:</strong> Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps.`,
                     code: supportsMarkdown ? 'Supported' : 'Failed'
                 },
                 {
-                    name: "Content-Signal",
-                    prompt: `Please analyze my server configuration or application middleware. If a \`Content-Signal\` response header is already set, update it; otherwise, implement logic to add it. This header explicitly declares AI scraping and training policies.
-Example header to add to responses:
-\`Content-Signal: ai-train=no, search=yes\``,
+                    ...contentMetadata.signal,
                     status: hasContentSignal ? 'ok' : 'warn',
                     message: "Usage policies header.",
-                    spec: "https://contentsignals.org/",
-                    tooltip: `<strong>What it is:</strong> An explicit HTTP Header signaling legal and policy usage metadata for machine consumers.<br/><br/><strong>Why it's critical:</strong> It informs scraping bots at the network level whether your content is free for LLM training, requires attribution, or is completely restricted copyright.<br/><br/><strong>Impact of missing it:</strong> Machine agents assume 'fair game' for all scraped data. Without signal compliance, you have no technical ground to prevent proprietary data from becoming automated training fodder.<br/><br/><strong>Implementation Example:</strong> Ensure your server responses (especially for content heavy pages) include the header: <code>Content-Signal: ai-train=no, search=yes</code> to explicitly block big tech from stealing IP for training while retaining search indexing.`,
                     code: hasContentSignal ? 'Found' : 'Missing'
                 },
                 {
-                    name: "Semantic JSON-LD",
-                    prompt: `Please check my website's HTML and implement appropriate Schema.org JSON-LD markup. First, ask me for a description of my service/business. Then, please consult https://schema.org/LocalBusiness to find the most specific and relevant \`@type\` for my business (e.g., Store, FinancialService, MedicalClinic, etc.), and generate the correct \`application/ld+json\` script block to help AI agents semantically understand my content.
-
-Examples of specific types:
-
-**For a Financial Service (https://schema.org/FinancialService):**
-\`\`\`html
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "FinancialService",
-  "name": "Trusty Bank",
-  "description": "A trusted local bank offering loans and savings accounts.",
-  "address": {
-    "@type": "PostalAddress",
-    "streetAddress": "123 Finance St",
-    "addressLocality": "Moneyville",
-    "addressRegion": "NY",
-    "postalCode": "10001"
-  }
-}
-</script>
-\`\`\`
-
-**For a Retail Store (https://schema.org/Store):**
-\`\`\`html
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "Store",
-  "name": "Super Electronics",
-  "description": "The best place to buy gadgets and gizmos.",
-  "address": {
-    "@type": "PostalAddress",
-    "streetAddress": "456 Tech Ave",
-    "addressLocality": "Silicon City",
-    "addressRegion": "CA",
-    "postalCode": "94000"
-  }
-}
-</script>
-\`\`\``,
+                    ...contentMetadata.jsonld,
                     status: hasSchema ? 'ok' : 'err',
                     message: hasSchema ? `Found ${schemaType} markup` : "No JSON-LD markup found",
-                    spec: "https://schema.org/docs/documents.html",
-                    tooltip: `<strong>What it is:</strong> Schema.org JSON-LD semantic markup.<br/><br/><strong>Why it's critical:</strong> AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.<br/><br/><strong>Impact of missing it:</strong> The AI will have to "guess" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.<br/><br/><strong>Implementation Example:</strong> Add a JSON-LD script block defining your core entity, such as <code>@type: "Organization"</code> or <code>@type: "WebSite"</code>.`,
                     code: hasSchema ? 'Found' : 'Missing'
                 },
                 {
-                    name: "Semantic Tags",
-                    prompt: `Please review my HTML templates and ensure the main content is wrapped in semantic HTML5 tags like \`<article>\` or \`<main>\` instead of generic \`<div>\` tags.`,
+                    ...contentMetadata.semanticTags,
                     status: hasSemanticTags ? 'ok' : 'err',
                     message: hasSemanticTags ? "Found semantic HTML tags" : "No semantic tags found",
-                    spec: "https://developer.mozilla.org/en-US/docs/Glossary/Semantics#semantics_in_html",
-                    tooltip: `<strong>What it is:</strong> Usage of semantic HTML5 tags such as <code>&lt;article&gt;</code> or <code>&lt;main&gt;</code> to enclose core content.<br/><br/><strong>Why it's critical:</strong> AI agents parse HTML to extract facts and meaning. Semantic tags clearly define the primary content area, drastically reducing the noise from headers, footers, and sidebars.<br/><br/><strong>Impact of missing it:</strong> Crawlers may struggle to differentiate your primary content from navigation links or advertisements, leading to poor summarization or lower citation rates in Generative Engines.<br/><br/><strong>Implementation Example:</strong> Wrap your core blog post or service description in an <code>&lt;article&gt;</code> tag instead of a generic <code>&lt;div id="content"&gt;</code>.`,
                     code: hasSemanticTags ? 'Found' : 'Missing'
                 },
                 {
-                    name: "Heading Structure",
-                    prompt: `Please review my HTML content and ensure it uses a logical heading hierarchy (H1, H2, H3) to structure the document. Ensure there is at least one \`<h1>\` tag representing the main title.`,
+                    ...contentMetadata.headings,
                     status: hasHeadings ? 'ok' : 'err',
                     message: hasHeadings ? "Found heading hierarchy" : "Missing heading tags",
-                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements",
-                    tooltip: `<strong>What it is:</strong> A logical sequence of heading tags (H1 to H6) that outlines the structure of the page.<br/><br/><strong>Why it's critical:</strong> LLMs love structured, clear hierarchies. Headings allow them to chunk the document into indexable sections, making passages easier to retrieve and cite.<br/><br/><strong>Impact of missing it:</strong> Content appears as a monolithic wall of text to bots, making it difficult to extract specific answers to user queries.<br/><br/><strong>Implementation Example:</strong> Use an <code>&lt;h1&gt;</code> for the main title, <code>&lt;h2&gt;</code> for major sections, and <code>&lt;h3&gt;</code> for sub-topics.`,
                     code: hasHeadings ? 'Found' : 'Missing'
                 },
                 {
-                    name: "Mobile Viewport",
-                    prompt: `Please ensure my HTML \`<head>\` includes a valid viewport meta tag to optimize the page for mobile devices. \nExample: \`<meta name="viewport" content="width=device-width, initial-scale=1.0">\``,
+                    ...contentMetadata.viewport,
                     status: hasViewport ? 'ok' : 'warn',
                     message: hasViewport ? "Viewport meta tag present" : "Missing viewport tag",
-                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag",
-                    tooltip: `<strong>What it is:</strong> A meta tag that controls the layout on mobile browsers.<br/><br/><strong>Why it's critical:</strong> Search engines heavily penalize pages that are not mobile-friendly. While AI bots primarily consume text, they are often built on top of traditional search crawler infrastructure (like Googlebot) which evaluates mobile readiness as a baseline quality signal.<br/><br/><strong>Impact of missing it:</strong> Your page may be de-prioritized in indexing, meaning your latest content might never reach the AI models.<br/><br/><strong>Implementation Example:</strong> Add <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;</code> to the <code>&lt;head&gt;</code> of your HTML.`,
                     code: hasViewport ? 'Found' : 'Missing'
                 }
             ]
