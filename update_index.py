@@ -4,7 +4,6 @@ with open("ai-valid/src/index.js", "r") as f:
     content = f.read()
 
 # PROMPTS DEFINITION
-# These are the prompts we want to manage via this script.
 prompts = {
     "A2A Agent Card": "Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.",
     "API Catalog": "Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.",
@@ -20,43 +19,42 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-# Build the alternation pattern from the known names (escaped for regex)
-# Must be defined BEFORE the pattern that uses it.
-names_pattern = '|'.join(re.escape(name) for name in prompts.keys())
+# CONFIGURATION
+multiline_names = {"robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"}
 
-# 1. CLEANING & OPTIMIZATION:
-# Robust regex that handles escaped backticks (\`) inside template literals.
-# Pattern: matches name: "..." or name: '...' followed by an optional prompt: `...`
-# The template literal body handles: escaped chars (\\.) OR any non-backtick char ([^`])
-pattern = re.compile(
-    rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`(?:\\.|[^`])*`,)?',
-    re.DOTALL
-)
+# 1. CLEANING STEP (Idempotency)
+for name in prompts.keys():
+    content = re.sub(rf'(name:\s*["\']{re.escape(name)}["\'],)\s*prompt:\s*`.*?`,', r'\1', content, flags=re.DOTALL)
 
-def replacer(match):
-    name = match.group(3)
+# 2. OPTIMIZATION STEP (O(N) Performance)
+names_pattern = "|".join(map(re.escape, prompts.keys()))
+pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
+
+def inject_prompt(match):
+    quote = match.group(1)
+    name = match.group(2)
     prompt_text = prompts[name]
-
-    # Escape backticks and dollar signs for safe inclusion in JS template literals
-    safe_prompt = prompt_text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
-
-    if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
-        # Multiline format for results objects
+    safe_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
+    if name in multiline_names:
         return f'name: "{name}",\n                    prompt: `{safe_prompt}`,'
     else:
-        # Inline format for well-knowns list
         return f"name: '{name}', prompt: `{safe_prompt}`,"
 
-content = pattern.sub(replacer, content)
+content = pattern.sub(inject_prompt, content)
 
-# 2. SCHEMA UPDATE: Ensure the return object includes the prompt field (idempotent)
+# 3. SCHEMA CONSISTENCY
 if "prompt: data.prompt," not in content:
     content = content.replace(
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
         "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
     )
 
+# 4. FIX PRE-EXISTING SYNTAX ERRORS (ai.txt, tdmrep.json, LLMs-Full.txt, Semantic JSON-LD)
+# Escape unescaped triple backticks that close template literals prematurely
+content = content.replace("User-Agent: GPTBot\nDisallow: /\n```, path: '/ai.txt'", "User-Agent: GPTBot\\nDisallow: /\\n\\`\\`\\``, path: '/ai.txt'")
+content = content.replace("  \"tdm-policy\": \"https://ai-valid.secmy.app/policies/tdm-policy.json\"\n}\n```, path: '/.well-known/tdmrep.json'", "  \"tdm-policy\": \"https://ai-valid.secmy.app/policies/tdm-policy.json\"\\n}\\n\\`\\`\\``, path: '/.well-known/tdmrep.json'")
+content = content.replace("Returns a list of users...\n```, path: '/llms-full.txt'", "Returns a list of users...\\n\\`\\`\\``, path: '/llms-full.txt'")
+content = content.replace("</script>\n```, status: hasSchema", "</script>\\n\\`\\`\\``, status: hasSchema")
+
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
-
-print("Done. Prompts updated successfully.")
