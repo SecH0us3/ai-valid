@@ -24,7 +24,7 @@ prompts = {
 # We use a single regex pass that correctly identifies and REPLACES existing prompts.
 # This prevents duplication and ensures valid syntax.
 
-names_pattern = "|".join(map(re.escape, prompts.keys()))
+pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(\s*prompt:\s*`(\\.|[^`])*`,)?', re.DOTALL)
 # Matches name: "..." followed by an optional prompt: `...`
 # Regex for JS template literal: `(?:[^`\\]|\\.)*`
 pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`(?:[^`\\]|\\.)*`,)?', re.DOTALL)
