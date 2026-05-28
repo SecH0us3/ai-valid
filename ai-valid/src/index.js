@@ -85,7 +85,15 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    const response = await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT), redirect: 'manual' });
+    if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('Location');
+        if (!location) throw new Error('SSRF blocked during redirect');
+        const resolvedLocation = new URL(location, url).toString();
+        const safe = await isSafeUrl(resolvedLocation);
+        if (!safe) throw new Error('SSRF blocked during redirect');
+    }
+    return response;
 }
 
 
@@ -114,8 +122,10 @@ function isPrivateIP(ip) {
         fullIp = fullIp.split(':').map(segment => segment.padStart(4, '0').toLowerCase()).join(':');
 
         // 0000:0000:0000:0000:0000:ffff:7f00:0001
+        // Block ULA (fc00::/7), link-local (fe80::/10), and multicast (ff00::/8)
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
-            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb') ||
+            fullIp.startsWith('ff')) {
             return true;
         }
 
@@ -231,7 +241,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     let totalScore = 0;
 
-    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
+    const iFetch = async (url, options = {}) => {
+        if (!url.startsWith(base)) {
+            const safe = await isSafeUrl(url);
+            if (!safe) throw new Error('SSRF blocked');
+        }
+        return await internalFetch(url, options, base, requestOrigin, env, ctx);
+    };
 
     // 1. Discoverability & Bots
     let robotsFound = false;
@@ -360,42 +376,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         },
         {
             name: "LLMs-Full.txt",
-                    prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation.
-Example format:
-\`\`\`markdown
-# My App Docs Full
-> A comprehensive guide to the application.
-
-## Getting Started
-To install the application...
-
-## API Reference
-### \`GET /api/users\`
-Returns a list of users...
-\`\`\``, path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
+                    prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation. Format it with an H1 title, a summary blockquote, and sections for Getting Started, API Reference, and other key topics.`, path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
             tooltip: `<strong>What it is:</strong> A complete, machine-readable export of your entire documentation in structured Markdown format.<br/><br/><strong>Why it's critical:</strong> It provides LLMs and agents with all context in a single file, eliminating the need for multiple API calls or web scraping.<br/><br/><strong>Impact of missing it:</strong> AI systems might miss critical details if they only read summaries or have to navigate multiple links, increasing the chance of hallucinations and degraded agentic capabilities.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms-full.txt</code> to your root. Include all relevant documentation content (e.g., tutorials, API references, code samples) concatenated in clear, structured Markdown.`
         },
         {
             name: "TDM Reservation",
-            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.
-Example:
-\`\`\`json
-{
-  "tdm-reservation": 1,
-  "tdm-policy": "https://ai-valid.secmy.app/policies/tdm-policy.json"
-}
-\`\`\``, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
+            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol. Set tdm-reservation to 1 and point tdm-policy to your policy URL (e.g. https://yourdomain.com/policies/tdm-policy.json). Also create the /policies/tdm-policy.json file if it does not exist.`, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> The W3C Text and Data Mining (TDM) Reservation Protocol.<br/><br/><strong>Why it's critical:</strong> It provides a machine-readable way to formally opt-out of or set policies for AI model training and automated scraping, which is critical for compliance with the EU CDSM Directive Article 4.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and scrapers may assume they have the right to scrape your data for model training purposes. You lack a standardized mechanism to declare your copyright reservation.<br/><br/><strong>Implementation Example:</strong> Host a JSON file at <code>/.well-known/tdmrep.json</code> with a <code>tdm-reservation</code> flag and an optional link to your licensing policy.`
         },
         {
             name: "ai.txt",
-            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
-Example:
-\`\`\`text
-# ai.txt — Spawning format
-# Declares TDM permissions per EU CDSM Article 4
-
-User-Agent: GPTBot\nDisallow: /\n\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should declare AI data mining and scraping permissions following the Spawning.ai format (EU CDSM Article 4). Example entries: User-Agent: GPTBot / Disallow: / - to block OpenAI training bots. User-Agent: CCBot / Disallow: / - to block Common Crawl.`, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         }
     ];
@@ -495,7 +486,7 @@ User-Agent: GPTBot\nDisallow: /\n\`\`\``, path: '/ai.txt', spec: 'https://site.s
             results: [
                 {
                     name: "Content Neg. (MD)",
-                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`, the server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
+                    prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML. The server should dynamically return clean Markdown instead of an HTML page. Please provide the necessary code for my backend framework (e.g., Express, Next.js, Cloudflare Workers).`,
                     status: supportsMarkdown ? 'ok' : 'err',
                     message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
