@@ -60,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function openModal(title, content, spec, prompt) {
         modalTitle.textContent = title;
         modalBody.innerHTML = sanitizeHTML(content);
-        
+
         modalFooter.textContent = '';
 
         if (prompt) {
@@ -87,7 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link.innerHTML = '📖 Read the full Specification &rarr;';
             modalFooter.appendChild(link);
         }
-        
+
         if (spec || prompt) {
             modalFooter.style.display = 'flex';
             modalFooter.style.alignItems = 'center';
@@ -136,7 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
-            
+
             const data = await res.json();
             clearInterval(stageInterval);
 
@@ -172,15 +172,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderResults(data) {
         loadingOverlay.classList.add('hidden');
         dashboard.classList.remove('hidden');
-        
+
         // Reset animation states optionally by forcing reflow
         dashboard.style.animation = 'none';
         dashboard.offsetHeight; /* trigger reflow */
-        dashboard.style.animation = null; 
+        dashboard.style.animation = null;
 
         // Score Render
         animateScore(data.score.total);
-        
+
         // Flatten all checks into array
         const allChecks = [
             ...data.bots.results,
@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const grid = document.getElementById(containerId);
         const statusBadge = document.getElementById(statusId);
         grid.textContent = '';
-        
+
         statusBadge.className = `metric-status ${overallStatusClass}`;
         statusBadge.textContent = overallStatusText;
 
@@ -221,10 +221,10 @@ document.addEventListener('DOMContentLoaded', () => {
         items.forEach(p => {
             const card = document.createElement('div');
             card.className = 'protocol-card';
-            
+
             let statusIcon = p.status === 'ok' ? '✅' : (p.status === 'warn' ? '⚠️' : '❌');
             let statusClass = p.status === 'ok' ? 'icon-ok' : (p.status === 'warn' ? 'icon-warn' : 'icon-err');
-            
+
             // Build card structure using DOM methods to avoid innerHTML vulnerabilities
             const protoTop = document.createElement('div');
             protoTop.className = 'proto-top';
@@ -292,7 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const circle = document.getElementById('score-circle-path');
         const text = document.getElementById('total-score');
         const verdict = document.getElementById('score-verdict');
-        
+
         // Color update based on score
         circle.classList.remove('score-color-high', 'score-color-med', 'score-color-low');
         if (targetScore >= 80) circle.classList.add('score-color-high');
@@ -306,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let current = 0;
         circle.style.strokeDasharray = `0, 100`;
-        
+
         const duration = 1500;
         let startTimestamp = null;
 

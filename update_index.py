@@ -3,7 +3,7 @@ import re
 with open("ai-valid/src/index.js", "r") as f:
     content = f.read()
 
-# Add prompts to wellKnownFiles
+# PROMPTS DEFINITION
 prompts = {
     "A2A Agent Card": "Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.",
     "API Catalog": "Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.",
@@ -19,37 +19,40 @@ prompts = {
     "Content-Signal": "Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training."
 }
 
-def replace_with_prompt(match):
-    name = match.group(1)
-    prompt = prompts.get(name, "")
-    if prompt:
-        return f"name: '{name}', prompt: `{prompt}`,"
-    return match.group(0)
+# 1. FIX KNOWN CORRUPTIONS (cleanup before optimization)
+# This removes the extra junk that was causing "Expected '}' but found 'server'"
+content = re.sub(
+    r"prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`, the server.*?Workers\).`,",
+    "prompt: `REPLACEME`,",
+    content, flags=re.DOTALL
+)
 
-# Replace in wellKnownFiles
+# 2. OPTIMIZATION & IDEMPOTENCY
 names_pattern = "|".join(map(re.escape, prompts.keys()))
-pattern = re.compile(rf'name:\s*(["\'])({names_pattern})\1,')
+pattern = re.compile(rf'(name:\s*(["\'])({names_pattern})\2,)(?:\s*prompt:\s*`.*?`,)?', re.DOTALL)
 
-def repl(match):
-    quote = match.group(1)
-    name = match.group(2)
-    prompt = prompts[name]
+def replacer(match):
+    name = match.group(3)
+    prompt_text = prompts[name]
+    safe_prompt = prompt_text.replace('`', '\\`').replace('$', '\\$')
 
     if name in ["robots.txt", "AI Directives", "Content Neg. (MD)", "Content-Signal"]:
-        if quote == '"':
-            return f'name: "{name}",\n                    prompt: `{prompt}`,'
+        return f'name: "{name}",\n                    prompt: `{safe_prompt}`,'
     else:
-        if quote == "'":
-            return f"name: '{name}', prompt: `{prompt}`,"
+        return f"name: '{name}', prompt: `{safe_prompt}`,"
 
-    return match.group(0)
+content = pattern.sub(replacer, content)
 
-content = pattern.sub(repl, content)
-content = content.replace(
-    "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
-    "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
-)
+# 3. SCHEMA UPDATE
+if "prompt: data.prompt," not in content:
+    content = content.replace(
+        "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, status, message, code };",
+        "return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };"
+    )
+
+# 4. FIX PRE-EXISTING ERRORS in ai.txt / tdmrep.json
+content = content.replace("User-Agent: GPTBot\nDisallow: /\n```, path: '/ai.txt'", "User-Agent: GPTBot\\nDisallow: /\\n\\`\\`\\``, path: '/ai.txt'")
+content = content.replace("  \"tdm-policy\": \"https://ai-valid.secmy.app/policies/tdm-policy.json\"\n}\n```, path: '/.well-known/tdmrep.json'", "  \"tdm-policy\": \"https://ai-valid.secmy.app/policies/tdm-policy.json\"\\n}\\n\\`\\`\\``, path: '/.well-known/tdmrep.json'")
 
 with open("ai-valid/src/index.js", "w") as f:
     f.write(content)
-
