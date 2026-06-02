@@ -66,6 +66,7 @@ const STATIC_ROUTES = {
                     "endpoint": "/api/audit",
                     "method": "POST"
                 }
+
             ]
         };
         return new Response(JSON.stringify(agentSkills, null, 2), {
@@ -85,7 +86,15 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    const res = await fetch(url, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
+        const location = new URL(res.headers.get('location'), url).href;
+        if (!(await isSafeUrl(location))) {
+            throw new Error('SSRF attempt via redirect');
+        }
+        return await fetch(location, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    }
+    return res;
 }
 
 
@@ -115,7 +124,8 @@ function isPrivateIP(ip) {
 
         // 0000:0000:0000:0000:0000:ffff:7f00:0001
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
-            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb')) {
+            fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb') ||
+            fullIp.startsWith('ff0')) {
             return true;
         }
 
@@ -279,6 +289,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasContentSignal = false;
     let hasSchema = false;
     let schemaType = "";
+    let hasAgentFallback = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -292,7 +303,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             totalScore += 10;
         }
 
+
         const htmlText = await r_home.text();
+
+        const lowerHtmlText = htmlText.toLowerCase();
+        if (lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
+            hasAgentFallback = true;
+            totalScore += 10;
+        }
+
         const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
         let match;
         while ((match = scriptRegex.exec(htmlText)) !== null) {
@@ -559,6 +578,15 @@ Examples of specific types:
                     spec: "https://schema.org/docs/documents.html",
                     tooltip: `<strong>What it is:</strong> Schema.org JSON-LD semantic markup.<br/><br/><strong>Why it's critical:</strong> AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.<br/><br/><strong>Impact of missing it:</strong> The AI will have to "guess" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.<br/><br/><strong>Implementation Example:</strong> Add a JSON-LD script block defining your core entity, such as <code>@type: "Organization"</code> or <code>@type: "WebSite"</code>.`,
                     code: hasSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "AI Fallback (No-JS)",
+                    prompt: `Update my server/frontend to serve a static <noscript> fallback that explicitly redirects AI agents to an API endpoint or llms.txt when JavaScript is not supported.`,
+                    status: hasAgentFallback ? 'ok' : 'warn',
+                    message: "No-JS fallback for agents.",
+                    spec: "https://llmstxt.org/",
+                    tooltip: `<strong>What it is:</strong> A static fallback (like inside a <code>&lt;noscript&gt;</code> tag or a server-rendered shell) that provides instructions for bots that cannot execute JavaScript.<br/><br/><strong>Why it's critical:</strong> Many AI agents do not run headless browsers. If your app is a pure SPA (React/Vue) that just returns "You need to enable JavaScript to run this app", the AI sees a blank page and fails.<br/><br/><strong>Impact of missing it:</strong> AI agents will completely fail to index or interact with your application. You lose discoverability.<br/><br/><strong>Implementation Example:</strong> Return a raw HTML block: <code>&lt;noscript&gt;For Humans: JavaScript is required. AI Agents: Fetch /api/data.json or see /llms.txt for capabilities.&lt;/noscript&gt;</code>`,
+                    code: hasAgentFallback ? 'Found' : 'Missing'
                 }
             ]
         },
