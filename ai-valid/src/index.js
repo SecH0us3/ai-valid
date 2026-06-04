@@ -255,8 +255,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             robotsFound = true;
             totalScore += 5;
             robotsText = await r_robots.text();
-            const lowerText = robotsText.toLowerCase();
-            if (['oai-searchbot', 'gptbot', 'perplexitybot', 'google-extended', 'claudebot', 'amazonbot'].some(bot => lowerText.includes(bot))) {
+            // Match actual User-agent directives to avoid false positives from comments/URLs
+            if (['oai-searchbot', 'gptbot', 'perplexitybot', 'google-extended', 'claudebot', 'amazonbot'].some(bot => {
+                const regex = new RegExp(`^\\s*user-agent:\\s*${bot}\\b`, 'im');
+                return regex.test(robotsText);
+            })) {
                 hasAI = true;
                 totalScore += 5;
             }
@@ -309,33 +312,63 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         const htmlText = await r_home.text();
 
+        // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
+        const jsonLdChunks = [];
+        let currentJsonLd = '';
+
+        await new HTMLRewriter()
+            .on('meta', {
+                element(el) {
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const content = (el.getAttribute('content') || '').toLowerCase();
+                    // NoAI / NoImageAI meta tag detection
+                    if (name === 'robots' && /\b(noai|noimageai)\b/.test(content)) {
+                        hasNoAI = true;
+                    }
+                    // Viewport meta tag detection
+                    if (name === 'viewport') {
+                        hasViewport = true;
+                    }
+                }
+            })
+            .on('main, article', {
+                element() { hasSemanticTags = true; }
+            })
+            .on('noscript', {
+                text(chunk) {
+                    const t = chunk.text.toLowerCase();
+                    if (t.includes('llms.txt') || t.includes('ai agent')) {
+                        hasAgentFallback = true;
+                    }
+                }
+            })
+            .on('script[type="application/ld+json"]', {
+                text(chunk) {
+                    currentJsonLd += chunk.text;
+                    if (chunk.lastInTextNode) {
+                        jsonLdChunks.push(currentJsonLd);
+                        currentJsonLd = '';
+                    }
+                }
+            })
+            .transform(new Response(htmlText, { headers: { 'content-type': 'text/html' } }))
+            .text();
+
+        // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
         const lowerHtmlText = htmlText.toLowerCase();
-        if (lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
+        if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
             hasAgentFallback = true;
-            totalScore += 10;
         }
 
-        if (/<meta\s+(?:[^>]*?\s+)?name=["']robots["']\s+(?:[^>]*?\s+)?content=["'][^>]*?(noai|noimageai)[^>]*?["']\s*\/?>/i.test(htmlText) ||
-            /<meta\s+(?:[^>]*?\s+)?content=["'][^>]*?(noai|noimageai)[^>]*?["']\s+(?:[^>]*?\s+)?name=["']robots["']\s*\/?>/i.test(htmlText)) {
-            hasNoAI = true;
-            totalScore += 5;
-        }
+        if (hasNoAI) totalScore += 5;
+        if (hasViewport) totalScore += 5;
+        if (hasSemanticTags) totalScore += 5;
+        if (hasAgentFallback) totalScore += 10;
 
-        if (/<meta\s+(?:[^>]*?\s+)?name=["']viewport["']/i.test(htmlText)) {
-            hasViewport = true;
-            totalScore += 5;
-        }
-
-        if (/<main\b[^>]*>|<article\b[^>]*>/i.test(htmlText)) {
-            hasSemanticTags = true;
-            totalScore += 5;
-        }
-
-        const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-        let match;
-        while ((match = scriptRegex.exec(htmlText)) !== null) {
+        // Process JSON-LD blocks extracted by HTMLRewriter
+        for (const block of jsonLdChunks) {
             try {
-                const json = JSON.parse(match[1]);
+                const json = JSON.parse(block);
                 const checkSchema = (obj) => {
                     if (!obj || typeof obj !== 'object') return;
                     if (obj['@type']) {
@@ -611,7 +644,7 @@ Examples of specific types:
                 {
                     name: "NoAI Meta Tag",
                     prompt: `Add a 'noai' or 'noimageai' robots meta tag to my website's head to explicitly signal that my content or images should not be used for training AI models.`,
-                    status: hasNoAI ? 'ok' : 'err',
+                    status: hasNoAI ? 'ok' : 'warn',
                     message: hasNoAI ? "Found noai/noimageai tag" : "NoAI tag missing",
                     spec: "https://site.spawning.ai/spawning-ai-txt",
                     tooltip: `<strong>What it is:</strong> A <code>&lt;meta name="robots" content="noai, noimageai"&gt;</code> tag.<br/><br/><strong>Why it's critical:</strong> Explicitly tells AI crawlers that your content and images are not authorized for use in training AI datasets.<br/><br/><strong>Impact of missing it:</strong> Generative AI models may scrape and train on your copyrighted material without permission.<br/><br/><strong>Implementation Example:</strong> Add <code>&lt;meta name="robots" content="noai, noimageai"&gt;</code> in the <code>&lt;head&gt;</code> of your HTML.`,
@@ -620,7 +653,7 @@ Examples of specific types:
                 {
                     name: "Viewport Meta Tag",
                     prompt: `Ensure my website has a viewport meta tag in the <head> to enable responsive design for mobile and headless browsers.`,
-                    status: hasViewport ? 'ok' : 'err',
+                    status: hasViewport ? 'ok' : 'warn',
                     message: hasViewport ? "Found viewport tag" : "Viewport tag missing",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag",
                     tooltip: `<strong>What it is:</strong> A <code>&lt;meta name="viewport"&gt;</code> tag.<br/><br/><strong>Why it's critical:</strong> Helps headless browsers and agents render the page at standard widths, avoiding mobile fallback layouts or broken element visibility.<br/><br/><strong>Impact of missing it:</strong> AI systems running browser-based checks or taking screenshots might receive a desktop layout scrunched onto a mobile viewport, failing interactions.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;</code>`,
