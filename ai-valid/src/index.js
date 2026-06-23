@@ -296,6 +296,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasNoAI = false;
     let hasViewport = false;
     let hasSemanticTags = false;
+    let hasH1 = false;
+    let hasH2 = false;
+    let hasLists = false;
+    let hasInternalLinks = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -334,6 +338,23 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             .on('main, article', {
                 element() { hasSemanticTags = true; }
             })
+            .on('h1', {
+                element() { hasH1 = true; }
+            })
+            .on('h2', {
+                element() { hasH2 = true; }
+            })
+            .on('ul, ol, table', {
+                element() { hasLists = true; }
+            })
+            .on('a', {
+                element(el) {
+                    const href = el.getAttribute('href');
+                    if (href && (href.startsWith('/') || href.startsWith(base))) {
+                        hasInternalLinks = true;
+                    }
+                }
+            })
             .on('noscript', {
                 text(chunk) {
                     const t = chunk.text.toLowerCase();
@@ -364,6 +385,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasViewport) totalScore += 5;
         if (hasSemanticTags) totalScore += 5;
         if (hasAgentFallback) totalScore += 10;
+        if (hasH1 && hasH2) totalScore += 5;
+        if (hasLists) totalScore += 5;
+        if (hasInternalLinks) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -667,6 +691,33 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Glossary/Semantics#semantics_in_html",
                     tooltip: `<strong>What it is:</strong> The use of HTML5 semantic tags like <code>&lt;main&gt;</code> or <code>&lt;article&gt;</code>.<br/><br/><strong>Why it's critical:</strong> AI agents parsing your DOM rely on these tags to quickly locate the primary content and ignore navigation or footer noise.<br/><br/><strong>Impact of missing it:</strong> Agents might extract irrelevant boilerplate text or fail to isolate the core content of the page.<br/><br/><strong>Implementation Example:</strong> Wrap your primary page content in a <code>&lt;main&gt;</code> tag and blog posts in <code>&lt;article&gt;</code> tags.`,
                     code: hasSemanticTags ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Heading Hierarchy",
+                    prompt: `Structure my website content using a logical heading hierarchy with <H1> for the main title and <H2> for major sections to improve topical extraction.`,
+                    status: (hasH1 && hasH2) ? 'ok' : 'warn',
+                    message: (hasH1 && hasH2) ? "Found H1 and H2 tags" : "Missing structured headings",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements",
+                    tooltip: `<strong>What it is:</strong> Proper use of HTML heading tags (<code>&lt;h1&gt;</code>, <code>&lt;h2&gt;</code>).<br/><br/><strong>Why it's critical for GEO:</strong> Generative AI models break complex prompts into smaller sub-queries. They rely heavily on your heading structure to map content to these specific sub-queries.<br/><br/><strong>Impact of missing it:</strong> Without clear headings, AI struggles to parse sections of your content as standalone answers, significantly reducing your chance of being cited.<br/><br/><strong>Implementation Example:</strong> Ensure your page has exactly one descriptive <code>&lt;h1&gt;</code>, and use <code>&lt;h2&gt;</code> tags to denote distinct, answerable sub-topics.`,
+                    code: (hasH1 && hasH2) ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Scannable Formats",
+                    prompt: `Reformat data-heavy sections of my content into HTML lists (<ul>, <ol>) or <table> elements to make it easier for AI to extract structured information.`,
+                    status: hasLists ? 'ok' : 'warn',
+                    message: hasLists ? "Found lists or tables" : "Missing scannable formats",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/ul",
+                    tooltip: `<strong>What it is:</strong> Content structured in lists (<code>&lt;ul&gt;</code>, <code>&lt;ol&gt;</code>) or tables (<code>&lt;table&gt;</code>) rather than massive blocks of text.<br/><br/><strong>Why it's critical for GEO:</strong> Research shows that AI search engines are up to 40% more likely to extract and cite content formatted as lists or tables because they represent clear, factual relationships.<br/><br/><strong>Impact of missing it:</strong> Walls of text increase the extraction difficulty for LLMs, making them more likely to skip your page in favor of a competitor with bulleted data.<br/><br/><strong>Implementation Example:</strong> Convert prose descriptions of features, steps, or comparisons into clean HTML lists or tables.`,
+                    code: hasLists ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Internal Architecture",
+                    prompt: `Add descriptive internal links across my website to connect related pages and establish clear topical clusters.`,
+                    status: hasInternalLinks ? 'ok' : 'warn',
+                    message: hasInternalLinks ? "Internal links found" : "Missing internal links",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
+                    tooltip: `<strong>What it is:</strong> The presence of internal links (<code>&lt;a href="..."&gt;</code>) pointing to other pages on your own domain.<br/><br/><strong>Why it's critical for GEO:</strong> AI crawlers traverse these links to understand your site's architecture. Strong internal linking around a core subject proves to the AI that your domain possesses comprehensive 'topical authority'.<br/><br/><strong>Impact of missing it:</strong> "Orphan" pages or poor linking structures make your site look shallow. AI systems won't trust you as an authoritative source if they can't establish context through connectivity.<br/><br/><strong>Implementation Example:</strong> Link pillar content to supporting articles using descriptive anchor text, not just 'click here'.`,
+                    code: hasInternalLinks ? 'Found' : 'Missing'
                 }
             ]
         },
