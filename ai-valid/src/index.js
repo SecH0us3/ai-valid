@@ -300,6 +300,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasH2 = false;
     let hasLists = false;
     let hasInternalLinks = false;
+    let hasFaqSchema = false;
+    let hasAuthorship = false;
+    let hasFreshness = false;
+    let hasCitations = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -324,6 +328,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
+                    const property = (el.getAttribute('property') || '').toLowerCase();
                     const content = (el.getAttribute('content') || '').toLowerCase();
                     // NoAI / NoImageAI meta tag detection
                     if (name === 'robots' && /\b(noai|noimageai)\b/.test(content)) {
@@ -333,7 +338,16 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     if (name === 'viewport') {
                         hasViewport = true;
                     }
+                    if (name === 'author') {
+                        hasAuthorship = true;
+                    }
+                    if (property === 'article:published_time') {
+                        hasFreshness = true;
+                    }
                 }
+            })
+            .on('time', {
+                element() { hasFreshness = true; }
             })
             .on('main, article', {
                 element() { hasSemanticTags = true; }
@@ -352,6 +366,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     const href = el.getAttribute('href');
                     if (href && (href.startsWith('/') || href.startsWith(base))) {
                         hasInternalLinks = true;
+                    } else if (href && href.startsWith('http') && !href.startsWith(base)) {
+                        hasCitations = true;
                     }
                 }
             })
@@ -388,6 +404,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasH1 && hasH2) totalScore += 5;
         if (hasLists) totalScore += 5;
         if (hasInternalLinks) totalScore += 5;
+        if (hasCitations) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -397,11 +414,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     if (!obj || typeof obj !== 'object') return;
                     if (obj['@type']) {
                         hasSchema = true;
-                        if (typeof obj['@type'] === 'string') {
-                            schemaType = obj['@type'];
-                        } else if (Array.isArray(obj['@type'])) {
-                            schemaType = obj['@type'][0];
+                        const typeList = Array.isArray(obj['@type']) ? obj['@type'] : [obj['@type']];
+                        if (!schemaType) schemaType = typeList[0];
+
+                        if (typeList.includes('FAQPage') || typeList.includes('Question')) {
+                            hasFaqSchema = true;
                         }
+                    }
+                    if (obj['author']) {
+                        hasAuthorship = true;
+                    }
+                    if (obj['datePublished'] || obj['dateModified']) {
+                        hasFreshness = true;
                     }
                 };
                 
@@ -415,6 +439,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             } catch { /* ignore parse error */ }
         }
         
+        if (hasFaqSchema) totalScore += 5;
+        if (hasAuthorship) totalScore += 5;
+        if (hasFreshness) totalScore += 5;
+
         if (hasSchema) {
             totalScore += 10;
         }
@@ -718,6 +746,42 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
                     tooltip: `<strong>What it is:</strong> The presence of internal links (<code>&lt;a href="..."&gt;</code>) pointing to other pages on your own domain.<br/><br/><strong>Why it's critical for GEO:</strong> AI crawlers traverse these links to understand your site's architecture. Strong internal linking around a core subject proves to the AI that your domain possesses comprehensive 'topical authority'.<br/><br/><strong>Impact of missing it:</strong> "Orphan" pages or poor linking structures make your site look shallow. AI systems won't trust you as an authoritative source if they can't establish context through connectivity.<br/><br/><strong>Implementation Example:</strong> Link pillar content to supporting articles using descriptive anchor text, not just 'click here'.`,
                     code: hasInternalLinks ? 'Found' : 'Missing'
+                },
+                {
+                    name: "FAQ Schema",
+                    prompt: `Implement Schema.org FAQPage markup for my questions and answers.`,
+                    status: hasFaqSchema ? 'ok' : 'warn',
+                    message: hasFaqSchema ? "FAQ Schema found" : "Missing FAQ Schema",
+                    spec: "https://schema.org/FAQPage",
+                    tooltip: `<strong>What it is:</strong> Schema.org JSON-LD structured data specifying <code>FAQPage</code> or <code>Question</code>.<br/><br/><strong>Why it's critical for GEO:</strong> Direct question-and-answer formats mapped in Schema.org are highly preferred by Generative Engines for populating AI overviews and citations.<br/><br/><strong>Impact of missing it:</strong> AI models may struggle to extract explicit Q&A content from regular paragraphs, missing opportunities to answer direct user queries.<br/><br/><strong>Implementation Example:</strong> Add JSON-LD scripts with <code>"@type": "FAQPage"</code>.`,
+                    code: hasFaqSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Authorship (E-E-A-T)",
+                    prompt: `Add author meta tags or Schema.org author properties to my content to demonstrate expertise.`,
+                    status: hasAuthorship ? 'ok' : 'warn',
+                    message: hasAuthorship ? "Authorship found" : "Missing authorship",
+                    spec: "https://schema.org/author",
+                    tooltip: `<strong>What it is:</strong> Explicit attribution of content to an author using meta tags (<code>&lt;meta name="author"&gt;</code>) or JSON-LD properties.<br/><br/><strong>Why it's critical for GEO:</strong> Demonstrates Experience, Expertise, Authoritativeness, and Trustworthiness (E-E-A-T). AI engines prioritize content with verifiable human authorship.<br/><br/><strong>Impact of missing it:</strong> Content may be deemed lower quality or less trustworthy, reducing the likelihood of being cited.<br/><br/><strong>Implementation Example:</strong> Include <code>&lt;meta name="author" content="Jane Doe"&gt;</code> or <code>"author": {"@type": "Person", "name": "Jane Doe"}</code> in JSON-LD.`,
+                    code: hasAuthorship ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Content Freshness",
+                    prompt: `Include publication and modification dates using meta tags, <time> elements, or Schema.org properties.`,
+                    status: hasFreshness ? 'ok' : 'warn',
+                    message: hasFreshness ? "Freshness signals found" : "Missing freshness signals",
+                    spec: "https://schema.org/datePublished",
+                    tooltip: `<strong>What it is:</strong> Signals indicating when content was published or last updated, such as <code>&lt;meta property="article:published_time"&gt;</code>, <code>&lt;time&gt;</code> tags, or JSON-LD date properties.<br/><br/><strong>Why it's critical for GEO:</strong> AI models strongly prefer up-to-date information, particularly for fast-changing topics.<br/><br/><strong>Impact of missing it:</strong> Content might be considered stale or irrelevant compared to competitors with explicit recency signals.<br/><br/><strong>Implementation Example:</strong> Use <code>&lt;time datetime="2023-10-01"&gt;</code> or <code>&lt;meta property="article:published_time" content="..."&gt;</code>.`,
+                    code: hasFreshness ? 'Found' : 'Missing'
+                },
+                {
+                    name: "External Citations",
+                    prompt: `Add outbound links to high-authority external sources to back up claims.`,
+                    status: hasCitations ? 'ok' : 'warn',
+                    message: hasCitations ? "External citations found" : "Missing external citations",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
+                    tooltip: `<strong>What it is:</strong> Outbound links (<code>&lt;a href="..."&gt;</code>) pointing to authoritative external domains.<br/><br/><strong>Why it's critical for GEO:</strong> Linking to credible external sources acts as a trust signal. Generative Engines prefer content that synthesizes information and backs claims with primary sources.<br/><br/><strong>Impact of missing it:</strong> Without citations, your content may appear unsubstantiated, reducing the AI's confidence in using it as a source.<br/><br/><strong>Implementation Example:</strong> Link to original research, industry benchmarks, or authoritative publications when making claims.`,
+                    code: hasCitations ? 'Found' : 'Missing'
                 }
             ]
         },
