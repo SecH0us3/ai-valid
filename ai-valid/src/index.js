@@ -364,10 +364,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             .on('a', {
                 element(el) {
                     const href = el.getAttribute('href');
-                    if (href && (href.startsWith('/') || href.startsWith(base))) {
-                        hasInternalLinks = true;
-                    } else if (href && href.startsWith('http') && !href.startsWith(base)) {
-                        hasCitations = true;
+                    if (href) {
+                        try {
+                            const resolvedUrl = new URL(href, base);
+                            const baseHostname = new URL(base).hostname;
+                            if (resolvedUrl.hostname === baseHostname) {
+                                hasInternalLinks = true;
+                            } else if (resolvedUrl.protocol.startsWith('http')) {
+                                hasCitations = true;
+                            }
+                        } catch {
+                            // Ignore invalid URLs or unsupported protocols
+                        }
                     }
                 }
             })
