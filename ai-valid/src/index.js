@@ -338,10 +338,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     if (name === 'viewport') {
                         hasViewport = true;
                     }
-                    if (name === 'author') {
+                    if (name === 'author' && content.trim()) {
                         hasAuthorship = true;
                     }
-                    if (property === 'article:published_time') {
+                    if (property === 'article:published_time' && content.trim()) {
                         hasFreshness = true;
                     }
                 }
