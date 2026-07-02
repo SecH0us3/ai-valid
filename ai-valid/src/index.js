@@ -75,9 +75,30 @@ const STATIC_ROUTES = {
             headers: { "Content-Type": "application/json; charset=utf-8" },
         });
     },
-    "/.well-known/x402.json": () => new Response(x402Json, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-    })
+    "/.well-known/x402.json": () => {
+        let content = "";
+        if (typeof x402Json === 'object' && x402Json !== null) {
+            content = JSON.stringify(x402Json, null, 2);
+        } else if (typeof x402Json === 'string' && (x402Json.trim().startsWith('{') || x402Json.trim().startsWith('['))) {
+            content = x402Json;
+        }
+        const body = content || JSON.stringify({
+            x402Version: 2,
+            endpoints: [
+                {
+                    url: "/api/audit",
+                    description: "AI-Readiness Audit Platform API",
+                    amount: "0",
+                    currency: "USDC",
+                    network: "eip155:8453",
+                    payTo: "0x0000000000000000000000000000000000000000"
+                }
+            ]
+        }, null, 2);
+        return new Response(body, {
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+    }
 };
 
 

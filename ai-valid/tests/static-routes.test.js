@@ -77,6 +77,11 @@ describe('AI-Valid Worker - Static GET Routes', () => {
     });
 
     it('should serve JSON for /.well-known/x402.json', async () => {
-        await testRoute('/.well-known/x402.json', 'application/json; charset=utf-8');
+        const req = new Request('https://localhost/.well-known/x402.json', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body = await res.json();
+        expect(body.x402Version).toBe(2);
     });
 });
