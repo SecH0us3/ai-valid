@@ -2,9 +2,9 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // src/index.js
-import htmlTemplate from "./68ee1d83827f8c61683f0059cd996222c36d3847-index.html";
-import cssContent from "./42ca1a0db8beeb61dbde76962b645037846358c9-style.css";
-import jsContent from "./22bb012a2521e23720771f8578a069f07ddde9d4-app.client.js";
+import htmlTemplate from "./cf65f58bc1c35510cbd268ab159f6babfa5eb188-index.html";
+import cssContent from "./9c20b5bfcabafe3ea7e153c752533ad863ca4d2e-style.css";
+import jsContent from "./be482ab5a7cdd4321d754ba62c90a128fb5e8c55-app.client.js";
 import faviconSvg from "./45ba4c92db4d001752d3d6ae94f176ac0c79ae72-favicon.svg";
 import ogImage from "./2dcbf33f63fd296a20d22f78f49520c2ad93933f-og-image.png";
 import llmsTxt from "./f7048bacd32f8ddcadf6690e0dede56837d50d98-llms.txt";
@@ -13,6 +13,7 @@ import openApiJson from "./f4c1687a65d24a08dc986a51b03f8707337d83bf-openapi.json
 import tdmrepJson from "./f05cfae4ab821bf9af4129022f27f66b89508ff0-tdmrep.json";
 import tdmPolicyJson from "./1b9f53ef8245fda44142be376fc4718e834ef9a9-tdm-policy.json";
 import apiCatalogTxt from "./c6a8a8cacce6029c8d414a7ee35bfc5e56ee2534-api-catalog.txt";
+import x402Json from "./c41e03955456abb6c42ee7ee16b436f851dfd5b1-x402.json";
 var FETCH_TIMEOUT = 5e3;
 var STATIC_ROUTES = {
   "/": /* @__PURE__ */ __name((request) => {
@@ -86,7 +87,31 @@ curl -X POST https://<your-worker-domain>/api/audit \\
     return new Response(JSON.stringify(agentSkills, null, 2), {
       headers: { "Content-Type": "application/json; charset=utf-8" }
     });
-  }, "/.well-known/agent-skills/index.json")
+  }, "/.well-known/agent-skills/index.json"),
+  "/.well-known/x402.json": /* @__PURE__ */ __name(() => {
+    let content = "";
+    if (typeof x402Json === "object" && x402Json !== null) {
+      content = JSON.stringify(x402Json, null, 2);
+    } else if (typeof x402Json === "string" && (x402Json.trim().startsWith("{") || x402Json.trim().startsWith("["))) {
+      content = x402Json;
+    }
+    const body = content || JSON.stringify({
+      x402Version: 2,
+      endpoints: [
+        {
+          url: "/api/audit",
+          description: "AI-Readiness Audit Platform API",
+          amount: "0",
+          currency: "USDC",
+          network: "eip155:8453",
+          payTo: "0x0000000000000000000000000000000000000000"
+        }
+      ]
+    }, null, 2);
+    return new Response(body, {
+      headers: { "Content-Type": "application/json; charset=utf-8" }
+    });
+  }, "/.well-known/x402.json")
 };
 var index_default = {
   async fetch(request, env, ctx) {
@@ -98,7 +123,15 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     const req = new Request(url, options);
     return await handleRequest(req, env, ctx);
   }
-  return await fetch(url, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+  const res = await fetch(url, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+  if (res.status >= 300 && res.status < 400 && res.headers.has("location")) {
+    const location = new URL(res.headers.get("location"), url).href;
+    if (!await isSafeUrl(location)) {
+      throw new Error("SSRF attempt via redirect");
+    }
+    return await fetch(location, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+  }
+  return res;
 }
 __name(internalFetch, "internalFetch");
 function isPrivateIP(ip) {
@@ -132,7 +165,7 @@ function isPrivateIP(ip) {
       fullIp = `${parts[0] ? parts[0] + ":" : ""}${zeroes}${parts[1] ? ":" + parts[1] : ""}`;
     }
     fullIp = fullIp.split(":").map((segment) => segment.padStart(4, "0").toLowerCase()).join(":");
-    if (fullIp.startsWith("fc") || fullIp.startsWith("fd") || fullIp.startsWith("fe8") || fullIp.startsWith("fe9") || fullIp.startsWith("fea") || fullIp.startsWith("feb")) {
+    if (fullIp.startsWith("fc") || fullIp.startsWith("fd") || fullIp.startsWith("fe8") || fullIp.startsWith("fe9") || fullIp.startsWith("fea") || fullIp.startsWith("feb") || fullIp.startsWith("ff0")) {
       return true;
     }
     if (fullIp.startsWith("0000:0000:0000:0000:0000:ffff:")) {
@@ -236,8 +269,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
       robotsFound = true;
       totalScore += 5;
       robotsText = await r_robots.text();
-      const lowerText = robotsText.toLowerCase();
-      if (["oai-searchbot", "gptbot", "perplexitybot"].some((bot) => lowerText.includes(bot))) {
+      if (["oai-searchbot", "gptbot", "perplexitybot", "google-extended", "claudebot", "amazonbot"].some((bot) => {
+        const regex = new RegExp(`^\\s*user-agent:\\s*${bot}\\b`, "im");
+        return regex.test(robotsText);
+      })) {
         hasAI = true;
         totalScore += 5;
       }
@@ -266,6 +301,20 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
   let hasContentSignal = false;
   let hasSchema = false;
   let schemaType = "";
+  let hasAgentFallback = false;
+  let hasNoAI = false;
+  let hasViewport = false;
+  let hasSemanticTags = false;
+  let hasH1 = false;
+  let hasH2 = false;
+  let hasLists = false;
+  let hasInternalLinks = false;
+  let hasFaqSchema = false;
+  let hasAuthorship = false;
+  let hasFreshness = false;
+  let hasCitations = false;
+  let hasQuotations = false;
+  let hasStatistics = false;
   try {
     const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
     const cType = (r_home.headers.get("content-type") || "").toLowerCase();
@@ -278,20 +327,135 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
       totalScore += 10;
     }
     const htmlText = await r_home.text();
-    const scriptRegex = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let match;
-    while ((match = scriptRegex.exec(htmlText)) !== null) {
+    const jsonLdChunks = [];
+    let currentJsonLd = "";
+    let inIgnoredTag = false;
+    let statsTextBuffer = "";
+    await new HTMLRewriter().on("meta", {
+      element(el) {
+        const name = (el.getAttribute("name") || "").toLowerCase();
+        const property = (el.getAttribute("property") || "").toLowerCase();
+        const content = (el.getAttribute("content") || "").toLowerCase();
+        if (name === "robots" && /\b(noai|noimageai)\b/.test(content)) {
+          hasNoAI = true;
+        }
+        if (name === "viewport") {
+          hasViewport = true;
+        }
+        if (name === "author" && content.trim()) {
+          hasAuthorship = true;
+        }
+        if (property === "article:published_time" && content.trim()) {
+          hasFreshness = true;
+        }
+      }
+    }).on("time", {
+      element() {
+        hasFreshness = true;
+      }
+    }).on("main, article", {
+      element() {
+        hasSemanticTags = true;
+      }
+    }).on("h1", {
+      element() {
+        hasH1 = true;
+      }
+    }).on("h2", {
+      element() {
+        hasH2 = true;
+      }
+    }).on("ul, ol, table", {
+      element() {
+        hasLists = true;
+      }
+    }).on("blockquote, q", {
+      element() {
+        hasQuotations = true;
+      }
+    }).on("script, style, noscript", {
+      element(el) {
+        inIgnoredTag = true;
+        el.onEndTag(() => {
+          inIgnoredTag = false;
+        });
+      }
+    }).on("*", {
+      text(chunk) {
+        if (!hasStatistics && !inIgnoredTag) {
+          statsTextBuffer += chunk.text;
+          if (chunk.lastInTextNode) {
+            if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
+              hasStatistics = true;
+            }
+            statsTextBuffer = "";
+          }
+        }
+      }
+    }).on("a", {
+      element(el) {
+        const href = el.getAttribute("href");
+        if (href) {
+          try {
+            const resolvedUrl = new URL(href, base);
+            const baseHostname = new URL(base).hostname;
+            if (resolvedUrl.hostname === baseHostname) {
+              hasInternalLinks = true;
+            } else if (resolvedUrl.protocol.startsWith("http")) {
+              hasCitations = true;
+            }
+          } catch {
+          }
+        }
+      }
+    }).on("noscript", {
+      text(chunk) {
+        const t = chunk.text.toLowerCase();
+        if (t.includes("llms.txt") || t.includes("ai agent")) {
+          hasAgentFallback = true;
+        }
+      }
+    }).on('script[type="application/ld+json"]', {
+      text(chunk) {
+        currentJsonLd += chunk.text;
+        if (chunk.lastInTextNode) {
+          jsonLdChunks.push(currentJsonLd);
+          currentJsonLd = "";
+        }
+      }
+    }).transform(new Response(htmlText, { headers: { "content-type": "text/html" } })).text();
+    const lowerHtmlText = htmlText.toLowerCase();
+    if (!hasAgentFallback && lowerHtmlText.includes("javascript") && (lowerHtmlText.includes("llms.txt") || lowerHtmlText.includes("ai agent"))) {
+      hasAgentFallback = true;
+    }
+    if (hasNoAI) totalScore += 5;
+    if (hasViewport) totalScore += 5;
+    if (hasSemanticTags) totalScore += 5;
+    if (hasAgentFallback) totalScore += 10;
+    if (hasH1 && hasH2) totalScore += 5;
+    if (hasLists) totalScore += 5;
+    if (hasInternalLinks) totalScore += 5;
+    if (hasCitations) totalScore += 5;
+    if (hasQuotations) totalScore += 5;
+    if (hasStatistics) totalScore += 5;
+    for (const block of jsonLdChunks) {
       try {
-        const json = JSON.parse(match[1]);
+        const json = JSON.parse(block);
         const checkSchema = /* @__PURE__ */ __name((obj) => {
           if (!obj || typeof obj !== "object") return;
           if (obj["@type"]) {
             hasSchema = true;
-            if (typeof obj["@type"] === "string") {
-              schemaType = obj["@type"];
-            } else if (Array.isArray(obj["@type"])) {
-              schemaType = obj["@type"][0];
+            const typeList = Array.isArray(obj["@type"]) ? obj["@type"] : [obj["@type"]];
+            if (!schemaType) schemaType = typeList[0];
+            if (typeList.includes("FAQPage") || typeList.includes("Question")) {
+              hasFaqSchema = true;
             }
+          }
+          if (obj["author"]) {
+            hasAuthorship = true;
+          }
+          if (obj["datePublished"] || obj["dateModified"]) {
+            hasFreshness = true;
           }
         }, "checkSchema");
         if (Array.isArray(json)) {
@@ -304,6 +468,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
       } catch {
       }
     }
+    if (hasFaqSchema) totalScore += 5;
+    if (hasAuthorship) totalScore += 5;
+    if (hasFreshness) totalScore += 5;
     if (hasSchema) {
       totalScore += 10;
     }
@@ -435,6 +602,31 @@ Disallow: /
       isJson: false,
       points: 5,
       tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
+    },
+    {
+      name: "x402 Payment Standard",
+      prompt: `Please check if \`/.well-known/x402.json\` exists. If it exists, update it; otherwise, create it. It should define my API pricing and payment parameters (assets, network CAIP-2, wallet address) following the x402 open payment standard.
+Example:
+\`\`\`json
+{
+  "x402Version": 2,
+  "endpoints": [
+    {
+      "url": "https://api.example.com/data",
+      "description": "Premium data access",
+      "amount": "10000",
+      "currency": "USDC",
+      "network": "eip155:8453",
+      "payTo": "0xYourWalletAddress"
+    }
+  ]
+}
+\`\`\``,
+      path: "/.well-known/x402.json",
+      spec: "https://www.x402.org/",
+      isJson: true,
+      points: 10,
+      tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/x402.json</code>, this is the standard discovery metadata file for the HTTP 402-native open payments protocol.<br/><br/><strong>Why it's critical:</strong> It publishes machine-readable details about pricing, accepted assets (like USDC), payment networks (via CAIP-2 identifiers), and target wallet addresses so AI agents can pay programmatically.<br/><br/><strong>Impact of missing it:</strong> AI agents cannot discover your payment configuration. They will not be able to automatically authorize and execute micro-payments to purchase access to your APIs or protected data.<br/><br/><strong>Implementation Example:</strong> Publish a JSON configuration at <code>/.well-known/x402.json</code> specifying your pricing terms, network CAIP-2 identifiers (e.g., eip155:8453 for Base), and target wallet addresses.`
     }
   ];
   const protoResults = [];
@@ -505,11 +697,11 @@ Disallow: /
         },
         {
           name: "AI Directives",
-          prompt: `Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data.`,
+          prompt: `Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data. Ensure to also include rules for Google-Extended, ClaudeBot, and Amazonbot.`,
           status: hasAI ? "ok" : "warn",
-          message: "Rules for OAI-SearchBot/GPTBot.",
+          message: hasAI ? "Rules for AI bots found." : "Missing rules for AI bots",
           spec: "https://platform.openai.com/docs/bots",
-          tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
+          tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>, <code>Google-Extended</code>, <code>ClaudeBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
           code: hasAI ? "Found" : "Missing"
         },
         {
@@ -593,6 +785,123 @@ Examples of specific types:
           spec: "https://schema.org/docs/documents.html",
           tooltip: `<strong>What it is:</strong> Schema.org JSON-LD semantic markup.<br/><br/><strong>Why it's critical:</strong> AI agents and answer engines use this invisible structured data to deeply understand what your page is actually about, what entities it describes (like products, organizations, or articles), and how they relate to each other.<br/><br/><strong>Impact of missing it:</strong> The AI will have to "guess" the context of your page from raw text, increasing hallucinations and decreasing the chance your business is accurately categorized in AI search results.<br/><br/><strong>Implementation Example:</strong> Add a JSON-LD script block defining your core entity, such as <code>@type: "Organization"</code> or <code>@type: "WebSite"</code>.`,
           code: hasSchema ? "Found" : "Missing"
+        },
+        {
+          name: "AI Fallback (No-JS)",
+          prompt: `Update my server/frontend to serve a static <noscript> fallback that explicitly redirects AI agents to an API endpoint or llms.txt when JavaScript is not supported.`,
+          status: hasAgentFallback ? "ok" : "warn",
+          message: "No-JS fallback for agents.",
+          spec: "https://llmstxt.org/",
+          tooltip: `<strong>What it is:</strong> A static fallback (like inside a <code>&lt;noscript&gt;</code> tag or a server-rendered shell) that provides instructions for bots that cannot execute JavaScript.<br/><br/><strong>Why it's critical:</strong> Many AI agents do not run headless browsers. If your app is a pure SPA (React/Vue) that just returns "You need to enable JavaScript to run this app", the AI sees a blank page and fails.<br/><br/><strong>Impact of missing it:</strong> AI agents will completely fail to index or interact with your application. You lose discoverability.<br/><br/><strong>Implementation Example:</strong> Return a raw HTML block: <code>&lt;noscript&gt;For Humans: JavaScript is required. AI Agents: Fetch /api/data.json or see /llms.txt for capabilities.&lt;/noscript&gt;</code>`,
+          code: hasAgentFallback ? "Found" : "Missing"
+        },
+        {
+          name: "NoAI Meta Tag",
+          prompt: `Add a 'noai' or 'noimageai' robots meta tag to my website's head to explicitly signal that my content or images should not be used for training AI models.`,
+          status: hasNoAI ? "ok" : "warn",
+          message: hasNoAI ? "Found noai/noimageai tag" : "NoAI tag missing",
+          spec: "https://site.spawning.ai/spawning-ai-txt",
+          tooltip: `<strong>What it is:</strong> A <code>&lt;meta name="robots" content="noai, noimageai"&gt;</code> tag.<br/><br/><strong>Why it's critical:</strong> Explicitly tells AI crawlers that your content and images are not authorized for use in training AI datasets.<br/><br/><strong>Impact of missing it:</strong> Generative AI models may scrape and train on your copyrighted material without permission.<br/><br/><strong>Implementation Example:</strong> Add <code>&lt;meta name="robots" content="noai, noimageai"&gt;</code> in the <code>&lt;head&gt;</code> of your HTML.`,
+          code: hasNoAI ? "Found" : "Missing"
+        },
+        {
+          name: "Viewport Meta Tag",
+          prompt: `Ensure my website has a viewport meta tag in the <head> to enable responsive design for mobile and headless browsers.`,
+          status: hasViewport ? "ok" : "warn",
+          message: hasViewport ? "Found viewport tag" : "Viewport tag missing",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag",
+          tooltip: `<strong>What it is:</strong> A <code>&lt;meta name="viewport"&gt;</code> tag.<br/><br/><strong>Why it's critical:</strong> Helps headless browsers and agents render the page at standard widths, avoiding mobile fallback layouts or broken element visibility.<br/><br/><strong>Impact of missing it:</strong> AI systems running browser-based checks or taking screenshots might receive a desktop layout scrunched onto a mobile viewport, failing interactions.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;</code>`,
+          code: hasViewport ? "Found" : "Missing"
+        },
+        {
+          name: "Semantic HTML",
+          prompt: `Refactor my website's HTML to use semantic HTML5 tags like <main>, <article>, <section>, and <nav> instead of generic <div> elements.`,
+          status: hasSemanticTags ? "ok" : "warn",
+          message: hasSemanticTags ? "Found semantic tags" : "Missing key semantic tags",
+          spec: "https://developer.mozilla.org/en-US/docs/Glossary/Semantics#semantics_in_html",
+          tooltip: `<strong>What it is:</strong> The use of HTML5 semantic tags like <code>&lt;main&gt;</code> or <code>&lt;article&gt;</code>.<br/><br/><strong>Why it's critical:</strong> AI agents parsing your DOM rely on these tags to quickly locate the primary content and ignore navigation or footer noise.<br/><br/><strong>Impact of missing it:</strong> Agents might extract irrelevant boilerplate text or fail to isolate the core content of the page.<br/><br/><strong>Implementation Example:</strong> Wrap your primary page content in a <code>&lt;main&gt;</code> tag and blog posts in <code>&lt;article&gt;</code> tags.`,
+          code: hasSemanticTags ? "Found" : "Missing"
+        },
+        {
+          name: "Heading Hierarchy",
+          prompt: `Structure my website content using a logical heading hierarchy with <H1> for the main title and <H2> for major sections to improve topical extraction.`,
+          status: hasH1 && hasH2 ? "ok" : "warn",
+          message: hasH1 && hasH2 ? "Found H1 and H2 tags" : "Missing structured headings",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/Heading_Elements",
+          tooltip: `<strong>What it is:</strong> Proper use of HTML heading tags (<code>&lt;h1&gt;</code>, <code>&lt;h2&gt;</code>).<br/><br/><strong>Why it's critical for GEO:</strong> Generative AI models break complex prompts into smaller sub-queries. They rely heavily on your heading structure to map content to these specific sub-queries.<br/><br/><strong>Impact of missing it:</strong> Without clear headings, AI struggles to parse sections of your content as standalone answers, significantly reducing your chance of being cited.<br/><br/><strong>Implementation Example:</strong> Ensure your page has exactly one descriptive <code>&lt;h1&gt;</code>, and use <code>&lt;h2&gt;</code> tags to denote distinct, answerable sub-topics.`,
+          code: hasH1 && hasH2 ? "Found" : "Missing"
+        },
+        {
+          name: "Scannable Formats",
+          prompt: `Reformat data-heavy sections of my content into HTML lists (<ul>, <ol>) or <table> elements to make it easier for AI to extract structured information.`,
+          status: hasLists ? "ok" : "warn",
+          message: hasLists ? "Found lists or tables" : "Missing scannable formats",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/ul",
+          tooltip: `<strong>What it is:</strong> Content structured in lists (<code>&lt;ul&gt;</code>, <code>&lt;ol&gt;</code>) or tables (<code>&lt;table&gt;</code>) rather than massive blocks of text.<br/><br/><strong>Why it's critical for GEO:</strong> Research shows that AI search engines are up to 40% more likely to extract and cite content formatted as lists or tables because they represent clear, factual relationships.<br/><br/><strong>Impact of missing it:</strong> Walls of text increase the extraction difficulty for LLMs, making them more likely to skip your page in favor of a competitor with bulleted data.<br/><br/><strong>Implementation Example:</strong> Convert prose descriptions of features, steps, or comparisons into clean HTML lists or tables.`,
+          code: hasLists ? "Found" : "Missing"
+        },
+        {
+          name: "Internal Architecture",
+          prompt: `Add descriptive internal links across my website to connect related pages and establish clear topical clusters.`,
+          status: hasInternalLinks ? "ok" : "warn",
+          message: hasInternalLinks ? "Internal links found" : "Missing internal links",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
+          tooltip: `<strong>What it is:</strong> The presence of internal links (<code>&lt;a href="..."&gt;</code>) pointing to other pages on your own domain.<br/><br/><strong>Why it's critical for GEO:</strong> AI crawlers traverse these links to understand your site's architecture. Strong internal linking around a core subject proves to the AI that your domain possesses comprehensive 'topical authority'.<br/><br/><strong>Impact of missing it:</strong> "Orphan" pages or poor linking structures make your site look shallow. AI systems won't trust you as an authoritative source if they can't establish context through connectivity.<br/><br/><strong>Implementation Example:</strong> Link pillar content to supporting articles using descriptive anchor text, not just 'click here'.`,
+          code: hasInternalLinks ? "Found" : "Missing"
+        },
+        {
+          name: "FAQ Schema",
+          prompt: `Implement Schema.org FAQPage markup for my questions and answers.`,
+          status: hasFaqSchema ? "ok" : "warn",
+          message: hasFaqSchema ? "FAQ Schema found" : "Missing FAQ Schema",
+          spec: "https://schema.org/FAQPage",
+          tooltip: `<strong>What it is:</strong> Schema.org JSON-LD structured data specifying <code>FAQPage</code> or <code>Question</code>.<br/><br/><strong>Why it's critical for GEO:</strong> Direct question-and-answer formats mapped in Schema.org are highly preferred by Generative Engines for populating AI overviews and citations.<br/><br/><strong>Impact of missing it:</strong> AI models may struggle to extract explicit Q&A content from regular paragraphs, missing opportunities to answer direct user queries.<br/><br/><strong>Implementation Example:</strong> Add JSON-LD scripts with <code>"@type": "FAQPage"</code>.`,
+          code: hasFaqSchema ? "Found" : "Missing"
+        },
+        {
+          name: "Authorship (E-E-A-T)",
+          prompt: `Add author meta tags or Schema.org author properties to my content to demonstrate expertise.`,
+          status: hasAuthorship ? "ok" : "warn",
+          message: hasAuthorship ? "Authorship found" : "Missing authorship",
+          spec: "https://schema.org/author",
+          tooltip: `<strong>What it is:</strong> Explicit attribution of content to an author using meta tags (<code>&lt;meta name="author"&gt;</code>) or JSON-LD properties.<br/><br/><strong>Why it's critical for GEO:</strong> Demonstrates Experience, Expertise, Authoritativeness, and Trustworthiness (E-E-A-T). AI engines prioritize content with verifiable human authorship.<br/><br/><strong>Impact of missing it:</strong> Content may be deemed lower quality or less trustworthy, reducing the likelihood of being cited.<br/><br/><strong>Implementation Example:</strong> Include <code>&lt;meta name="author" content="Jane Doe"&gt;</code> or <code>"author": {"@type": "Person", "name": "Jane Doe"}</code> in JSON-LD.`,
+          code: hasAuthorship ? "Found" : "Missing"
+        },
+        {
+          name: "Content Freshness",
+          prompt: `Include publication and modification dates using meta tags, <time> elements, or Schema.org properties.`,
+          status: hasFreshness ? "ok" : "warn",
+          message: hasFreshness ? "Freshness signals found" : "Missing freshness signals",
+          spec: "https://schema.org/datePublished",
+          tooltip: `<strong>What it is:</strong> Signals indicating when content was published or last updated, such as <code>&lt;meta property="article:published_time"&gt;</code>, <code>&lt;time&gt;</code> tags, or JSON-LD date properties.<br/><br/><strong>Why it's critical for GEO:</strong> AI models strongly prefer up-to-date information, particularly for fast-changing topics.<br/><br/><strong>Impact of missing it:</strong> Content might be considered stale or irrelevant compared to competitors with explicit recency signals.<br/><br/><strong>Implementation Example:</strong> Use <code>&lt;time datetime="2023-10-01"&gt;</code> or <code>&lt;meta property="article:published_time" content="..."&gt;</code>.`,
+          code: hasFreshness ? "Found" : "Missing"
+        },
+        {
+          name: "External Citations",
+          prompt: `Add outbound links to high-authority external sources to back up claims.`,
+          status: hasCitations ? "ok" : "warn",
+          message: hasCitations ? "External citations found" : "Missing external citations",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
+          tooltip: `<strong>What it is:</strong> Outbound links (<code>&lt;a href="..."&gt;</code>) pointing to authoritative external domains.<br/><br/><strong>Why it's critical for GEO:</strong> Linking to credible external sources acts as a trust signal. Generative Engines prefer content that synthesizes information and backs claims with primary sources.<br/><br/><strong>Impact of missing it:</strong> Without citations, your content may appear unsubstantiated, reducing the AI's confidence in using it as a source.<br/><br/><strong>Implementation Example:</strong> Link to original research, industry benchmarks, or authoritative publications when making claims.`,
+          code: hasCitations ? "Found" : "Missing"
+        },
+        {
+          name: "Quotation Addition",
+          prompt: `Add <blockquote> or <q> tags to include expert quotes in my content.`,
+          status: hasQuotations ? "ok" : "warn",
+          message: hasQuotations ? "Quotations found" : "Missing quotations",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/blockquote",
+          tooltip: `<strong>What it is:</strong> Use of explicit quotation tags like <code>&lt;blockquote&gt;</code> or <code>&lt;q&gt;</code> to cite experts or primary sources.<br/><br/><strong>Why it's critical for GEO:</strong> According to generative engine optimization research (e.g., the Princeton GEO paper), adding attributed quotes significantly boosts visibility and citation rates in AI answers.<br/><br/><strong>Impact of missing it:</strong> The AI may overlook your content as a primary source for authoritative opinions or statements.<br/><br/><strong>Implementation Example:</strong> Wrap expert statements or citations in <code>&lt;blockquote&gt;</code> tags to make them easily identifiable by AI models.`,
+          code: hasQuotations ? "Found" : "Missing"
+        },
+        {
+          name: "Statistics Addition",
+          prompt: `Include concrete statistics, numbers, and metrics in my text content to improve AI extraction.`,
+          status: hasStatistics ? "ok" : "warn",
+          message: hasStatistics ? "Statistics found" : "Missing statistics or metrics",
+          spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/data",
+          tooltip: `<strong>What it is:</strong> The presence of quantitative data, such as percentages or dollar amounts, embedded in your text content.<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines heavily favor content with hard data. The Princeton GEO research highlights "Statistics Addition" as a top tactic for improving AI citation rates by replacing qualitative vagueness with concrete numbers.<br/><br/><strong>Impact of missing it:</strong> Vague statements without backing data are less likely to be extracted and cited by AI models compared to competitors offering exact figures.<br/><br/><strong>Implementation Example:</strong> Instead of "many users," write "78% of users." Ensure important metrics are clear and unambiguous.`,
+          code: hasStatistics ? "Found" : "Missing"
         }
       ]
     },

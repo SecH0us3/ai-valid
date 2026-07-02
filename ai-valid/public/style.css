@@ -104,8 +104,6 @@ body {
     text-align: center;
 }
 
-/* Removed hero-badge styles */
-
 .hero-title {
     font-size: clamp(2.5rem, 5vw, 4rem);
     font-weight: 800;

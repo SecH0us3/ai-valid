@@ -60,19 +60,23 @@ document.addEventListener('DOMContentLoaded', () => {
     function openModal(title, content, spec, prompt) {
         modalTitle.textContent = title;
         modalBody.innerHTML = sanitizeHTML(content);
-
+        
         modalFooter.textContent = '';
 
         if (prompt) {
             const btn = document.createElement('button');
-            btn.className = 'glow-button';
+            btn.className = 'copy-btn';
             btn.style.padding = '0.4rem 1rem';
             btn.style.fontSize = '0.9rem';
             btn.innerHTML = '📋 Copy AI Prompt';
             btn.onclick = () => {
                 navigator.clipboard.writeText(prompt);
                 btn.innerHTML = '✅ Copied!';
-                setTimeout(() => { btn.innerHTML = '📋 Copy AI Prompt'; }, 2000);
+                btn.classList.add('copied');
+                setTimeout(() => { 
+                    btn.innerHTML = '📋 Copy AI Prompt';
+                    btn.classList.remove('copied');
+                }, 2000);
             };
             modalFooter.appendChild(btn);
         }
@@ -87,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link.innerHTML = '📖 Read the full Specification &rarr;';
             modalFooter.appendChild(link);
         }
-
+        
         if (spec || prompt) {
             modalFooter.style.display = 'flex';
             modalFooter.style.alignItems = 'center';
@@ -136,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
-
+            
             const data = await res.json();
             clearInterval(stageInterval);
 
@@ -172,21 +176,63 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderResults(data) {
         loadingOverlay.classList.add('hidden');
         dashboard.classList.remove('hidden');
-
+        
         // Reset animation states optionally by forcing reflow
         dashboard.style.animation = 'none';
         dashboard.offsetHeight; /* trigger reflow */
-        dashboard.style.animation = null;
+        dashboard.style.animation = null; 
 
         // Score Render
         animateScore(data.score.total);
+        
+        const importanceWeights = {
+            "Content Neg. (MD)": 15,
+            "A2A Agent Card": 10,
+            "Agent Skills": 10,
+            "MCP Server": 10,
+            "AI Plugin": 10,
+            "LLMs.txt": 10,
+            "LLMs-Full.txt": 10,
+            "x402 Payment Standard": 10,
+            "AI Fallback (No-JS)": 10,
+            "Content-Signal": 10,
+            "Semantic JSON-LD": 10,
+            
+            "robots.txt": 5,
+            "AI Directives": 5,
+            "sitemap.xml": 5,
+            "FAQ Schema": 5,
+            "Authorship (E-E-A-T)": 5,
+            "Content Freshness": 5,
+            "External Citations": 5,
+            "Quotation Addition": 5,
+            "Statistics Addition": 5,
+            "Viewport Meta Tag": 5,
+            "NoAI Meta Tag": 5,
+            "Semantic HTML": 5,
+            "Heading Hierarchy": 5,
+            "Scannable Formats": 5,
+            "Internal Architecture": 5,
+            "API Catalog": 5,
+            "OAuth Discovery": 5,
+            "Universal Commerce": 5,
+            "TDM Reservation": 5,
+            "ai.txt": 5
+        };
 
-        // Flatten all checks into array
+        // Flatten all checks into array and sort by importance descending, then alphabetically by name
         const allChecks = [
             ...data.bots.results,
             ...data.content.results,
             ...data.protocols.results
-        ];
+        ].sort((a, b) => {
+            const weightA = importanceWeights[a.name] || 0;
+            const weightB = importanceWeights[b.name] || 0;
+            if (weightB !== weightA) {
+                return weightB - weightA;
+            }
+            return a.name.localeCompare(b.name);
+        });
 
         const passed = allChecks.filter(c => c.status === 'ok');
         const warnings = allChecks.filter(c => c.status === 'warn');
@@ -194,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Formatted renderer for the 3 grouped columns
         renderGridList('passed-grid', 'status-passed', passed, 'good', `Passed: ${passed.length}`);
-        renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'neutral' : 'good', `Warnings: ${warnings.length}`);
+        renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'warn' : 'good', `Warnings: ${warnings.length}`);
         renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Failed: ${failed.length}`);
     }
 
@@ -202,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const grid = document.getElementById(containerId);
         const statusBadge = document.getElementById(statusId);
         grid.textContent = '';
-
+        
         statusBadge.className = `metric-status ${overallStatusClass}`;
         statusBadge.textContent = overallStatusText;
 
@@ -221,10 +267,10 @@ document.addEventListener('DOMContentLoaded', () => {
         items.forEach(p => {
             const card = document.createElement('div');
             card.className = 'protocol-card';
-
+            
             let statusIcon = p.status === 'ok' ? '✅' : (p.status === 'warn' ? '⚠️' : '❌');
             let statusClass = p.status === 'ok' ? 'icon-ok' : (p.status === 'warn' ? 'icon-warn' : 'icon-err');
-
+            
             // Build card structure using DOM methods to avoid innerHTML vulnerabilities
             const protoTop = document.createElement('div');
             protoTop.className = 'proto-top';
@@ -242,6 +288,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const protoBadge = document.createElement('span');
             protoBadge.className = 'proto-badge';
             protoBadge.textContent = p.code || 'Soft 404';
+            
+            // Map styles dynamically
+            if (p.status === 'ok') {
+                protoBadge.style.backgroundColor = 'var(--status-success-bg)';
+                protoBadge.style.color = 'var(--status-success-text)';
+            } else if (p.status === 'warn') {
+                protoBadge.style.backgroundColor = 'var(--status-warning-bg)';
+                protoBadge.style.color = 'var(--status-warning-text)';
+            } else {
+                protoBadge.style.backgroundColor = 'var(--status-error-bg)';
+                protoBadge.style.color = 'var(--status-error-text)';
+            }
 
             protoTop.appendChild(protoName);
             protoTop.appendChild(protoBadge);
@@ -292,7 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const circle = document.getElementById('score-circle-path');
         const text = document.getElementById('total-score');
         const verdict = document.getElementById('score-verdict');
-
+        
         // Color update based on score
         circle.classList.remove('score-color-high', 'score-color-med', 'score-color-low');
         if (targetScore >= 80) circle.classList.add('score-color-high');
@@ -306,7 +364,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let current = 0;
         circle.style.strokeDasharray = `0, 100`;
-
+        
         const duration = 1500;
         let startTimestamp = null;
 
