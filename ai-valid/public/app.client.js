@@ -284,6 +284,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const protoBadge = document.createElement('span');
             protoBadge.className = 'proto-badge';
             protoBadge.textContent = p.code || 'Soft 404';
+            
+            // Map styles dynamically
+            if (p.status === 'ok') {
+                protoBadge.style.backgroundColor = 'var(--status-success-bg)';
+                protoBadge.style.color = 'var(--status-success-text)';
+            } else if (p.status === 'warn') {
+                protoBadge.style.backgroundColor = 'var(--status-warning-bg)';
+                protoBadge.style.color = 'var(--status-warning-text)';
+            } else {
+                protoBadge.style.backgroundColor = 'var(--status-error-bg)';
+                protoBadge.style.color = 'var(--status-error-text)';
+            }
 
             protoTop.appendChild(protoName);
             protoTop.appendChild(protoBadge);

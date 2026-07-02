@@ -343,14 +343,18 @@ body {
 .protocol-card {
     background: var(--bg-panel);
     border: 1px solid var(--border-clean);
-    border-radius: 12px;
-    padding: 0.85rem;
-    transition: all 0.2s;
+    border-radius: 8px;
+    padding: 1rem;
+    transition: all 0.2s ease;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.5rem;
 }
-.protocol-card:hover { border-color: var(--accent-glow); transform: translateY(-2px); }
+.protocol-card:hover {
+    border-color: #cbd5e1;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
 
 .proto-top { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;}
 .proto-name { 
@@ -359,7 +363,14 @@ body {
     display: flex; 
     align-items: center; 
 }
-.proto-badge { font-size: 0.7rem; font-family: var(--font-mono); padding: 0.2rem 0.4rem; border-radius: 4px; background: var(--accent-blue-light); white-space: nowrap;}
+.proto-badge {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    white-space: nowrap;
+}
 
 .proto-msg { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.3;}
 .proto-link {
@@ -376,8 +387,8 @@ body {
 .modal-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.6);
-    backdrop-filter: blur(8px);
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -395,14 +406,14 @@ body {
 .modal-content {
     background: var(--bg-panel);
     border: 1px solid var(--border-clean);
-    border-radius: 16px;
+    border-radius: 12px;
     padding: 2rem;
     max-width: 500px;
     width: 90%;
     position: relative;
     transform: translateY(20px);
     transition: transform 0.3s ease;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.5), 0 0 20px rgba(59, 130, 246, 0.2);
+    box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
 }
 
 .modal-overlay.active .modal-content {
@@ -442,11 +453,20 @@ body {
     font-weight: 600;
 }
 
+.modal-body code {
+    background: #f1f5f9;
+    color: #0f172a;
+    padding: 0.15rem 0.35rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+}
+
 /* Learn More Button */
 .learn-more-btn {
-    background: rgba(59, 130, 246, 0.15);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    color: var(--accent-glow);
+    background: var(--accent-blue-light);
+    border: 1px solid rgba(37, 99, 235, 0.15);
+    color: var(--accent-blue);
     padding: 0.3rem 0.6rem;
     border-radius: 6px;
     font-size: 0.75rem;
@@ -456,7 +476,7 @@ body {
 }
 
 .learn-more-btn:hover {
-    background: rgba(59, 130, 246, 0.3);
+    background: rgba(37, 99, 235, 0.12);
 }
 
 /* Loading State */
@@ -474,19 +494,19 @@ body {
     width: 80px; height: 80px;
     position: relative;
     border-radius: 50%;
-    border: 2px solid rgba(59, 130, 246, 0.3);
+    border: 2px solid var(--accent-blue-light);
     overflow: hidden;
-    box-shadow: 0 0 20px rgba(59, 130, 246, 0.1);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.05);
+    background: var(--bg-panel);
 }
 
 .radar {
     position: absolute;
     top: 50%; left: 50%;
     width: 2px; height: 50%;
-    background: var(--accent-glow);
+    background: var(--accent-blue);
     transform-origin: top;
     animation: radarSpin 2s linear infinite;
-    box-shadow: 0 0 10px var(--accent-glow);
 }
 
 @keyframes radarSpin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -495,7 +515,13 @@ body {
     font-family: var(--font-mono);
     color: var(--text-secondary);
     font-size: 0.9rem;
-    text-align: center;
+    text-align: left;
+    background: #f1f5f9;
+    border: 1px solid var(--border-clean);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    min-width: 320px;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
 }
 
 .glow-text { color: var(--accent-glow); font-weight: bold; animation: pulseText 1.5s infinite; }
