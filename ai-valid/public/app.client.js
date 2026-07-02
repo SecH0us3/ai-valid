@@ -278,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Formatted renderer for the 3 grouped columns
         renderGridList('passed-grid', 'status-passed', passed, 'good', `Passed: ${passed.length}`);
         renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'warn' : 'good', `Warnings: ${warnings.length}`);
-        renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Failed: ${failed.length}`);
+        renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Not found: ${failed.length}`);
     }
 
     function renderGridList(containerId, statusId, items, overallStatusClass, overallStatusText) {

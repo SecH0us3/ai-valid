@@ -307,7 +307,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             
             const rules = {};
             const lines = robotsText.split('\n');
-            let currentAgent = '';
+            let currentAgents = [];
+            let inAgentBlock = false;
             for (const line of lines) {
                 const cleanLine = line.trim();
                 if (!cleanLine || cleanLine.startsWith('#')) continue;
@@ -321,19 +322,30 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
                 const matchUA = cleanLine.match(/^user-agent:\s*(.*)$/i);
                 if (matchUA) {
-                    currentAgent = matchUA[1].trim().toLowerCase();
-                    if (!rules[currentAgent]) {
-                        rules[currentAgent] = { allow: [], disallow: [] };
+                    const agent = matchUA[1].trim().toLowerCase();
+                    if (!inAgentBlock) {
+                        currentAgents = [];
+                        inAgentBlock = true;
+                    }
+                    currentAgents.push(agent);
+                    if (!rules[agent]) {
+                        rules[agent] = { allow: [], disallow: [] };
                     }
                     continue;
                 }
                 const matchAllow = cleanLine.match(/^allow:\s*(.*)$/i);
-                if (matchAllow && currentAgent) {
-                    rules[currentAgent].allow.push(matchAllow[1].trim());
+                if (matchAllow && currentAgents.length > 0) {
+                    inAgentBlock = false;
+                    const path = matchAllow[1].trim();
+                    currentAgents.forEach(agent => rules[agent].allow.push(path));
+                    continue;
                 }
                 const matchDisallow = cleanLine.match(/^disallow:\s*(.*)$/i);
-                if (matchDisallow && currentAgent) {
-                    rules[currentAgent].disallow.push(matchDisallow[1].trim());
+                if (matchDisallow && currentAgents.length > 0) {
+                    inAgentBlock = false;
+                    const path = matchDisallow[1].trim();
+                    currentAgents.forEach(agent => rules[agent].disallow.push(path));
+                    continue;
                 }
             }
 
@@ -393,9 +405,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             totalScore += 5;
             
             const sitemapText = await r_sitemap.text();
-            if (/<lastmod>/i.test(sitemapText)) {
-                hasSitemapLastmod = true;
-                totalScore += 5;
+            const lastmodMatch = sitemapText.match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
+            if (lastmodMatch) {
+                const dateStr = lastmodMatch[1];
+                if (!isNaN(Date.parse(dateStr))) {
+                    hasSitemapLastmod = true;
+                    totalScore += 5;
+                }
             }
         }
     } catch { /* silent fail for sitemap */ }

@@ -9,7 +9,7 @@
 - **Semantic Protocol Discovery**: Automatically scans for `.well-known` manifests including MCP (Model Context Protocol), A2A Agent Cards, API Catalogs (RFC 9727), and AI Plugins.
 - **Bot Accessibility Audit**: Validates `robots.txt` and explicit AI directives for `OAI-SearchBot`, `GPTBot`, and others.
 - **Content Optimization**: Checks for Content Negotiation (Markdown support) and legal usage signals via `Content-Signal` headers.
-- **Actionable Dashboard**: Results are categorized into **Passed**, **Warnings**, & **Action Required**, providing a clear implementation roadmap.
+- **Actionable Dashboard**: Results are categorized into **Passed**, **Warnings**, & **Not found**, providing a clear implementation roadmap.
 - **Dynamic UX**: Fast, parallel network scanning with a terminal-inspired reconnaissance interface.
 - **Deep Linking**: Share audit results easily via persistent URL hashes.
 
