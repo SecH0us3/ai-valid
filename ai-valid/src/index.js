@@ -349,29 +349,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             }
 
-            const isBotAllowed = (bot) => {
-                if (rules[bot]) {
-                    const hasDisallowAll = rules[bot].disallow.some(p => p === '/' || p === '/*');
-                    const hasAllowAll = rules[bot].allow.some(p => p === '/' || p === '/*');
-                    if (hasDisallowAll) return false;
-                    if (hasAllowAll) return true;
-                }
-                if (rules['*']) {
-                    const hasDisallowAll = rules['*'].disallow.some(p => p === '/' || p === '/*');
-                    if (hasDisallowAll) return false;
-                }
-                return true;
-            };
-
             const isBotBlocked = (bot) => {
-                if (rules[bot]) {
-                    return rules[bot].disallow.some(p => p === '/' || p === '/*');
-                }
-                if (rules['*']) {
-                    return rules['*'].disallow.some(p => p === '/' || p === '/*');
+                const agentRules = rules[bot] || rules['*'];
+                if (agentRules) {
+                    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
+                    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
+                    return hasDisallowAll && !hasAllowAll;
                 }
                 return false;
             };
+
+            const isBotAllowed = (bot) => !isBotBlocked(bot);
 
             hasAISearch = isBotAllowed('oai-searchbot') && isBotAllowed('perplexitybot') && isBotAllowed('youbot');
             hasAIAgent = isBotAllowed('chatgpt-user');
