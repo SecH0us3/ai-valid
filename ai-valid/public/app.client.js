@@ -206,8 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
         dashboard.offsetHeight; /* trigger reflow */
         dashboard.style.animation = null; 
 
-        // Score Render
-        animateScore(data.score.total);
+        // Summary counters will be rendered below after categorizing checks
         
         const importanceWeights = {
             "Content Neg. (MD)": 15,
@@ -222,6 +221,12 @@ document.addEventListener('DOMContentLoaded', () => {
             "Content-Signal": 10,
             "Semantic JSON-LD": 10,
             
+            "AI Search Allowed": 10,
+            "AI Agent Allowed": 10,
+            "AI Training Blocked": 10,
+            "Differentiated Policy": 10,
+            "Conditional Requests (304)": 10,
+
             "robots.txt": 5,
             "AI Directives": 5,
             "sitemap.xml": 5,
@@ -241,7 +246,10 @@ document.addEventListener('DOMContentLoaded', () => {
             "OAuth Discovery": 5,
             "Universal Commerce": 5,
             "TDM Reservation": 5,
-            "ai.txt": 5
+            "ai.txt": 5,
+            "Sitemap Lastmod": 5,
+            "Content-Use Parameter": 5,
+            "Freshness Headers": 5
         };
 
         // Flatten all checks into array and sort by importance descending, then alphabetically by name
@@ -262,10 +270,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const warnings = allChecks.filter(c => c.status === 'warn');
         const failed = allChecks.filter(c => c.status === 'err' || c.status === 'not found' || !['ok', 'warn'].includes(c.status));
 
+        // Render Summary Counters
+        animateCount('summary-passed', passed.length);
+        animateCount('summary-warn', warnings.length);
+        animateCount('summary-failed', failed.length);
+
         // Formatted renderer for the 3 grouped columns
         renderGridList('passed-grid', 'status-passed', passed, 'good', `Passed: ${passed.length}`);
         renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'warn' : 'good', `Warnings: ${warnings.length}`);
-        renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Failed: ${failed.length}`);
+        renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Not found: ${failed.length}`);
     }
 
     function renderGridList(containerId, statusId, items, overallStatusClass, overallStatusText) {
@@ -370,42 +383,24 @@ document.addEventListener('DOMContentLoaded', () => {
         grid.appendChild(fragment);
     }
 
-    function animateScore(targetScore) {
-        const circle = document.getElementById('score-circle-path');
-        const text = document.getElementById('total-score');
-        const verdict = document.getElementById('score-verdict');
-        
-        // Color update based on score
-        circle.classList.remove('score-color-high', 'score-color-med', 'score-color-low');
-        if (targetScore >= 80) circle.classList.add('score-color-high');
-        else if (targetScore >= 40) circle.classList.add('score-color-med');
-        else circle.classList.add('score-color-low');
-
-        if (targetScore >= 85) verdict.textContent = "Outstanding. The site is perfectly ready for agents.";
-        else if (targetScore >= 50) verdict.textContent = "Satisfactory. Basic protocols are configured.";
-        else if (targetScore >= 10) verdict.textContent = "Needs attention. Agents will struggle to interact.";
-        else verdict.textContent = "Not found. The site is completely 'blind' to AI agents.";
-
+    function animateCount(id, targetValue) {
+        const el = document.getElementById(id);
+        if (!el) return;
         let current = 0;
-        circle.style.strokeDasharray = `0, 100`;
-        
-        const duration = 1500;
+        const duration = 1000;
         let startTimestamp = null;
 
         const step = (timestamp) => {
             if (!startTimestamp) startTimestamp = timestamp;
             const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-            current = progress * targetScore;
+            current = progress * targetValue;
 
-            text.textContent = Math.round(current) + '%';
-            circle.style.strokeDasharray = `${current}, 100`;
+            el.textContent = Math.round(current);
 
             if (progress < 1) {
                 window.requestAnimationFrame(step);
             } else {
-                current = targetScore;
-                text.textContent = Math.round(current) + '%';
-                circle.style.strokeDasharray = `${current}, 100`;
+                el.textContent = targetValue;
             }
         };
 

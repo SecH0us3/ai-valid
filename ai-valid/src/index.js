@@ -289,9 +289,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
     // 1. Discoverability & Bots
     let robotsFound = false;
-    let hasAI = false;
+    let hasAISearch = false;
+    let hasAIAgent = false;
+    let hasAITrainingBlocked = false;
+    let hasDifferentiatedPolicy = false;
     let sitemapFound = false;
+    let hasSitemapLastmod = false;
     let robotsText = "";
+    let robotsContentSignal = "";
 
     try {
         const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
@@ -299,14 +304,72 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             robotsFound = true;
             totalScore += 5;
             robotsText = await r_robots.text();
-            // Match actual User-agent directives to avoid false positives from comments/URLs
-            if (['oai-searchbot', 'gptbot', 'perplexitybot', 'google-extended', 'claudebot', 'amazonbot'].some(bot => {
-                const regex = new RegExp(`^\\s*user-agent:\\s*${bot}\\b`, 'im');
-                return regex.test(robotsText);
-            })) {
-                hasAI = true;
-                totalScore += 5;
+            
+            const rules = {};
+            const lines = robotsText.split('\n');
+            let currentAgents = [];
+            let inAgentBlock = false;
+            for (const line of lines) {
+                const cleanLine = line.trim();
+                if (!cleanLine || cleanLine.startsWith('#')) continue;
+                
+                // Extract Content-Signal if declared in robots.txt
+                const matchCS = cleanLine.match(/^content-signal:\s*(.*)$/i);
+                if (matchCS) {
+                    robotsContentSignal = matchCS[1].trim();
+                    continue;
+                }
+
+                const matchUA = cleanLine.match(/^user-agent:\s*(.*)$/i);
+                if (matchUA) {
+                    const agent = matchUA[1].trim().toLowerCase();
+                    if (!inAgentBlock) {
+                        currentAgents = [];
+                        inAgentBlock = true;
+                    }
+                    currentAgents.push(agent);
+                    if (!rules[agent]) {
+                        rules[agent] = { allow: [], disallow: [] };
+                    }
+                    continue;
+                }
+                const matchAllow = cleanLine.match(/^allow:\s*(.*)$/i);
+                if (matchAllow && currentAgents.length > 0) {
+                    inAgentBlock = false;
+                    const path = matchAllow[1].trim();
+                    currentAgents.forEach(agent => rules[agent].allow.push(path));
+                    continue;
+                }
+                const matchDisallow = cleanLine.match(/^disallow:\s*(.*)$/i);
+                if (matchDisallow && currentAgents.length > 0) {
+                    inAgentBlock = false;
+                    const path = matchDisallow[1].trim();
+                    currentAgents.forEach(agent => rules[agent].disallow.push(path));
+                    continue;
+                }
             }
+
+            const isBotBlocked = (bot) => {
+                const agentRules = rules[bot] || rules['*'];
+                if (agentRules) {
+                    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
+                    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
+                    return hasDisallowAll && !hasAllowAll;
+                }
+                return false;
+            };
+
+            const isBotAllowed = (bot) => !isBotBlocked(bot);
+
+            hasAISearch = isBotAllowed('oai-searchbot') && isBotAllowed('perplexitybot') && isBotAllowed('youbot');
+            hasAIAgent = isBotAllowed('chatgpt-user');
+            hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai');
+            hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
+
+            if (hasAISearch) totalScore += 10;
+            if (hasAIAgent) totalScore += 10;
+            if (hasAITrainingBlocked) totalScore += 10;
+            if (hasDifferentiatedPolicy) totalScore += 10;
         }
     } catch { /* silent fail */ }
 
@@ -328,12 +391,25 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (r_sitemap.status === 200) {
             sitemapFound = true;
             totalScore += 5;
+            
+            const sitemapText = await r_sitemap.text();
+            const lastmodMatch = sitemapText.match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
+            if (lastmodMatch) {
+                const dateStr = lastmodMatch[1];
+                if (!isNaN(Date.parse(dateStr))) {
+                    hasSitemapLastmod = true;
+                    totalScore += 5;
+                }
+            }
         }
     } catch { /* silent fail for sitemap */ }
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
     let hasContentSignal = false;
+    let hasContentUse = false;
+    let hasFreshnessHeaders = false;
+    let hasConditionalGET = false;
     let hasSchema = false;
     let schemaType = "";
     let hasAgentFallback = false;
@@ -358,9 +434,47 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             supportsMarkdown = true;
             totalScore += 15;
         }
+
+        let contentSignalValue = '';
         if (r_home.headers.has('content-signal')) {
+            contentSignalValue = r_home.headers.get('content-signal');
+        } else if (robotsContentSignal) {
+            contentSignalValue = robotsContentSignal;
+        }
+
+        if (contentSignalValue) {
             hasContentSignal = true;
             totalScore += 10;
+
+            const params = {};
+            contentSignalValue.split(',').forEach(part => {
+                const [k, v] = part.split('=').map(s => s.trim().toLowerCase());
+                if (k) params[k] = v || '';
+            });
+
+            if (params['use'] && ['reference', 'immediate', 'full'].includes(params['use'])) {
+                hasContentUse = true;
+                totalScore += 5;
+            }
+        }
+
+        const etag = r_home.headers.get('etag');
+        const lastModified = r_home.headers.get('last-modified');
+        if (etag || lastModified) {
+            hasFreshnessHeaders = true;
+            totalScore += 5;
+
+            try {
+                const condHeaders = { ...headersAgent };
+                if (etag) condHeaders['If-None-Match'] = etag;
+                if (lastModified) condHeaders['If-Modified-Since'] = lastModified;
+
+                const r_cond = await iFetch(base, { headers: condHeaders, cf: { cacheEverything: false } });
+                if (r_cond.status === 304) {
+                    hasConditionalGET = true;
+                    totalScore += 10;
+                }
+            } catch { /* silent fail */ }
         }
 
 
@@ -685,12 +799,17 @@ Example:
 
     return {
         score: {
-            total: totalScore
+            total: Math.min(totalScore, 100),
+            max: 100
         },
         bots: {
             robotsFound,
-            hasAI,
+            hasAISearch,
+            hasAIAgent,
+            hasAITrainingBlocked,
+            hasDifferentiatedPolicy,
             sitemapFound,
+            hasSitemapLastmod,
             results: [
                 {
                     name: "robots.txt",
@@ -702,13 +821,40 @@ Example:
                     code: robotsFound ? 'Found' : 'Missing'
                 },
                 {
-                    name: "AI Directives",
-                    prompt: `Update my robots.txt to strategically manage AI crawlers, explicitly allowing OAI-SearchBot for search representation while disallowing GPTBot from scraping for training data. Ensure to also include rules for Google-Extended, ClaudeBot, and Amazonbot.`,
-                    status: hasAI ? 'ok' : 'warn',
-                    message: hasAI ? "Rules for AI bots found." : "Missing rules for AI bots",
+                    name: "AI Search Allowed",
+                    prompt: `Update my robots.txt to explicitly allow AI search agents like OAI-SearchBot, PerplexityBot, and YouBot.`,
+                    status: hasAISearch ? 'ok' : 'warn',
+                    message: hasAISearch ? "AI Search bots allowed" : "AI Search bots disallowed or missing",
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/robots/intro",
+                    tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (like OAI-SearchBot, PerplexityBot, YouBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
+                    code: hasAISearch ? 'Allowed' : 'Disallowed'
+                },
+                {
+                    name: "AI Agent Allowed",
+                    prompt: `Update my robots.txt to explicitly allow user-directed AI agents like ChatGPT-User.`,
+                    status: hasAIAgent ? 'ok' : 'warn',
+                    message: hasAIAgent ? "AI Agent bots allowed" : "AI Agent bots disallowed or missing",
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Explicit rules targeting next-gen AI crawlers exclusively (e.g. <code>User-Agent: OAI-SearchBot</code>, <code>Google-Extended</code>, <code>ClaudeBot</code>).<br/><br/><strong>Why it's critical:</strong> Differentiates your human/SEO search permissions (Googlebot) from generative AI scraping.<br/><br/><strong>Impact of missing it:</strong> You lose fine-grained control. Your site might be weaponized in open datasets without your explicit consent or economic benefit. Allowing specific AI agents is key to participating in Answer Engines without exposing full raw data.<br/><br/><strong>Implementation Example:</strong> Strategically block Training data scraping while allowing real-time Search representation: <br><code>User-agent: GPTBot<br>Disallow: /<br><br>User-agent: OAI-SearchBot<br>Allow: /</code>`,
-                    code: hasAI ? 'Found' : 'Missing'
+                    tooltip: `<strong>What it is:</strong> Allowing user-initiated autonomous actions (like ChatGPT-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
+                    code: hasAIAgent ? 'Allowed' : 'Disallowed'
+                },
+                {
+                    name: "AI Training Blocked",
+                    prompt: `Update my robots.txt to disallow AI training and model scraping bots such as GPTBot, ClaudeBot, Google-Extended, and Amazonbot.`,
+                    status: hasAITrainingBlocked ? 'ok' : 'warn',
+                    message: hasAITrainingBlocked ? "AI Training bots blocked" : "AI Training bots allowed or missing disallow directives",
+                    spec: "https://platform.openai.com/docs/bots",
+                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Amazonbot, cohere-ai).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
+                    code: hasAITrainingBlocked ? 'Blocked' : 'Allowed'
+                },
+                {
+                    name: "Differentiated Policy",
+                    prompt: `Configure a balanced AI crawler policy that allows AI Search and Agents but blocks model training.`,
+                    status: hasDifferentiatedPolicy ? 'ok' : 'warn',
+                    message: hasDifferentiatedPolicy ? "Differentiated policy implemented" : "Lacks recommended balanced crawler configuration",
+                    spec: "https://blog.cloudflare.com/content-independence-day-ai-options/",
+                    tooltip: `<strong>What it is:</strong> The recommended model where citation engines (Search) and user assistants (Agent) are allowed, but bulk model trainers (Training) are blocked.<br/><br/><strong>Why it's critical:</strong> Avoids the "binary choice" of blocking everything or allowing everything.<br/><br/><strong>Impact of missing it:</strong> You either block AI entirely or allow model training without control.<br/><br/><strong>Implementation Example:</strong> Block GPTBot/ClaudeBot, but allow OAI-SearchBot and ChatGPT-User.`,
+                    code: hasDifferentiatedPolicy ? 'Implemented' : 'Not Implemented'
                 },
                 {
                     name: "sitemap.xml",
@@ -718,12 +864,24 @@ Example:
                     spec: "https://www.sitemaps.org/protocol.html",
                     tooltip: `<strong>What it is:</strong> An XML file that lists URLs for a site along with additional metadata about each URL.<br/><br/><strong>Why it's critical:</strong> It allows AI search bots (like SearchGPT and Perplexity) and traditional search engines to discover your content efficiently without having to guess paths or follow every link blindly.<br/><br/><strong>Impact of missing it:</strong> AI crawlers might miss critical new or updated content on your platform, significantly reducing your visibility in AI-generated answers and search results.<br/><br/><strong>Implementation Example:</strong> Host a <code>/sitemap.xml</code> and add <code>Sitemap: https://yourdomain.com/sitemap.xml</code> to your <code>robots.txt</code>.`,
                     code: sitemapFound ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Sitemap Lastmod",
+                    prompt: `Update my sitemap generator to include the <lastmod> tag with the last modification date for each URL in my sitemap.xml.`,
+                    status: hasSitemapLastmod ? 'ok' : 'warn',
+                    message: hasSitemapLastmod ? "Sitemap utilizes <lastmod> directives" : "Sitemap URLs missing <lastmod> date attributes",
+                    spec: "https://www.sitemaps.org/protocol.html",
+                    tooltip: `<strong>What it is:</strong> The <code>&lt;lastmod&gt;</code> property inside the sitemap XML.<br/><br/><strong>Why it's critical:</strong> Provides crawler hints to AI search engines about when content was updated, avoiding redundant crawling.<br/><br/><strong>Impact of missing it:</strong> Bots will repeatedly fetch unchanged pages or miss newly updated pages due to lack of signals.<br/><br/><strong>Implementation Example:</strong> <code>&lt;url&gt;&lt;loc&gt;...&lt;/loc&gt;&lt;lastmod&gt;2026-07-02&lt;/lastmod&gt;&lt;/url&gt;</code>`,
+                    code: hasSitemapLastmod ? 'Found' : 'Missing'
                 }
             ]
         },
         content: {
             supportsMarkdown,
             hasContentSignal,
+            hasContentUse,
+            hasFreshnessHeaders,
+            hasConditionalGET,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -738,10 +896,37 @@ Example:
                     name: "Content-Signal",
                     prompt: `Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training.`,
                     status: hasContentSignal ? 'ok' : 'warn',
-                    message: "Usage policies header.",
+                    message: hasContentSignal ? "Usage policies header found" : "Missing usage policies header",
                     spec: "https://contentsignals.org/",
                     tooltip: `<strong>What it is:</strong> An explicit HTTP Header signaling legal and policy usage metadata for machine consumers.<br/><br/><strong>Why it's critical:</strong> It informs scraping bots at the network level whether your content is free for LLM training, requires attribution, or is completely restricted copyright.<br/><br/><strong>Impact of missing it:</strong> Machine agents assume 'fair game' for all scraped data. Without signal compliance, you have no technical ground to prevent proprietary data from becoming automated training fodder.<br/><br/><strong>Implementation Example:</strong> Ensure your server responses (especially for content heavy pages) include the header: <code>Content-Signal: ai-train=no, search=yes</code> to explicitly block big tech from stealing IP for training while retaining search indexing.`,
                     code: hasContentSignal ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Content-Use Parameter",
+                    prompt: `Extend my Content-Signal declaration in HTTP headers or robots.txt to include the content-use preference parameter (e.g., Content-Signal: search=yes,ai-train=no,use=reference).`,
+                    status: hasContentUse ? 'ok' : 'warn',
+                    message: hasContentUse ? "Content-use parameter found" : "Content-use parameter ('use=reference|immediate|full') missing",
+                    spec: "https://blog.cloudflare.com/content-independence-day-ai-options/",
+                    tooltip: `<strong>What it is:</strong> The new <code>use</code> parameter in Content-Signal (e.g. <code>use=reference</code>, <code>use=immediate</code>, <code>use=full</code>) defined by Cloudflare.<br/><br/><strong>Why it's critical:</strong> Dictates whether bots can reproduce your content in direct user queries (immediate), cite it for reference (reference), or both.<br/><br/><strong>Impact of missing it:</strong> Search bots might display complete answers scraping your site without driving referral traffic.<br/><br/><strong>Implementation Example:</strong> Add <code>use=reference</code> inside the <code>Content-Signal</code> value.`,
+                    code: hasContentUse ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Freshness Headers",
+                    prompt: `Ensure my web server returns ETag and Last-Modified HTTP response headers for all dynamic and static pages.`,
+                    status: hasFreshnessHeaders ? 'ok' : 'warn',
+                    message: hasFreshnessHeaders ? "Freshness headers (ETag/Last-Modified) present" : "Missing ETag or Last-Modified headers",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag",
+                    tooltip: `<strong>What it is:</strong> Caching headers like <code>ETag</code> and <code>Last-Modified</code>.<br/><br/><strong>Why it's critical:</strong> Allows scrapers to verify if the content has changed since the last crawl without reloading the full page.<br/><br/><strong>Impact of missing it:</strong> Bots will waste crawl budget and server bandwidth fetching identical content repeatedly.<br/><br/><strong>Implementation Example:</strong> Configure your server to send <code>Last-Modified</code> and <code>ETag</code> headers.`,
+                    code: hasFreshnessHeaders ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Conditional Requests (304)",
+                    prompt: `Configure my web server to support conditional GET requests by returning an HTTP 304 Not Modified response when the client sends valid If-None-Match or If-Modified-Since headers.`,
+                    status: hasConditionalGET ? 'ok' : 'warn',
+                    message: hasConditionalGET ? "Server returns HTTP 304 Not Modified correctly" : "Server failed to respond with 304 on conditional probe",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Conditional_requests",
+                    tooltip: `<strong>What it is:</strong> Standard HTTP protocol feature where the server responds with <code>304 Not Modified</code> (with zero payload) if the client provides valid caching validators.<br/><br/><strong>Why it's critical:</strong> Used in Crawler Hints to drastically reduce server workload and network load.<br/><br/><strong>Impact of missing it:</strong> Server returns <code>200 OK</code> with full body every time, causing CPU waste and data transfer costs.<br/><br/><strong>Implementation Example:</strong> Support <code>If-None-Match</code> or <code>If-Modified-Since</code> headers on your backend.`,
+                    code: hasConditionalGET ? 'Supported' : 'Failed'
                 },
                 {
                     name: "Semantic JSON-LD",
