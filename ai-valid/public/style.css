@@ -1,16 +1,31 @@
 :root {
-    --bg-deep: #050b14;
-    --bg-glass: rgba(10, 18, 38, 0.65);
-    --bg-glass-hover: rgba(16, 28, 56, 0.85);
-    --border-glass: rgba(64, 112, 244, 0.2);
-    --accent-blue: #3b82f6;
-    --accent-glow: #60a5fa;
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
+    --bg-deep: #f8fafc;
+    --bg-panel: #ffffff;
+    --bg-glass: rgba(255, 255, 255, 0.85);
+    --bg-glass-hover: rgba(255, 255, 255, 0.95);
+    --border-clean: #e2e8f0;
+    --border-glass: rgba(148, 163, 184, 0.2);
+    --accent-blue: #2563eb;
+    --accent-glow: #3b82f6;
+    --accent-blue-light: #eff6ff;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    
     --status-success: #10b981;
-    --status-warning: #f59e0b;
-    --status-error: #ef4444;
-    --status-neutral: #64748b;
+    --status-success-bg: #d1fae5;
+    --status-success-text: #065f46;
+    
+    --status-warning: #d97706;
+    --status-warning-bg: #fef3c7;
+    --status-warning-text: #92400e;
+    
+    --status-error: #e11d48;
+    --status-error-bg: #ffe4e6;
+    --status-error-text: #9f1239;
+    
+    --status-neutral: #475569;
+    
     --font-sans: 'Outfit', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
 }
@@ -53,46 +68,13 @@ body {
 .background-grid {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background-image: 
-        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
-    background-size: 30px 30px;
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 24px 24px;
     z-index: -2;
+    opacity: 0.6;
 }
 
-.blobs {
-    position: fixed;
-    top: 0; left: 0; width: 100%; height: 100%;
-    z-index: -1;
-    overflow: hidden;
-    pointer-events: none;
-}
-
-.blob {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(100px);
-    opacity: 0.4;
-    animation: float 20s infinite ease-in-out alternate;
-}
-
-.blob-1 {
-    top: -10%; left: -10%;
-    width: 50vw; height: 50vw;
-    background: radial-gradient(circle, rgba(59,130,246,0.3) 0%, rgba(0,0,0,0) 70%);
-}
-
-.blob-2 {
-    bottom: -10%; right: -10%;
-    width: 60vw; height: 60vw;
-    background: radial-gradient(circle, rgba(16,185,129,0.15) 0%, rgba(0,0,0,0) 70%);
-    animation-delay: -10s;
-}
-
-@keyframes float {
-    0% { transform: translate(0, 0) scale(1); }
-    100% { transform: translate(5%, 10%) scale(1.1); }
-}
+.blobs { display: none; }
 
 /* Layout */
 .container {
