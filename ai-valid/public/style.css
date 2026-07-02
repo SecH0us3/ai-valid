@@ -58,7 +58,7 @@ body {
 }
 
 .github-corner:hover {
-    color: white;
+    color: var(--text-primary);
     transform: scale(1.1);
     opacity: 1;
     filter: drop-shadow(0 0 8px var(--accent-glow));
@@ -110,7 +110,7 @@ body {
     border-radius: 20px;
     background: var(--accent-blue-light);
     border: 1px solid rgba(37, 99, 235, 0.15);
-    color: #1d4ed8;
+    color: var(--accent-blue);
     font-size: 0.875rem;
     font-weight: 600;
     margin-bottom: 1rem;
@@ -332,6 +332,10 @@ body {
 .metric-status { font-size: 0.8rem; font-weight: bold; padding: 0.2rem 0.5rem; border-radius: 4px; background: rgba(100,116,139,0.2); color: var(--status-neutral); }
 .metric-status.good { background: rgba(16,185,129,0.1); color: var(--status-success); }
 .metric-status.bad { background: rgba(239,68,68,0.1); color: var(--status-error); }
+.metric-status.warn {
+    background: var(--status-warning-bg);
+    color: var(--status-warning-text);
+}
 
 /* Protocols Grid List */
 .protocols-grid {
@@ -395,7 +399,8 @@ body {
     z-index: 1000;
     opacity: 0;
     visibility: hidden;
-    transition: all 0.3s ease;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+    transition-behavior: allow-discrete;
 }
 
 .modal-overlay.active {
@@ -438,7 +443,7 @@ body {
 .modal-title {
     font-size: 1.4rem;
     margin-bottom: 1rem;
-    color: var(--accent-glow);
+    color: var(--accent-blue);
     padding-right: 2rem;
 }
 
@@ -524,12 +529,32 @@ body {
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
 }
 
-.glow-text { color: var(--accent-glow); font-weight: bold; animation: pulseText 1.5s infinite; }
+.glow-text { color: var(--accent-blue); font-weight: bold; animation: pulseText 1.5s infinite; }
 @keyframes pulseText { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .error-toast { background: rgba(239, 68, 68, 0.1); border: 1px solid var(--status-error); color: var(--status-error); padding: 0.75rem 1rem; border-radius: 8px; margin-top: 1rem; font-size: 0.9rem; text-align: center; font-weight: 600;}
+
+.copy-btn {
+    background: var(--accent-blue-light);
+    color: var(--accent-blue);
+    border: 1px solid rgba(37, 99, 235, 0.15);
+    padding: 0.4rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.copy-btn:hover {
+    background: rgba(37, 99, 235, 0.12);
+}
+.copy-btn.copied {
+    background: var(--status-success-bg);
+    color: var(--status-success-text);
+    border-color: rgba(16, 185, 129, 0.15);
+}
 
 @media (max-width: 1024px) {
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
