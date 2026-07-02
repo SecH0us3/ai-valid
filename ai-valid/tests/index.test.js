@@ -1,6 +1,67 @@
 import { describe, it, expect } from 'vitest';
 import index from '../src/index.js';
 
+class HTMLRewriterMock {
+    constructor() {
+        this.selectors = [];
+    }
+    on(selector, handlers) {
+        this.selectors.push({ selector, handlers });
+        return this;
+    }
+    transform(response) {
+        return {
+            text: async () => {
+                const htmlText = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlText, 'text/html');
+                
+                for (const { selector, handlers } of this.selectors) {
+                    if (selector === '*') {
+                        if (handlers.text) {
+                            const walkTextNodes = (node) => {
+                                if (node.nodeType === 3) {
+                                    handlers.text({
+                                        text: node.nodeValue,
+                                        lastInTextNode: true
+                                    });
+                                } else {
+                                    if (node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') {
+                                        for (const child of node.childNodes) {
+                                            walkTextNodes(child);
+                                        }
+                                    }
+                                }
+                            };
+                            walkTextNodes(doc.body || doc.documentElement);
+                        }
+                    } else {
+                        const elements = doc.querySelectorAll(selector);
+                        for (const el of elements) {
+                            if (handlers.element) {
+                                handlers.element({
+                                    getAttribute(name) {
+                                        return el.getAttribute(name);
+                                    }
+                                });
+                            }
+                            if (handlers.text) {
+                                handlers.text({
+                                    text: el.textContent,
+                                    lastInTextNode: true
+                                });
+                            }
+                        }
+                    }
+                }
+                return htmlText;
+            }
+        };
+    }
+}
+
+globalThis.HTMLRewriter = HTMLRewriterMock;
+
 describe('AI-Valid Worker - handleRequest API URL Validation', () => {
 
     // helper to create a mocked request
@@ -131,3 +192,89 @@ describe('AI-Valid Worker - 404 Not Found', () => {
         expect(text).toBe('Not Found');
     });
 });
+
+describe('AI-Valid Worker - Content GEO Audits', () => {
+    const env = {};
+    const ctx = {};
+
+    const runAuditTest = async (htmlContent) => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response(htmlContent, {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/html' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targetUrl: 'https://example.com' })
+            });
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(200);
+            return await res.json();
+        } finally {
+            global.fetch = originalFetch;
+        }
+    };
+
+    it('should detect Quotation Addition (blockquote and q tags)', async () => {
+        const html = `
+            <html>
+                <body>
+                    <blockquote>This is a blockquote quotation.</blockquote>
+                    <p>Some text with a <q>short quote</q> here.</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const quotationResult = data.content.results.find(r => r.name === 'Quotation Addition');
+        expect(quotationResult).toBeDefined();
+        expect(quotationResult.status).toBe('ok');
+        expect(quotationResult.code).toBe('Found');
+    });
+
+    it('should detect Statistics Addition (percentages and currency values)', async () => {
+        const html = `
+            <html>
+                <body>
+                    <p>Our revenue grew by 25% this quarter.</p>
+                    <p>The product costs $1,500.50.</p>
+                    <p>Total amount is GBP 400.</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const statisticsResult = data.content.results.find(r => r.name === 'Statistics Addition');
+        expect(statisticsResult).toBeDefined();
+        expect(statisticsResult.status).toBe('ok');
+        expect(statisticsResult.code).toBe('Found');
+    });
+
+    it('should flag missing Quotation and Statistics when they are not present', async () => {
+        const html = `
+            <html>
+                <body>
+                    <p>This page has generic text with no quotes and no stats.</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const quotationResult = data.content.results.find(r => r.name === 'Quotation Addition');
+        const statisticsResult = data.content.results.find(r => r.name === 'Statistics Addition');
+        expect(quotationResult.status).toBe('warn');
+        expect(quotationResult.code).toBe('Missing');
+        expect(statisticsResult.status).toBe('warn');
+        expect(statisticsResult.code).toBe('Missing');
+    });
+});
+
