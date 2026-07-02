@@ -95,17 +95,20 @@
 
         <!-- Results Dashboard -->
         <section id="results-dashboard" class="dashboard hidden">
-            <div class="score-card glass-panel">
-                <div class="score-circle">
-                    <svg viewBox="0 0 36 36" class="circular-chart">
-                        <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <path class="circle" id="score-circle-path" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <text x="18" y="20.35" class="percentage" id="total-score">0%</text>
-                    </svg>
+            <div class="summary-card glass-panel">
+                <div class="summary-item">
+                    <span class="summary-label">Passed Checks</span>
+                    <span class="summary-count passed-count" id="summary-passed">0</span>
                 </div>
-                <div class="score-details">
-                    <h2 class="score-title">AI Readiness Index</h2>
-                    <p class="score-desc" id="score-verdict">Overall compatibility score for autonomous agents.</p>
+                <div class="summary-divider"></div>
+                <div class="summary-item">
+                    <span class="summary-label">Warnings</span>
+                    <span class="summary-count warn-count" id="summary-warn">0</span>
+                </div>
+                <div class="summary-divider"></div>
+                <div class="summary-item">
+                    <span class="summary-label">Not found</span>
+                    <span class="summary-count failed-count" id="summary-failed">0</span>
                 </div>
             </div>
 
@@ -135,7 +138,7 @@
                 <!-- Check 3: Failed -->
                 <div class="metric-card glass-panel">
                     <div class="metric-header">
-                        <h3 class="metric-title">❌ Action Required</h3>
+                        <h3 class="metric-title">❌ Not found</h3>
                         <span class="metric-status" id="status-failed">Waiting</span>
                     </div>
                     <div class="protocols-grid" id="failed-grid">
