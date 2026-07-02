@@ -75,4 +75,8 @@ describe('AI-Valid Worker - Static GET Routes', () => {
     it('should serve JSON for /.well-known/agent-skills/index.json', async () => {
         await testRoute('/.well-known/agent-skills/index.json', 'application/json; charset=utf-8');
     });
+
+    it('should serve JSON for /.well-known/x402.json', async () => {
+        await testRoute('/.well-known/x402.json', 'application/json; charset=utf-8');
+    });
 });
