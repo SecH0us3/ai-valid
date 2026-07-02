@@ -181,12 +181,54 @@ document.addEventListener('DOMContentLoaded', () => {
         // Score Render
         animateScore(data.score.total);
         
-        // Flatten all checks into array
+        const importanceWeights = {
+            "Content Neg. (MD)": 15,
+            "A2A Agent Card": 10,
+            "Agent Skills": 10,
+            "MCP Server": 10,
+            "AI Plugin": 10,
+            "LLMs.txt": 10,
+            "LLMs-Full.txt": 10,
+            "x402 Payment Standard": 10,
+            "AI Fallback (No-JS)": 10,
+            "Content-Signal": 10,
+            "Semantic JSON-LD": 10,
+            
+            "robots.txt": 5,
+            "AI Directives": 5,
+            "sitemap.xml": 5,
+            "FAQ Schema": 5,
+            "Authorship (E-E-A-T)": 5,
+            "Content Freshness": 5,
+            "External Citations": 5,
+            "Quotation Addition": 5,
+            "Statistics Addition": 5,
+            "Viewport Meta Tag": 5,
+            "NoAI Meta Tag": 5,
+            "Semantic HTML": 5,
+            "Heading Hierarchy": 5,
+            "Scannable Formats": 5,
+            "Internal Architecture": 5,
+            "API Catalog": 5,
+            "OAuth Discovery": 5,
+            "Universal Commerce": 5,
+            "TDM Reservation": 5,
+            "ai.txt": 5
+        };
+
+        // Flatten all checks into array and sort by importance descending, then alphabetically by name
         const allChecks = [
             ...data.bots.results,
             ...data.content.results,
             ...data.protocols.results
-        ];
+        ].sort((a, b) => {
+            const weightA = importanceWeights[a.name] || 0;
+            const weightB = importanceWeights[b.name] || 0;
+            if (weightB !== weightA) {
+                return weightB - weightA;
+            }
+            return a.name.localeCompare(b.name);
+        });
 
         const passed = allChecks.filter(c => c.status === 'ok');
         const warnings = allChecks.filter(c => c.status === 'warn');

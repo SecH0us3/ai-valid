@@ -341,5 +341,49 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(statisticsResult.status).toBe('ok');
         expect(statisticsResult.code).toBe('Found');
     });
+
+    it('should detect x402 Payment Standard configuration', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('.well-known/x402.json')) {
+                return new Response(JSON.stringify({
+                    x402Version: 2,
+                    endpoints: []
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('<html></html>', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/html' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targetUrl: 'https://example.com' })
+            });
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            const x402Result = data.protocols.results.find(r => r.name === 'x402 Payment Standard');
+            expect(x402Result).toBeDefined();
+            expect(x402Result.status).toBe('ok');
+            expect(x402Result.message).toBe('Valid JSON found');
+            expect(x402Result.code).toBe(200);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 

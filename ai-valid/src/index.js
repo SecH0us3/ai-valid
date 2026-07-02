@@ -9,6 +9,8 @@ import openApiJson from '../public/openapi.json';
 import tdmrepJson from "../public/.well-known/tdmrep.json";
 import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
+import x402Json from "../public/.well-known/x402.json";
+
 
 const FETCH_TIMEOUT = 5000;
 const STATIC_ROUTES = {
@@ -72,8 +74,33 @@ const STATIC_ROUTES = {
         return new Response(JSON.stringify(agentSkills, null, 2), {
             headers: { "Content-Type": "application/json; charset=utf-8" },
         });
+    },
+    "/.well-known/x402.json": () => {
+        let content = "";
+        if (typeof x402Json === 'object' && x402Json !== null) {
+            content = JSON.stringify(x402Json, null, 2);
+        } else if (typeof x402Json === 'string' && (x402Json.trim().startsWith('{') || x402Json.trim().startsWith('['))) {
+            content = x402Json;
+        }
+        const body = content || JSON.stringify({
+            x402Version: 2,
+            endpoints: [
+                {
+                    url: "/api/audit",
+                    description: "AI-Readiness Audit Platform API",
+                    amount: "0",
+                    currency: "USDC",
+                    network: "eip155:8453",
+                    payTo: "0x0000000000000000000000000000000000000000"
+                }
+            ]
+        }, null, 2);
+        return new Response(body, {
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
     }
 };
+
 
 export default {
     async fetch(request, env, ctx) {
@@ -558,8 +585,34 @@ Example:
 
 User-Agent: GPTBot\nDisallow: /\n\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
+        },
+        {
+            name: "x402 Payment Standard",
+            prompt: `Please check if \`/.well-known/x402.json\` exists. If it exists, update it; otherwise, create it. It should define my API pricing and payment parameters (assets, network CAIP-2, wallet address) following the x402 open payment standard.
+Example:
+\`\`\`json
+{
+  "x402Version": 2,
+  "endpoints": [
+    {
+      "url": "https://api.example.com/data",
+      "description": "Premium data access",
+      "amount": "10000",
+      "currency": "USDC",
+      "network": "eip155:8453",
+      "payTo": "0xYourWalletAddress"
+    }
+  ]
+}
+\`\`\``,
+            path: '/.well-known/x402.json',
+            spec: 'https://www.x402.org/',
+            isJson: true,
+            points: 10,
+            tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/x402.json</code>, this is the standard discovery metadata file for the HTTP 402-native open payments protocol.<br/><br/><strong>Why it's critical:</strong> It publishes machine-readable details about pricing, accepted assets (like USDC), payment networks (via CAIP-2 identifiers), and target wallet addresses so AI agents can pay programmatically.<br/><br/><strong>Impact of missing it:</strong> AI agents cannot discover your payment configuration. They will not be able to automatically authorize and execute micro-payments to purchase access to your APIs or protected data.<br/><br/><strong>Implementation Example:</strong> Publish a JSON configuration at <code>/.well-known/x402.json</code> specifying your pricing terms, network CAIP-2 identifiers (e.g., eip155:8453 for Base), and target wallet addresses.`
         }
     ];
+
 
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
