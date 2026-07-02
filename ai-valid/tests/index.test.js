@@ -16,44 +16,68 @@ class HTMLRewriterMock {
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(htmlText, 'text/html');
                 
-                for (const { selector, handlers } of this.selectors) {
-                    if (selector === '*') {
-                        if (handlers.text) {
-                            const walkTextNodes = (node) => {
-                                if (node.nodeType === 3) {
+                const traverse = (node) => {
+                    let endTagCallbacks = [];
+                    
+                    if (node.nodeType === 1) { // Element node
+                        for (const { selector, handlers } of this.selectors) {
+                            if (selector !== '*' && node.matches(selector)) {
+                                if (handlers.element) {
+                                    handlers.element({
+                                        getAttribute(name) {
+                                            return node.getAttribute(name);
+                                        },
+                                        onEndTag(cb) {
+                                            endTagCallbacks.push(cb);
+                                        }
+                                    });
+                                }
+                                if (handlers.text) {
+                                    handlers.text({
+                                        text: node.textContent,
+                                        lastInTextNode: true
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Visit children
+                    for (const child of node.childNodes) {
+                        traverse(child);
+                    }
+                    
+                    // Handle * text node
+                    if (node.nodeType === 3) { // Text node
+                        for (const { selector, handlers } of this.selectors) {
+                            if (selector === '*' && handlers.text) {
+                                if (node.nodeValue.includes('[split]')) {
+                                    const parts = node.nodeValue.split('[split]');
+                                    for (let i = 0; i < parts.length; i++) {
+                                        handlers.text({
+                                            text: parts[i],
+                                            lastInTextNode: i === parts.length - 1
+                                        });
+                                    }
+                                } else {
                                     handlers.text({
                                         text: node.nodeValue,
                                         lastInTextNode: true
                                     });
-                                } else {
-                                    if (node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') {
-                                        for (const child of node.childNodes) {
-                                            walkTextNodes(child);
-                                        }
-                                    }
                                 }
-                            };
-                            walkTextNodes(doc.body || doc.documentElement);
-                        }
-                    } else {
-                        const elements = doc.querySelectorAll(selector);
-                        for (const el of elements) {
-                            if (handlers.element) {
-                                handlers.element({
-                                    getAttribute(name) {
-                                        return el.getAttribute(name);
-                                    }
-                                });
-                            }
-                            if (handlers.text) {
-                                handlers.text({
-                                    text: el.textContent,
-                                    lastInTextNode: true
-                                });
                             }
                         }
                     }
-                }
+                    
+                    // Trigger end tags
+                    if (node.nodeType === 1) {
+                        for (const cb of endTagCallbacks) {
+                            cb();
+                        }
+                    }
+                };
+                
+                traverse(doc.body || doc.documentElement);
                 return htmlText;
             }
         };
@@ -61,6 +85,7 @@ class HTMLRewriterMock {
 }
 
 globalThis.HTMLRewriter = HTMLRewriterMock;
+
 
 describe('AI-Valid Worker - handleRequest API URL Validation', () => {
 
@@ -275,6 +300,46 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(quotationResult.code).toBe('Missing');
         expect(statisticsResult.status).toBe('warn');
         expect(statisticsResult.code).toBe('Missing');
+    });
+
+    it('should ignore statistics inside script, style, and noscript tags to avoid false positives', async () => {
+        const html = `
+            <html>
+                <head>
+                    <style>
+                        body { width: 100%; height: 80%; }
+                    </style>
+                    <script>
+                        const data = { price: "$500", count: 12 };
+                    </script>
+                </head>
+                <body>
+                    <noscript>
+                        We have 99% uptime when Javascript is enabled!
+                    </noscript>
+                    <p>This page has no visible statistics.</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const statisticsResult = data.content.results.find(r => r.name === 'Statistics Addition');
+        expect(statisticsResult.status).toBe('warn');
+        expect(statisticsResult.code).toBe('Missing');
+    });
+
+    it('should successfully match statistics split across text chunks (chunking test)', async () => {
+        // The [split] marker is handled by HTMLRewriterMock to trigger multiple text chunks
+        const html = `
+            <html>
+                <body>
+                    <p>Statistics addition of 50[split]% of respondents.</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const statisticsResult = data.content.results.find(r => r.name === 'Statistics Addition');
+        expect(statisticsResult.status).toBe('ok');
+        expect(statisticsResult.code).toBe('Found');
     });
 });
 

@@ -325,6 +325,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
         let currentJsonLd = '';
+        let inIgnoredTag = false;
+        let statsTextBuffer = '';
 
         await new HTMLRewriter()
             .on('meta', {
@@ -366,13 +368,23 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             .on('blockquote, q', {
                 element() { hasQuotations = true; }
             })
+            .on('script, style, noscript', {
+                element(el) {
+                    inIgnoredTag = true;
+                    el.onEndTag(() => {
+                        inIgnoredTag = false;
+                    });
+                }
+            })
             .on('*', {
                 text(chunk) {
-                    if (!hasStatistics) {
-                        // Check for numbers followed by %, or numbers preceded by $
-                        const t = chunk.text;
-                        if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(t)) {
-                            hasStatistics = true;
+                    if (!hasStatistics && !inIgnoredTag) {
+                        statsTextBuffer += chunk.text;
+                        if (chunk.lastInTextNode) {
+                            if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
+                                hasStatistics = true;
+                            }
+                            statsTextBuffer = '';
                         }
                     }
                 }
