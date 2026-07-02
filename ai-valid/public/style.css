@@ -522,10 +522,10 @@ body {
 .radar-blip {
     position: absolute;
     width: 6px; height: 6px;
-    background: #10b981;
+    background: var(--status-success);
     border-radius: 50%;
     transform: translate(-50%, -50%);
-    box-shadow: 0 0 10px #10b981, 0 0 20px #10b981;
+    box-shadow: 0 0 10px var(--status-success), 0 0 20px var(--status-success);
     opacity: 0;
     z-index: 3;
 }
