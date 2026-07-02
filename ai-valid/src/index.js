@@ -122,13 +122,21 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         const req = new Request(url, options);
         return await handleRequest(req, env, ctx);
     }
-    const res = await fetch(url, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
-    if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
-        const location = new URL(res.headers.get('location'), url).href;
-        if (!(await isSafeUrl(location))) {
-            throw new Error('SSRF attempt via redirect');
+    let currentUrl = url;
+    let redirectCount = 0;
+    const maxRedirects = 5;
+    let res = await fetch(currentUrl, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    while (res.status >= 300 && res.status < 400 && res.headers.has("location") && redirectCount < maxRedirects) {
+        const locationUrl = new URL(res.headers.get("location"), currentUrl);
+        if (locationUrl.protocol !== "http:" && locationUrl.protocol !== "https:") {
+            throw new Error("Invalid redirect protocol");
         }
-        return await fetch(location, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+        currentUrl = locationUrl.href;
+        if (!await isSafeUrl(currentUrl)) {
+            throw new Error("SSRF attempt via redirect");
+        }
+        res = await fetch(currentUrl, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+        redirectCount++;
     }
     return res;
 }
@@ -161,7 +169,7 @@ function isPrivateIP(ip) {
         // 0000:0000:0000:0000:0000:ffff:7f00:0001
         if (fullIp.startsWith('fc') || fullIp.startsWith('fd') ||
             fullIp.startsWith('fe8') || fullIp.startsWith('fe9') || fullIp.startsWith('fea') || fullIp.startsWith('feb') ||
-            fullIp.startsWith('ff0')) {
+            fullIp.startsWith('ff')) {
             return true;
         }
 
@@ -361,7 +369,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
         let currentJsonLd = '';
-        let inIgnoredTag = false;
+        let ignoredTagDepth = 0;
         let statsTextBuffer = '';
 
         await new HTMLRewriter()
@@ -406,15 +414,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('script, style, noscript', {
                 element(el) {
-                    inIgnoredTag = true;
+                    ignoredTagDepth++;
                     el.onEndTag(() => {
-                        inIgnoredTag = false;
+                        ignoredTagDepth--;
                     });
                 }
             })
             .on('*', {
                 text(chunk) {
-                    if (!hasStatistics && !inIgnoredTag) {
+                    if (!hasStatistics && ignoredTagDepth === 0) {
                         statsTextBuffer += chunk.text;
                         if (chunk.lastInTextNode) {
                             if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {

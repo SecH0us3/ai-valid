@@ -70,13 +70,37 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.style.fontSize = '0.9rem';
             btn.innerHTML = '📋 Copy AI Prompt';
             btn.onclick = () => {
-                navigator.clipboard.writeText(prompt);
-                btn.innerHTML = '✅ Copied!';
-                btn.classList.add('copied');
-                setTimeout(() => { 
-                    btn.innerHTML = '📋 Copy AI Prompt';
-                    btn.classList.remove('copied');
-                }, 2000);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(prompt).then(() => {
+                        btn.innerHTML = '✅ Copied!';
+                        btn.classList.add('copied');
+                        setTimeout(() => { 
+                            btn.innerHTML = '📋 Copy AI Prompt';
+                            btn.classList.remove('copied');
+                        }, 2000);
+                    }).catch(err => {
+                        console.error('Failed to copy text: ', err);
+                    });
+                } else {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = prompt;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        btn.innerHTML = '✅ Copied!';
+                        btn.classList.add('copied');
+                        setTimeout(() => { 
+                            btn.innerHTML = '📋 Copy AI Prompt';
+                            btn.classList.remove('copied');
+                        }, 2000);
+                    } catch (err) {
+                        console.error('Fallback copy failed: ', err);
+                    }
+                    document.body.removeChild(textarea);
+                }
             };
             modalFooter.appendChild(btn);
         }
@@ -222,9 +246,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Flatten all checks into array and sort by importance descending, then alphabetically by name
         const allChecks = [
-            ...data.bots.results,
-            ...data.content.results,
-            ...data.protocols.results
+            ...(data?.bots?.results || []),
+            ...(data?.content?.results || []),
+            ...(data?.protocols?.results || [])
         ].sort((a, b) => {
             const weightA = importanceWeights[a.name] || 0;
             const weightB = importanceWeights[b.name] || 0;

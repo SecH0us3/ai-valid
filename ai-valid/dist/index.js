@@ -4,7 +4,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 // src/index.js
 import htmlTemplate from "./6a9641872e11713e608dc0aecce3c3b9b1e63d80-index.html";
 import cssContent from "./1b01a7a55b707b1ece6559c46fe3674b8e530fa6-style.css";
-import jsContent from "./be482ab5a7cdd4321d754ba62c90a128fb5e8c55-app.client.js";
+import jsContent from "./f2ecd92b28ba00bae23a23c8337813a23604bc28-app.client.js";
 import faviconSvg from "./45ba4c92db4d001752d3d6ae94f176ac0c79ae72-favicon.svg";
 import ogImage from "./2dcbf33f63fd296a20d22f78f49520c2ad93933f-og-image.png";
 import llmsTxt from "./f7048bacd32f8ddcadf6690e0dede56837d50d98-llms.txt";
@@ -132,13 +132,21 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
     const req = new Request(url, options);
     return await handleRequest(req, env, ctx);
   }
-  const res = await fetch(url, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
-  if (res.status >= 300 && res.status < 400 && res.headers.has("location")) {
-    const location = new URL(res.headers.get("location"), url).href;
-    if (!await isSafeUrl(location)) {
+  let currentUrl = url;
+  let redirectCount = 0;
+  const maxRedirects = 5;
+  let res = await fetch(currentUrl, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+  while (res.status >= 300 && res.status < 400 && res.headers.has("location") && redirectCount < maxRedirects) {
+    const locationUrl = new URL(res.headers.get("location"), currentUrl);
+    if (locationUrl.protocol !== "http:" && locationUrl.protocol !== "https:") {
+      throw new Error("Invalid redirect protocol");
+    }
+    currentUrl = locationUrl.href;
+    if (!await isSafeUrl(currentUrl)) {
       throw new Error("SSRF attempt via redirect");
     }
-    return await fetch(location, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    res = await fetch(currentUrl, { ...options, redirect: "manual", signal: AbortSignal.timeout(FETCH_TIMEOUT) });
+    redirectCount++;
   }
   return res;
 }
@@ -174,7 +182,7 @@ function isPrivateIP(ip) {
       fullIp = `${parts[0] ? parts[0] + ":" : ""}${zeroes}${parts[1] ? ":" + parts[1] : ""}`;
     }
     fullIp = fullIp.split(":").map((segment) => segment.padStart(4, "0").toLowerCase()).join(":");
-    if (fullIp.startsWith("fc") || fullIp.startsWith("fd") || fullIp.startsWith("fe8") || fullIp.startsWith("fe9") || fullIp.startsWith("fea") || fullIp.startsWith("feb") || fullIp.startsWith("ff0")) {
+    if (fullIp.startsWith("fc") || fullIp.startsWith("fd") || fullIp.startsWith("fe8") || fullIp.startsWith("fe9") || fullIp.startsWith("fea") || fullIp.startsWith("feb") || fullIp.startsWith("ff")) {
       return true;
     }
     if (fullIp.startsWith("0000:0000:0000:0000:0000:ffff:")) {
@@ -338,7 +346,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const htmlText = await r_home.text();
     const jsonLdChunks = [];
     let currentJsonLd = "";
-    let inIgnoredTag = false;
+    let ignoredTagDepth = 0;
     let statsTextBuffer = "";
     await new HTMLRewriter().on("meta", {
       element(el) {
@@ -384,14 +392,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
       }
     }).on("script, style, noscript", {
       element(el) {
-        inIgnoredTag = true;
+        ignoredTagDepth++;
         el.onEndTag(() => {
-          inIgnoredTag = false;
+          ignoredTagDepth--;
         });
       }
     }).on("*", {
       text(chunk) {
-        if (!hasStatistics && !inIgnoredTag) {
+        if (!hasStatistics && ignoredTagDepth === 0) {
           statsTextBuffer += chunk.text;
           if (chunk.lastInTextNode) {
             if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
