@@ -160,7 +160,8 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
 
             expect(res.status).toBe(200);
             const data = await res.json();
-            expect(data.score).toBeDefined();
+            expect(data.score.total).toBeDefined();
+            expect(data.score.max).toBe(100);
         } finally {
             global.fetch = originalFetch;
         }
@@ -384,6 +385,122 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         } finally {
             global.fetch = originalFetch;
         }
+    });
+
+    describe('AI-Valid Worker - Cloudflare Smart Search & Bot Policies', () => {
+        const env = {};
+        const ctx = {};
+
+        it('should evaluate robots.txt and sitemap correctly (differentiated policy & sitemap lastmod)', async () => {
+            const originalFetch = global.fetch;
+            global.fetch = async (url, options) => {
+                const urlStr = url.toString();
+                if (urlStr.includes('cloudflare-dns.com')) {
+                    return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+                }
+                if (urlStr.includes('/robots.txt')) {
+                    return new Response(
+                        `User-agent: OAI-SearchBot\nAllow: /\n` +
+                        `User-agent: ChatGPT-User\nAllow: /\n` +
+                        `User-agent: GPTBot\nDisallow: /\n` +
+                        `User-agent: ClaudeBot\nDisallow: /\n` +
+                        `User-agent: Google-Extended\nDisallow: /\n` +
+                        `User-agent: Amazonbot\nDisallow: /\n` +
+                        `User-agent: cohere-ai\nDisallow: /\n` +
+                        `Content-Signal: search=yes, ai-train=no, use=reference\n` +
+                        `Sitemap: https://example.com/sitemap.xml`,
+                        { status: 200 }
+                    );
+                }
+                if (urlStr.includes('/sitemap.xml')) {
+                    return new Response(
+                        `<urlset><url><loc>https://example.com/</loc><lastmod>2026-07-02</lastmod></url></urlset>`,
+                        { status: 200 }
+                    );
+                }
+                if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                    return new Response('<html></html>', {
+                        status: 200,
+                        headers: { 
+                            'Content-Type': 'text/html',
+                            'ETag': '"abc12345"',
+                            'Last-Modified': 'Wed, 01 Jul 2026 12:00:00 GMT'
+                        }
+                    });
+                }
+                return new Response('Not Found', { status: 404 });
+            };
+
+            try {
+                const req = new Request('https://localhost/api/audit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                });
+                const res = await index.fetch(req, env, ctx);
+                expect(res.status).toBe(200);
+                const data = await res.json();
+                
+                // Check bots
+                expect(data.bots.robotsFound).toBe(true);
+                expect(data.bots.hasAISearch).toBe(true);
+                expect(data.bots.hasAIAgent).toBe(true);
+                expect(data.bots.hasAITrainingBlocked).toBe(true);
+                expect(data.bots.hasDifferentiatedPolicy).toBe(true);
+                expect(data.bots.sitemapFound).toBe(true);
+                expect(data.bots.hasSitemapLastmod).toBe(true);
+
+                // Check Content-Signal and freshness
+                expect(data.content.hasContentSignal).toBe(true);
+                expect(data.content.hasContentUse).toBe(true);
+                expect(data.content.hasFreshnessHeaders).toBe(true);
+            } finally {
+                global.fetch = originalFetch;
+            }
+        });
+
+        it('should support Conditional GET resulting in 304 Not Modified', async () => {
+            const originalFetch = global.fetch;
+            global.fetch = async (url, options) => {
+                const urlStr = url.toString();
+                if (urlStr.includes('cloudflare-dns.com')) {
+                    return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+                }
+                if (urlStr.includes('robots.txt') || urlStr.includes('sitemap.xml')) {
+                    return new Response('Not Found', { status: 404 });
+                }
+                if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                    const reqHeaders = new Headers(options?.headers);
+                    if (reqHeaders.get('if-none-match') === '"abc12345"') {
+                        return new Response(null, { status: 304 });
+                    }
+                    return new Response('<html></html>', {
+                        status: 200,
+                        headers: { 
+                            'Content-Type': 'text/html',
+                            'ETag': '"abc12345"'
+                        }
+                    });
+                }
+                return new Response('Not Found', { status: 404 });
+            };
+
+            try {
+                const req = new Request('https://localhost/api/audit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                });
+                const res = await index.fetch(req, env, ctx);
+                expect(res.status).toBe(200);
+                const data = await res.json();
+                
+                expect(data.content.hasFreshnessHeaders).toBe(true);
+                expect(data.content.hasConditionalGET).toBe(true);
+            } finally {
+                global.fetch = originalFetch;
+            }
+        });
     });
 });
 
