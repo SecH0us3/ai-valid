@@ -304,6 +304,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasAuthorship = false;
     let hasFreshness = false;
     let hasCitations = false;
+    let hasQuotations = false;
+    let hasStatistics = false;
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -323,6 +325,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
         let currentJsonLd = '';
+        let inIgnoredTag = false;
+        let statsTextBuffer = '';
 
         await new HTMLRewriter()
             .on('meta', {
@@ -360,6 +364,30 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('ul, ol, table', {
                 element() { hasLists = true; }
+            })
+            .on('blockquote, q', {
+                element() { hasQuotations = true; }
+            })
+            .on('script, style, noscript', {
+                element(el) {
+                    inIgnoredTag = true;
+                    el.onEndTag(() => {
+                        inIgnoredTag = false;
+                    });
+                }
+            })
+            .on('*', {
+                text(chunk) {
+                    if (!hasStatistics && !inIgnoredTag) {
+                        statsTextBuffer += chunk.text;
+                        if (chunk.lastInTextNode) {
+                            if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
+                                hasStatistics = true;
+                            }
+                            statsTextBuffer = '';
+                        }
+                    }
+                }
             })
             .on('a', {
                 element(el) {
@@ -413,6 +441,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasLists) totalScore += 5;
         if (hasInternalLinks) totalScore += 5;
         if (hasCitations) totalScore += 5;
+        if (hasQuotations) totalScore += 5;
+        if (hasStatistics) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -790,6 +820,24 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a",
                     tooltip: `<strong>What it is:</strong> Outbound links (<code>&lt;a href="..."&gt;</code>) pointing to authoritative external domains.<br/><br/><strong>Why it's critical for GEO:</strong> Linking to credible external sources acts as a trust signal. Generative Engines prefer content that synthesizes information and backs claims with primary sources.<br/><br/><strong>Impact of missing it:</strong> Without citations, your content may appear unsubstantiated, reducing the AI's confidence in using it as a source.<br/><br/><strong>Implementation Example:</strong> Link to original research, industry benchmarks, or authoritative publications when making claims.`,
                     code: hasCitations ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Quotation Addition",
+                    prompt: `Add <blockquote> or <q> tags to include expert quotes in my content.`,
+                    status: hasQuotations ? 'ok' : 'warn',
+                    message: hasQuotations ? "Quotations found" : "Missing quotations",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/blockquote",
+                    tooltip: `<strong>What it is:</strong> Use of explicit quotation tags like <code>&lt;blockquote&gt;</code> or <code>&lt;q&gt;</code> to cite experts or primary sources.<br/><br/><strong>Why it's critical for GEO:</strong> According to generative engine optimization research (e.g., the Princeton GEO paper), adding attributed quotes significantly boosts visibility and citation rates in AI answers.<br/><br/><strong>Impact of missing it:</strong> The AI may overlook your content as a primary source for authoritative opinions or statements.<br/><br/><strong>Implementation Example:</strong> Wrap expert statements or citations in <code>&lt;blockquote&gt;</code> tags to make them easily identifiable by AI models.`,
+                    code: hasQuotations ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Statistics Addition",
+                    prompt: `Include concrete statistics, numbers, and metrics in my text content to improve AI extraction.`,
+                    status: hasStatistics ? 'ok' : 'warn',
+                    message: hasStatistics ? "Statistics found" : "Missing statistics or metrics",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/data",
+                    tooltip: `<strong>What it is:</strong> The presence of quantitative data, such as percentages or dollar amounts, embedded in your text content.<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines heavily favor content with hard data. The Princeton GEO research highlights "Statistics Addition" as a top tactic for improving AI citation rates by replacing qualitative vagueness with concrete numbers.<br/><br/><strong>Impact of missing it:</strong> Vague statements without backing data are less likely to be extracted and cited by AI models compared to competitors offering exact figures.<br/><br/><strong>Implementation Example:</strong> Instead of "many users," write "78% of users." Ensure important metrics are clear and unambiguous.`,
+                    code: hasStatistics ? 'Found' : 'Missing'
                 }
             ]
         },
