@@ -23,14 +23,23 @@ const STATIC_ROUTES = {
             });
         }
         return new Response(htmlTemplate, {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
+            headers: { 
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            },
         });
     },
     "/style.css": () => new Response(cssContent, {
-        headers: { "Content-Type": "text/css; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/css; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        },
     }),
     "/app.client.js": () => new Response(jsContent, {
-        headers: { "Content-Type": "application/javascript; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        },
     }),
     "/favicon.svg": () => new Response(faviconSvg, {
         headers: { "Content-Type": "image/svg+xml" },

@@ -2,7 +2,7 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // src/index.js
-import htmlTemplate from "./24817edde31015a8d149db6bda1df1a55bdd03b9-index.html";
+import htmlTemplate from "./6a9641872e11713e608dc0aecce3c3b9b1e63d80-index.html";
 import cssContent from "./cc94d258b8856794ebb76581a9f5d2174782999b-style.css";
 import jsContent from "./be482ab5a7cdd4321d754ba62c90a128fb5e8c55-app.client.js";
 import faviconSvg from "./45ba4c92db4d001752d3d6ae94f176ac0c79ae72-favicon.svg";
@@ -37,14 +37,23 @@ curl -X POST https://<your-worker-domain>/api/audit \\
       });
     }
     return new Response(htmlTemplate, {
-      headers: { "Content-Type": "text/html; charset=utf-8" }
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+      }
     });
   }, "/"),
   "/style.css": /* @__PURE__ */ __name(() => new Response(cssContent, {
-    headers: { "Content-Type": "text/css; charset=utf-8" }
+    headers: {
+      "Content-Type": "text/css; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+    }
   }), "/style.css"),
   "/app.client.js": /* @__PURE__ */ __name(() => new Response(jsContent, {
-    headers: { "Content-Type": "application/javascript; charset=utf-8" }
+    headers: {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+    }
   }), "/app.client.js"),
   "/favicon.svg": /* @__PURE__ */ __name(() => new Response(faviconSvg, {
     headers: { "Content-Type": "image/svg+xml" }
