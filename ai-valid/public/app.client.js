@@ -65,14 +65,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (prompt) {
             const btn = document.createElement('button');
-            btn.className = 'glow-button';
+            btn.className = 'copy-btn';
             btn.style.padding = '0.4rem 1rem';
             btn.style.fontSize = '0.9rem';
             btn.innerHTML = '📋 Copy AI Prompt';
             btn.onclick = () => {
                 navigator.clipboard.writeText(prompt);
                 btn.innerHTML = '✅ Copied!';
-                setTimeout(() => { btn.innerHTML = '📋 Copy AI Prompt'; }, 2000);
+                btn.classList.add('copied');
+                setTimeout(() => { 
+                    btn.innerHTML = '📋 Copy AI Prompt';
+                    btn.classList.remove('copied');
+                }, 2000);
             };
             modalFooter.appendChild(btn);
         }
@@ -236,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Formatted renderer for the 3 grouped columns
         renderGridList('passed-grid', 'status-passed', passed, 'good', `Passed: ${passed.length}`);
-        renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'neutral' : 'good', `Warnings: ${warnings.length}`);
+        renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'warn' : 'good', `Warnings: ${warnings.length}`);
         renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Failed: ${failed.length}`);
     }
 
@@ -284,6 +288,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const protoBadge = document.createElement('span');
             protoBadge.className = 'proto-badge';
             protoBadge.textContent = p.code || 'Soft 404';
+            
+            // Map styles dynamically
+            if (p.status === 'ok') {
+                protoBadge.style.backgroundColor = 'var(--status-success-bg)';
+                protoBadge.style.color = 'var(--status-success-text)';
+            } else if (p.status === 'warn') {
+                protoBadge.style.backgroundColor = 'var(--status-warning-bg)';
+                protoBadge.style.color = 'var(--status-warning-text)';
+            } else {
+                protoBadge.style.backgroundColor = 'var(--status-error-bg)';
+                protoBadge.style.color = 'var(--status-error-text)';
+            }
 
             protoTop.appendChild(protoName);
             protoTop.appendChild(protoBadge);
