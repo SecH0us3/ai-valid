@@ -542,12 +542,12 @@ body {
 
 .radar {
     position: absolute;
-    top: 50%; left: 50%;
+    top: 0; left: 50%;
     width: 2px; height: 50%;
-    background: linear-gradient(to bottom, var(--accent-glow) 0%, rgba(37, 99, 235, 0) 100%);
-    transform-origin: top;
+    background: linear-gradient(to top, rgba(37, 99, 235, 0) 0%, var(--accent-glow) 100%);
+    transform-origin: bottom;
     animation: radarSpin 2s linear infinite;
-    box-shadow: 0 0 8px var(--accent-glow);
+    box-shadow: 0 -4px 8px var(--accent-glow);
     z-index: 4;
 }
 
@@ -639,7 +639,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    *, ::before, ::after {
+    *:not(.radar):not(.radar-scan):not(.radar-pulse):not(.radar-pulse-2):not(.radar-blip), 
+    ::before, ::after {
         animation-delay: -1ms !important;
         animation-duration: 1ms !important;
         animation-iteration-count: 1 !important;

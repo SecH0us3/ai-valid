@@ -3,7 +3,7 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 
 // src/index.js
 import htmlTemplate from "./6a9641872e11713e608dc0aecce3c3b9b1e63d80-index.html";
-import cssContent from "./cc94d258b8856794ebb76581a9f5d2174782999b-style.css";
+import cssContent from "./1b01a7a55b707b1ece6559c46fe3674b8e530fa6-style.css";
 import jsContent from "./be482ab5a7cdd4321d754ba62c90a128fb5e8c55-app.client.js";
 import faviconSvg from "./45ba4c92db4d001752d3d6ae94f176ac0c79ae72-favicon.svg";
 import ogImage from "./2dcbf33f63fd296a20d22f78f49520c2ad93933f-og-image.png";
