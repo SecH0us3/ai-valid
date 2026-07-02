@@ -110,7 +110,7 @@ body {
     border-radius: 20px;
     background: var(--accent-blue-light);
     border: 1px solid rgba(37, 99, 235, 0.15);
-    color: var(--accent-blue);
+    color: #1d4ed8;
     font-size: 0.875rem;
     font-weight: 600;
     margin-bottom: 1rem;
@@ -215,7 +215,7 @@ body {
 }
 
 #url-input::placeholder {
-    color: var(--text-muted);
+    color: #64748b;
 }
 
 .glow-button {
@@ -514,4 +514,16 @@ body {
     .hero-title { font-size: 2rem; }
     .metrics-grid { grid-template-columns: 1fr; }
     .score-card { flex-direction: column; text-align: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+        animation-delay: -1ms !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        background-attachment: initial !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+    }
 }
