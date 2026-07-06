@@ -895,7 +895,10 @@ Example:
                     tooltip: `<strong>What it is:</strong> The <code>&lt;lastmod&gt;</code> property inside the sitemap XML.<br/><br/><strong>Why it's critical:</strong> Provides crawler hints to AI search engines about when content was updated, avoiding redundant crawling.<br/><br/><strong>Impact of missing it:</strong> Bots will repeatedly fetch unchanged pages or miss newly updated pages due to lack of signals.<br/><br/><strong>Implementation Example:</strong> <code>&lt;url&gt;&lt;loc&gt;...&lt;/loc&gt;&lt;lastmod&gt;2026-07-02&lt;/lastmod&gt;&lt;/url&gt;</code>`,
                     code: hasSitemapLastmod ? 'Found' : 'Missing'
                 }
-            ]
+            ].sort((a, b) => {
+                const weights = { "Differentiated Policy": 100, "AI Search Allowed": 90, "AI Agent Allowed": 80, "AI Training Blocked": 70, "robots.txt": 60, "sitemap.xml": 50, "Sitemap Lastmod": 40 };
+                return (weights[b.name] || 0) - (weights[a.name] || 0);
+            })
         },
         content: {
             supportsMarkdown,
@@ -1125,10 +1128,28 @@ Examples of specific types:
                     tooltip: `<strong>What it is:</strong> A frontend library (<a href="https://webmcp.dev/" target="_blank">WebMCP</a>) that allows websites to integrate with the Model Context Protocol directly in the browser.<br/><br/><strong>Why it's critical:</strong> It enables your website to expose local tools, prompts, and resources directly to the user's AI client (like Claude Desktop) without requiring them to manually configure a remote MCP server.<br/><br/><strong>Impact of missing it:</strong> Users must manually discover and configure your MCP server in their client settings, which introduces friction.<br/><br/><strong>Implementation Example:</strong> Include <code>&lt;script src="https://.../webmcp.js"&gt;&lt;/script&gt;</code> and register your tools via <code>mcp.registerTool(...)</code>.`,
                     code: hasWebMCP ? 'Found' : 'Missing'
                 }
-            ]
+            ].sort((a, b) => {
+                const weights = {
+                    "Semantic JSON-LD": 100, "Content Neg. (MD)": 95, "WebMCP Integration": 90, "AI Fallback (No-JS)": 85,
+                    "Semantic HTML": 80, "Heading Hierarchy": 75, "Scannable Formats": 70, "Content-Signal": 65,
+                    "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45,
+                    "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
+                    "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
+                    "Quotation Addition": 10, "Statistics Addition": 5
+                };
+                return (weights[b.name] || 0) - (weights[a.name] || 0);
+            })
         },
         protocols: {
-            results: protoResults
+            results: protoResults.sort((a, b) => {
+                const weights = {
+                    "MCP Server": 100, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
+                    "Agent Skills": 80, "A2A Agent Card": 75, "x402 Payment Standard": 70,
+                    "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55, "OAuth Discovery": 50,
+                    "Universal Commerce": 45
+                };
+                return (weights[b.name] || 0) - (weights[a.name] || 0);
+            })
         }
     };
 }
