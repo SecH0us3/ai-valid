@@ -427,6 +427,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasQuotations = false;
     let hasStatistics = false;
     let hasWebMCP = false;
+    let currentScriptText = '';
 
     try {
         const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
@@ -582,8 +583,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     }
                 },
                 text(chunk) {
-                    if (chunk.text.includes('new WebMCP')) {
-                        hasWebMCP = true;
+                    if (hasWebMCP) return;
+                    currentScriptText += chunk.text;
+                    if (chunk.lastInTextNode) {
+                        if (currentScriptText.includes('new WebMCP')) {
+                            hasWebMCP = true;
+                        }
+                        currentScriptText = '';
                     }
                 }
             })
