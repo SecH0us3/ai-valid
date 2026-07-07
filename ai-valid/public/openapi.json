@@ -13,26 +13,20 @@
   ],
   "paths": {
     "/api/audit": {
-      "post": {
+      "get": {
         "summary": "Perform an AI readiness audit on a given URL.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "targetUrl": {
-                    "type": "string",
-                    "format": "uri",
-                    "description": "The URL of the website to audit."
-                  }
-                },
-                "required": ["targetUrl"]
-              }
+        "parameters": [
+          {
+            "name": "targetUrl",
+            "in": "query",
+            "required": true,
+            "description": "The URL of the website to audit.",
+            "schema": {
+              "type": "string",
+              "format": "uri"
             }
           }
-        },
+        ],
         "responses": {
           "200": {
             "description": "Audit results",

@@ -17,7 +17,7 @@ const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
         if (accept.includes("text/markdown")) {
-            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
+            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
             return new Response(mdContent, {
                 headers: { 
                     "Content-Type": "text/markdown; charset=utf-8",
@@ -107,7 +107,7 @@ const STATIC_ROUTES = {
                     "name": "AuditPlatform",
                     "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
                     "endpoint": "/api/audit",
-                    "method": "POST"
+                    "method": "GET"
                 }
 
             ]
