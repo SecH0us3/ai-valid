@@ -19,54 +19,86 @@ const STATIC_ROUTES = {
         if (accept.includes("text/markdown")) {
             const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
             return new Response(mdContent, {
-                headers: { "Content-Type": "text/markdown; charset=utf-8" },
+                headers: { 
+                    "Content-Type": "text/markdown; charset=utf-8",
+                    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                    "Vary": "Accept"
+                },
             });
         }
         return new Response(htmlTemplate, {
             headers: { 
                 "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                "Vary": "Accept"
             },
         });
     },
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
         },
     }),
     "/app.client.js": () => new Response(jsContent, {
         headers: { 
             "Content-Type": "application/javascript; charset=utf-8",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
         },
     }),
     "/favicon.svg": () => new Response(faviconSvg, {
-        headers: { "Content-Type": "image/svg+xml" },
+        headers: { 
+            "Content-Type": "image/svg+xml",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/favicon.ico": () => new Response(faviconSvg, {
-        headers: { "Content-Type": "image/svg+xml" },
+        headers: { 
+            "Content-Type": "image/svg+xml",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/og-image.png": () => new Response(ogImage, {
-        headers: { "Content-Type": "image/png" },
+        headers: { 
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/llms-full.txt": () => new Response(llmsFullTxt, {
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/llms.txt": () => new Response(llmsTxt, {
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/openapi.json": () => new Response(openApiJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/agent-skills/index.json": () => {
         const agentSkills = {
@@ -81,7 +113,10 @@ const STATIC_ROUTES = {
             ]
         };
         return new Response(JSON.stringify(agentSkills, null, 2), {
-            headers: { "Content-Type": "application/json; charset=utf-8" },
+            headers: { 
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            },
         });
     },
     "/.well-known/x402.json": () => {
@@ -105,7 +140,10 @@ const STATIC_ROUTES = {
             ]
         }, null, 2);
         return new Response(body, {
-            headers: { "Content-Type": "application/json; charset=utf-8" },
+            headers: { 
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            },
         });
     }
 };
