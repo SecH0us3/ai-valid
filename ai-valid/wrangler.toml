@@ -11,3 +11,6 @@ fallthrough = true
 type = "Data"
 globs = ["**/*.png"]
 fallthrough = true
+
+[cache]
+enabled = true
