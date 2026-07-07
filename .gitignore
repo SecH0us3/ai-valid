@@ -6,3 +6,5 @@ tmp/
 .DS_Store
 .dev.vars
 .antigravitycli
+.superpowers/
+docs/superpowers/

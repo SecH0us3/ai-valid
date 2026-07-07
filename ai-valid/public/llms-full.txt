@@ -43,15 +43,11 @@ npx wrangler deploy
 
 ## API Reference
 
-### `POST /api/audit`
+### `GET /api/audit`
 Perform an AI readiness audit on a given URL.
 
-**Request Body:**
-```json
-{
-  "targetUrl": "https://example.com"
-}
-```
+**Query Parameters:**
+- `targetUrl`: The URL of the website to audit (e.g. `https://example.com`).
 
 **Responses:**
 - `200 OK`: Audit results containing scores, bot accessibility, content optimization, and protocol discovery results.

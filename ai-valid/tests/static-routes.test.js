@@ -18,6 +18,10 @@ describe('AI-Valid Worker - Static GET Routes', () => {
 
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe(expectedContentType);
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+        if (path === '/') {
+            expect(res.headers.get('Vary')).toBe('Accept');
+        }
     };
 
     it('should serve HTML for / by default', async () => {
@@ -73,7 +77,13 @@ describe('AI-Valid Worker - Static GET Routes', () => {
     });
 
     it('should serve JSON for /.well-known/agent-skills/index.json', async () => {
-        await testRoute('/.well-known/agent-skills/index.json', 'application/json; charset=utf-8');
+        const req = new Request('https://localhost/.well-known/agent-skills/index.json', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+        const body = await res.json();
+        expect(body.skills[0].method).toBe('GET');
     });
 
     it('should serve JSON for /.well-known/x402.json', async () => {
@@ -81,6 +91,7 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         const res = await index.fetch(req, env, ctx);
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
         const body = await res.json();
         expect(body.x402Version).toBe(2);
     });

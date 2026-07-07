@@ -17,56 +17,88 @@ const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
         if (accept.includes("text/markdown")) {
-            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a POST request to \`/api/audit\` with a JSON payload:\n\n\`\`\`bash\ncurl -X POST https://<your-worker-domain>/api/audit \\\n  -H "Content-Type: application/json" \\\n  -d '{"targetUrl":"https://example.com"}'\n\`\`\`\n`;
+            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
             return new Response(mdContent, {
-                headers: { "Content-Type": "text/markdown; charset=utf-8" },
+                headers: { 
+                    "Content-Type": "text/markdown; charset=utf-8",
+                    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                    "Vary": "Accept"
+                },
             });
         }
         return new Response(htmlTemplate, {
             headers: { 
                 "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                "Vary": "Accept"
             },
         });
     },
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
         },
     }),
     "/app.client.js": () => new Response(jsContent, {
         headers: { 
             "Content-Type": "application/javascript; charset=utf-8",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
         },
     }),
     "/favicon.svg": () => new Response(faviconSvg, {
-        headers: { "Content-Type": "image/svg+xml" },
+        headers: { 
+            "Content-Type": "image/svg+xml",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/favicon.ico": () => new Response(faviconSvg, {
-        headers: { "Content-Type": "image/svg+xml" },
+        headers: { 
+            "Content-Type": "image/svg+xml",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/og-image.png": () => new Response(ogImage, {
-        headers: { "Content-Type": "image/png" },
+        headers: { 
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/llms-full.txt": () => new Response(llmsFullTxt, {
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/llms.txt": () => new Response(llmsTxt, {
-        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/openapi.json": () => new Response(openApiJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        headers: { 
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
+        headers: { 
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+        },
     }),
     "/.well-known/agent-skills/index.json": () => {
         const agentSkills = {
@@ -75,13 +107,16 @@ const STATIC_ROUTES = {
                     "name": "AuditPlatform",
                     "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
                     "endpoint": "/api/audit",
-                    "method": "POST"
+                    "method": "GET"
                 }
 
             ]
         };
         return new Response(JSON.stringify(agentSkills, null, 2), {
-            headers: { "Content-Type": "application/json; charset=utf-8" },
+            headers: { 
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            },
         });
     },
     "/.well-known/x402.json": () => {
@@ -105,7 +140,10 @@ const STATIC_ROUTES = {
             ]
         }, null, 2);
         return new Response(body, {
-            headers: { "Content-Type": "application/json; charset=utf-8" },
+            headers: { 
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            },
         });
     }
 };
@@ -236,19 +274,24 @@ export async function handleRequest(request, env, ctx) {
         }
 
         // --- API Route ---
-        if (request.method === "POST" && url.pathname === "/api/audit") {
+        if (request.method === "GET" && url.pathname === "/api/audit") {
             try {
-                let body = await request.json();
-                let targetUrl = body.targetUrl;
+                let targetUrl = url.searchParams.get("targetUrl");
                 
                 if (!targetUrl || !targetUrl.startsWith('http')) {
-                    return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
+                    return new Response(JSON.stringify({ error: "Invalid URL" }), { 
+                        status: 400,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
                 // SSRF Protection
                 const safeUrl = await isSafeUrl(targetUrl);
                 if (!safeUrl) {
-                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
+                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
+                        status: 403,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
                 // Domain existence check
@@ -256,12 +299,23 @@ export async function handleRequest(request, env, ctx) {
                     const parsedUrl = new URL(targetUrl);
                     await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch {
-                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
+                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
+                        status: 400,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
+                const bypassCache = url.searchParams.get("bypassCache") === "true" || 
+                                    request.headers.get("Cache-Control")?.includes("no-cache") ||
+                                    request.headers.get("Pragma")?.includes("no-cache");
                 const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
-                    headers: { "Content-Type": "application/json" }
+                    headers: { 
+                        "Content-Type": "application/json",
+                        "Cache-Control": bypassCache 
+                            ? "no-store, no-cache, must-revalidate" 
+                            : "public, max-age=3600, stale-while-revalidate=86400"
+                    }
                 });
 
             } catch(e) {
