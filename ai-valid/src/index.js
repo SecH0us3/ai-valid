@@ -274,19 +274,24 @@ export async function handleRequest(request, env, ctx) {
         }
 
         // --- API Route ---
-        if (request.method === "POST" && url.pathname === "/api/audit") {
+        if (request.method === "GET" && url.pathname === "/api/audit") {
             try {
-                let body = await request.json();
-                let targetUrl = body.targetUrl;
+                let targetUrl = url.searchParams.get("targetUrl");
                 
                 if (!targetUrl || !targetUrl.startsWith('http')) {
-                    return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400 });
+                    return new Response(JSON.stringify({ error: "Invalid URL" }), { 
+                        status: 400,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
                 // SSRF Protection
                 const safeUrl = await isSafeUrl(targetUrl);
                 if (!safeUrl) {
-                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { status: 403 });
+                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
+                        status: 403,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
                 // Domain existence check
@@ -294,12 +299,18 @@ export async function handleRequest(request, env, ctx) {
                     const parsedUrl = new URL(targetUrl);
                     await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
                 } catch {
-                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { status: 400 });
+                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
+                        status: 400,
+                        headers: { "Content-Type": "application/json" }
+                    });
                 }
 
                 const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
-                    headers: { "Content-Type": "application/json" }
+                    headers: { 
+                        "Content-Type": "application/json",
+                        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"
+                    }
                 });
 
             } catch(e) {
