@@ -157,10 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1500);
 
         try {
-            const res = await fetch('/api/audit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targetUrl })
+            const res = await fetch(`/api/audit?targetUrl=${encodeURIComponent(targetUrl)}`, {
+                method: 'GET'
             });
 
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
