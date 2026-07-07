@@ -4,10 +4,8 @@ import index from '../src/index.js';
 describe('AI-Valid Worker - SSRF Protection', () => {
 
     const createRequest = (targetUrl) => {
-        return new Request('https://localhost/api/audit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ targetUrl })
+        return new Request(`https://localhost/api/audit?targetUrl=${encodeURIComponent(targetUrl)}`, {
+            method: 'GET'
         });
     };
 

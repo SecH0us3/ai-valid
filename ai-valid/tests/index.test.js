@@ -90,11 +90,10 @@ globalThis.HTMLRewriter = HTMLRewriterMock;
 describe('AI-Valid Worker - handleRequest API URL Validation', () => {
 
     // helper to create a mocked request
-    const createRequest = (body) => {
-        return new Request('https://localhost/api/audit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: body ? JSON.stringify(body) : undefined
+    const createRequest = (params) => {
+        const query = params && params.targetUrl !== undefined ? `?targetUrl=${encodeURIComponent(params.targetUrl)}` : '';
+        return new Request(`https://localhost/api/audit${query}`, {
+            method: 'GET'
         });
     };
 
@@ -159,6 +158,7 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
             const res = await index.fetch(req, env, ctx);
 
             expect(res.status).toBe(200);
+            expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
             const data = await res.json();
             expect(data.score.total).toBeDefined();
             expect(data.score.max).toBe(100);
@@ -167,18 +167,7 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
         }
     });
 
-    it('should catch JSON parsing errors and return 500', async () => {
-        const req = new Request('https://localhost/api/audit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: 'invalid json {'
-        });
-        const res = await index.fetch(req, env, ctx);
 
-        expect(res.status).toBe(500);
-        const data = await res.json();
-        expect(data.error).toBeDefined(); // should be an error message like "Unexpected token"
-    });
 });
 
 describe('AI-Valid Worker - 404 Not Found', () => {
@@ -207,9 +196,9 @@ describe('AI-Valid Worker - 404 Not Found', () => {
         expect(text).toBe('Not Found');
     });
 
-    it('should return 404 for GET request to /api/audit', async () => {
+    it('should return 404 for POST request to /api/audit', async () => {
         const req = new Request('https://localhost/api/audit', {
-            method: 'GET'
+            method: 'POST'
         });
         const res = await index.fetch(req, env, ctx);
 
@@ -240,13 +229,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         };
 
         try {
-            const req = new Request('https://localhost/api/audit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targetUrl: 'https://example.com' })
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
             });
             const res = await index.fetch(req, env, ctx);
             expect(res.status).toBe(200);
+            expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
             return await res.json();
         } finally {
             global.fetch = originalFetch;
@@ -369,13 +357,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         };
 
         try {
-            const req = new Request('https://localhost/api/audit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targetUrl: 'https://example.com' })
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
             });
             const res = await index.fetch(req, env, ctx);
             expect(res.status).toBe(200);
+            expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
             const data = await res.json();
             const x402Result = data.protocols.results.find(r => r.name === 'x402 Payment Standard');
             expect(x402Result).toBeDefined();
@@ -432,13 +419,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
             };
 
             try {
-                const req = new Request('https://localhost/api/audit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                    method: 'GET'
                 });
                 const res = await index.fetch(req, env, ctx);
                 expect(res.status).toBe(200);
+                expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
                 const data = await res.json();
                 
                 // Check bots
@@ -486,13 +472,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
             };
 
             try {
-                const req = new Request('https://localhost/api/audit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                    method: 'GET'
                 });
                 const res = await index.fetch(req, env, ctx);
                 expect(res.status).toBe(200);
+                expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
                 const data = await res.json();
                 
                 expect(data.content.hasFreshnessHeaders).toBe(true);
@@ -522,13 +507,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
             };
 
             try {
-                const req = new Request('https://localhost/api/audit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                    method: 'GET'
                 });
                 const res = await index.fetch(req, env, ctx);
                 expect(res.status).toBe(200);
+                expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
                 const data = await res.json();
                 
                 expect(data.bots.sitemapFound).toBe(true);
@@ -558,13 +542,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
             };
 
             try {
-                const req = new Request('https://localhost/api/audit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                    method: 'GET'
                 });
                 const res = await index.fetch(req, env, ctx);
                 expect(res.status).toBe(200);
+                expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
                 const data = await res.json();
                 
                 expect(data.bots.hasAISearch).toBe(true);
@@ -598,13 +581,12 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
             };
 
             try {
-                const req = new Request('https://localhost/api/audit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUrl: 'https://example.com' })
+                const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                    method: 'GET'
                 });
                 const res = await index.fetch(req, env, ctx);
                 expect(res.status).toBe(200);
+                expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600, stale-while-revalidate=86400');
                 const data = await res.json();
                 
                 expect(data.content.hasFreshnessHeaders).toBe(true);
