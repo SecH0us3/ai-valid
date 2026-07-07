@@ -305,11 +305,16 @@ export async function handleRequest(request, env, ctx) {
                     });
                 }
 
+                const bypassCache = url.searchParams.get("bypassCache") === "true" || 
+                                    request.headers.get("Cache-Control")?.includes("no-cache") ||
+                                    request.headers.get("Pragma")?.includes("no-cache");
                 const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { 
                         "Content-Type": "application/json",
-                        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"
+                        "Cache-Control": bypassCache 
+                            ? "no-store, no-cache, must-revalidate" 
+                            : "public, max-age=3600, stale-while-revalidate=86400"
                     }
                 });
 

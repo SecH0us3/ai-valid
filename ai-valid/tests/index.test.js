@@ -167,6 +167,62 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
         }
     });
 
+    it('should return no-store for bypassCache=true query parameter', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({
+                    Answer: [{ type: 1, data: '93.184.216.34' }]
+                }), { status: 200, headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('OK', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return originalFetch(url, options);
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=https%3A%2F%2Fexample.com&bypassCache=true', {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, env, ctx);
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get('Cache-Control')).toBe('no-store, no-cache, must-revalidate');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should return no-store for Cache-Control: no-cache request header', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({
+                    Answer: [{ type: 1, data: '93.184.216.34' }]
+                }), { status: 200, headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('OK', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return originalFetch(url, options);
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=https%3A%2F%2Fexample.com', {
+                method: 'GET',
+                headers: { 'Cache-Control': 'no-cache' }
+            });
+            const res = await index.fetch(req, env, ctx);
+
+            expect(res.status).toBe(200);
+            expect(res.headers.get('Cache-Control')).toBe('no-store, no-cache, must-revalidate');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 
 });
 
