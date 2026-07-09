@@ -101,7 +101,8 @@ class HTMLRewriterMock {
                                 value: new TextEncoder().encode(text)
                             };
                         },
-                        releaseLock() {}
+                        releaseLock() {},
+                        cancel: async () => {}
                     };
                 }
             }
@@ -989,6 +990,40 @@ describe('safeReadText helper', () => {
             const data = await res.json();
             const jsonLdResult = data.content.results.find(r => r.name === 'Semantic JSON-LD');
             expect(jsonLdResult.status).toBe('err');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should block sitemap fetching if sitemapUrl points to a private/restricted resource', async () => {
+        const originalFetch = global.fetch;
+        let fetchedPrivateSitemap = false;
+        
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                if (urlStr.endsWith('/robots.txt')) {
+                    return new Response('Sitemap: http://localhost/sitemap-private.xml\n', { status: 200 });
+                }
+                return new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            if (urlStr.includes('localhost') || urlStr.includes('127.0.0.1')) {
+                fetchedPrivateSitemap = true;
+                return new Response('<urlset></urlset>', { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            expect(fetchedPrivateSitemap).toBe(false);
         } finally {
             global.fetch = originalFetch;
         }

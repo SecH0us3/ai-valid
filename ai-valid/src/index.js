@@ -524,18 +524,20 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         }
 
-        const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
-        if (r_sitemap.status === 200) {
-            sitemapFound = true;
-            totalScore += 5;
-            
-            const sitemapText = await safeReadText(r_sitemap);
-            const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
-            if (lastmodMatch) {
-                const dateStr = lastmodMatch[1];
-                if (!isNaN(Date.parse(dateStr))) {
-                    hasSitemapLastmod = true;
-                    totalScore += 5;
+        if (await isSafeUrl(sitemapUrl)) {
+            const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
+            if (r_sitemap.status === 200) {
+                sitemapFound = true;
+                totalScore += 5;
+                
+                const sitemapText = await safeReadText(r_sitemap);
+                const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
+                if (lastmodMatch) {
+                    const dateStr = lastmodMatch[1];
+                    if (!isNaN(Date.parse(dateStr))) {
+                        hasSitemapLastmod = true;
+                        totalScore += 5;
+                    }
                 }
             }
         }
@@ -619,10 +621,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
 
-        const clonedRes = r_home.clone();
-        if (r_home.body && typeof r_home.body.cancel === 'function') {
-            r_home.body.cancel().catch(() => {});
-        }
+
 
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
@@ -758,7 +757,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     }
                 }
             })
-            .transform(clonedRes);
+            .transform(r_home);
 
         if (transformed.body) {
             let bytesRead = 0;
