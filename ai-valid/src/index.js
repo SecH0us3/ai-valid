@@ -787,7 +787,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
         if (!hasStatistics) {
-            const statsRegex = /(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/;
+            const statsRegex = /(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/i;
             if (statsRegex.test(lowerHtmlText)) {
                 hasStatistics = true;
             }
