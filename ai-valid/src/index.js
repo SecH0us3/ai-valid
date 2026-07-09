@@ -13,6 +13,13 @@ import x402Json from "../public/.well-known/x402.json";
 
 
 const FETCH_TIMEOUT = 5000;
+
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Accept"
+};
+
 const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
@@ -22,7 +29,8 @@ const STATIC_ROUTES = {
                 headers: { 
                     "Content-Type": "text/markdown; charset=utf-8",
                     "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                    "Vary": "Accept"
+                    "Vary": "Accept",
+                    ...corsHeaders
                 },
             });
         }
@@ -30,74 +38,86 @@ const STATIC_ROUTES = {
             headers: { 
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                "Vary": "Accept"
+                "Vary": "Accept",
+                ...corsHeaders
             },
         });
     },
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/app.client.js": () => new Response(jsContent, {
         headers: { 
             "Content-Type": "application/javascript; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/favicon.svg": () => new Response(faviconSvg, {
         headers: { 
             "Content-Type": "image/svg+xml",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/favicon.ico": () => new Response(faviconSvg, {
         headers: { 
             "Content-Type": "image/svg+xml",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/og-image.png": () => new Response(ogImage, {
         headers: { 
             "Content-Type": "image/png",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/llms-full.txt": () => new Response(llmsFullTxt, {
         headers: { 
             "Content-Type": "text/markdown; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/llms.txt": () => new Response(llmsTxt, {
         headers: { 
             "Content-Type": "text/markdown; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/openapi.json": () => new Response(openApiJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
         headers: { 
             "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/agent-skills/index.json": () => {
@@ -115,7 +135,8 @@ const STATIC_ROUTES = {
         return new Response(JSON.stringify(agentSkills, null, 2), {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
             },
         });
     },
@@ -142,7 +163,8 @@ const STATIC_ROUTES = {
         return new Response(body, {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
             },
         });
     }
@@ -312,6 +334,10 @@ async function isSafeUrl(targetUrl) {
 }
 
 export async function handleRequest(request, env, ctx) {
+        if (request.method === "OPTIONS") {
+            return new Response(null, { headers: corsHeaders });
+        }
+
         const url = new URL(request.url);
         
         // --- Static File Routing ---
@@ -327,7 +353,7 @@ export async function handleRequest(request, env, ctx) {
                 if (!targetUrl || !targetUrl.startsWith('http')) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { 
                         status: 400,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
@@ -336,7 +362,7 @@ export async function handleRequest(request, env, ctx) {
                 if (!safeUrl) {
                     return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
                         status: 403,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
@@ -347,20 +373,21 @@ export async function handleRequest(request, env, ctx) {
                 } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
                         status: 400,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
                 const bypassCache = url.searchParams.get("bypassCache") === "true" || 
-                                    request.headers.get("Cache-Control")?.includes("no-cache") ||
-                                    request.headers.get("Pragma")?.includes("no-cache");
+                                     request.headers.get("Cache-Control")?.includes("no-cache") ||
+                                     request.headers.get("Pragma")?.includes("no-cache");
                 const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { 
                         "Content-Type": "application/json",
                         "Cache-Control": bypassCache 
                             ? "no-store, no-cache, must-revalidate" 
-                            : "public, max-age=3600, stale-while-revalidate=86400"
+                            : "public, max-age=3600, stale-while-revalidate=86400",
+                        ...corsHeaders
                     }
                 });
 
@@ -368,12 +395,12 @@ export async function handleRequest(request, env, ctx) {
                 console.error('Audit API Error:', e);
                 return new Response(JSON.stringify({ error: "Internal Server Error" }), {
                     status: 500,
-                    headers: { "Content-Type": "application/json" }
+                    headers: { "Content-Type": "application/json", ...corsHeaders }
                 });
             }
         }
 
-        return new Response("Not Found", { status: 404 });
+        return new Response("Not Found", { status: 404, headers: corsHeaders });
 }
 
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
