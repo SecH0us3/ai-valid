@@ -929,6 +929,70 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should cap JSON-LD chunks to 50', async () => {
+        const originalFetch = global.fetch;
+        
+        // Scenario A: 49 invalid + 1 valid JSON-LD = 50 total (within limit). Valid one should be parsed.
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                let html = '<html><body>';
+                for (let i = 0; i < 49; i++) {
+                    html += '<script type="application/ld+json">invalid-json</script>';
+                }
+                html += '<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Test"}</script>';
+                html += '</body></html>';
+                return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            const jsonLdResult = data.content.results.find(r => r.name === 'Semantic JSON-LD');
+            expect(jsonLdResult.status).toBe('ok');
+        } finally {
+            global.fetch = originalFetch;
+        }
+
+        // Scenario B: 50 invalid + 1 valid JSON-LD = 51 total (exceeds limit). Valid one should be ignored.
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                let html = '<html><body>';
+                for (let i = 0; i < 50; i++) {
+                    html += '<script type="application/ld+json">invalid-json</script>';
+                }
+                html += '<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Test"}</script>';
+                html += '</body></html>';
+                return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            const jsonLdResult = data.content.results.find(r => r.name === 'Semantic JSON-LD');
+            expect(jsonLdResult.status).toBe('err');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
 

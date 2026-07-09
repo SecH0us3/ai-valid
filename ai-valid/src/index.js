@@ -242,7 +242,8 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
 function isPrivateIP(ip) {
     if (!ip) return false;
     try {
-        ip = new URL('http://' + ip).hostname;
+        const urlHost = ip.includes(':') && !ip.startsWith('[') ? `[${ip}]` : ip;
+        ip = new URL('http://' + urlHost).hostname.replace(/^\[/, '').replace(/\]$/, '');
     } catch {
         // Fallback to original
     }
@@ -276,9 +277,8 @@ function isPrivateIP(ip) {
             return true;
         }
 
-        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
-            // IPv4-mapped
-            const hex = fullIp.substring(30).replace(':', '');
+        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:') || fullIp.startsWith('0000:0000:0000:0000:0000:0000:')) {
+            const hex = fullIp.substring(30).replace(/:/g, '');
             const ipv4 = [
                 parseInt(hex.substring(0, 2), 16),
                 parseInt(hex.substring(2, 4), 16),
@@ -753,21 +753,32 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         }
                     }
                     if (chunk.lastInTextNode) {
-                        jsonLdChunks.push(currentJsonLd);
+                        if (jsonLdChunks.length < 50) { jsonLdChunks.push(currentJsonLd); }
                         currentJsonLd = '';
                     }
                 }
             })
             .transform(clonedRes);
 
-        const reader = transformed.body.getReader();
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+        if (transformed.body) {
+            let bytesRead = 0;
+            const maxBytes = 2 * 1024 * 1024;
+            const reader = transformed.body.getReader();
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                        bytesRead += value.byteLength || value.length || 0;
+                        if (bytesRead > maxBytes) {
+                            await reader.cancel();
+                            break;
+                        }
+                    }
+                }
+            } finally {
+                reader.releaseLock();
             }
-        } finally {
-            reader.releaseLock();
         }
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
