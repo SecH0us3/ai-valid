@@ -180,23 +180,27 @@ export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
     let result = '';
     let bytesRead = 0;
     try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) {
-                bytesRead += value.byteLength || value.length || 0;
-                if (typeof value === 'string') {
-                    result += value;
-                } else {
-                    result += decoder.decode(value, { stream: true });
-                }
-                if (bytesRead > maxBytes) {
-                    await reader.cancel();
-                    break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value) {
+                    bytesRead += value.byteLength || value.length || 0;
+                    if (typeof value === 'string') {
+                        result += value;
+                    } else {
+                        result += decoder.decode(value, { stream: true });
+                    }
+                    if (bytesRead > maxBytes) {
+                        await reader.cancel();
+                        break;
+                    }
                 }
             }
+            result += decoder.decode();
+        } finally {
+            reader.releaseLock();
         }
-        result += decoder.decode();
     } catch {
         // Fallback
     }
@@ -237,6 +241,11 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
 
 function isPrivateIP(ip) {
     if (!ip) return false;
+    try {
+        ip = new URL('http://' + ip).hostname;
+    } catch {
+        // Fallback to original
+    }
     ip = ip.replace(/^\[/, '').replace(/\]$/, '');
     const ipv4Patterns = [
         /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
@@ -304,14 +313,15 @@ async function isSafeUrl(targetUrl) {
                 try {
                     const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=${type}`;
                     const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data && data.Answer) {
-                            for (const record of data.Answer) {
-                                if (record.type === 1 || record.type === 28) { // A or AAAA
-                                    if (isPrivateIP(record.data)) {
-                                        return false;
-                                    }
+                    if (!res.ok) {
+                        return false;
+                    }
+                    const data = await res.json();
+                    if (data && data.Answer) {
+                        for (const record of data.Answer) {
+                            if (record.type === 1 || record.type === 28) { // A or AAAA
+                                if (isPrivateIP(record.data)) {
+                                    return false;
                                 }
                             }
                         }
@@ -620,7 +630,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         let ignoredTagDepth = 0;
         let lowerHtmlText = '';
 
-        await new HTMLRewriter()
+        const transformed = new HTMLRewriter()
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
@@ -748,8 +758,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     }
                 }
             })
-            .transform(clonedRes)
-            .arrayBuffer();
+            .transform(clonedRes);
+
+        const reader = transformed.body.getReader();
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+            }
+        } finally {
+            reader.releaseLock();
+        }
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {

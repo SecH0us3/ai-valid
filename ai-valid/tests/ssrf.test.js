@@ -45,7 +45,7 @@ describe('AI-Valid Worker - SSRF Protection', () => {
         const originalFetch = global.fetch;
         global.fetch = async (url, options) => {
             const urlStr = url.toString();
-            if (urlStr.includes('evil.com')) {
+            if (urlStr.includes('evil.com') && !urlStr.includes('cloudflare-dns.com')) {
                 return new Response(null, {
                     status: 302,
                     headers: { 'Location': 'http://localhost' }

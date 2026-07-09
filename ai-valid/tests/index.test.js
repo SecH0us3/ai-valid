@@ -85,6 +85,25 @@ class HTMLRewriterMock {
             arrayBuffer: async () => {
                 const text = await execute();
                 return new TextEncoder().encode(text).buffer;
+            },
+            body: {
+                getReader() {
+                    let done = false;
+                    return {
+                        read: async () => {
+                            if (done) {
+                                return { done: true, value: undefined };
+                            }
+                            done = true;
+                            const text = await execute();
+                            return {
+                                done: false,
+                                value: new TextEncoder().encode(text)
+                            };
+                        },
+                        releaseLock() {}
+                    };
+                }
             }
         };
     }
@@ -102,6 +121,20 @@ describe('AI-Valid Worker - handleRequest API URL Validation', () => {
         expect(typeof transformResult.arrayBuffer).toBe('function');
         const buffer = await transformResult.arrayBuffer();
         expect(buffer.byteLength).toBe(18);
+    });
+
+    it('HTMLRewriterMock should support body stream reading', async () => {
+        const mock = new HTMLRewriterMock();
+        const response = new Response("<html>hello</html>");
+        const transformResult = mock.transform(response);
+        expect(transformResult.body).toBeDefined();
+        expect(typeof transformResult.body.getReader).toBe('function');
+        const reader = transformResult.body.getReader();
+        const { done, value } = await reader.read();
+        expect(done).toBe(false);
+        expect(new TextDecoder().decode(value)).toBe("<html>hello</html>");
+        const next = await reader.read();
+        expect(next.done).toBe(true);
     });
 
     // helper to create a mocked request
@@ -764,8 +797,10 @@ describe('safeReadText helper', () => {
             if (urlStr.includes('robots.txt')) {
                 const stream = new ReadableStream({
                     start(controller) {
-                        const chunk = new TextEncoder().encode("User-agent: *\nDisallow: /private\n");
-                        for (let i = 0; i < 100000; i++) { // 100k chunks * ~30 bytes = ~3MB
+                        const line = "User-agent: *\nDisallow: /private\n";
+                        const repeated = line.repeat(1000); // ~30KB
+                        const chunk = new TextEncoder().encode(repeated);
+                        for (let i = 0; i < 100; i++) { // 100 chunks * 30KB = ~3MB
                             controller.enqueue(chunk);
                         }
                         controller.close();
