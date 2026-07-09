@@ -417,7 +417,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
             hasAISearch = isBotAllowed('oai-searchbot') && isBotAllowed('perplexitybot') && isBotAllowed('youbot');
             hasAIAgent = isBotAllowed('chatgpt-user');
-            hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai');
+            hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
             if (hasAISearch) totalScore += 10;
@@ -481,6 +481,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasQuotations = false;
     let hasStatistics = false;
     let hasWebMCP = false;
+    let hasARIA = false;
+    let hasMetaDesc = false;
     let currentScriptText = '';
 
     try {
@@ -562,6 +564,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     if (property === 'article:published_time' && content.trim()) {
                         hasFreshness = true;
                     }
+                    // Meta Description and Open Graph detection
+                    if ((name === 'description' || property === 'og:description') && content.trim()) {
+                        hasMetaDesc = true;
+                    }
                 }
             })
             .on('time', {
@@ -581,6 +587,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('blockquote, q', {
                 element() { hasQuotations = true; }
+            })
+            .on('*[aria-label], *[aria-labelledby], *[role]', {
+                element() { hasARIA = true; }
             })
             .on('script, style, noscript', {
                 element(el) {
@@ -676,6 +685,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasQuotations) totalScore += 5;
         if (hasStatistics) totalScore += 5;
         if (hasWebMCP) totalScore += 10;
+        if (hasARIA) totalScore += 5;
+        if (hasMetaDesc) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -816,6 +827,15 @@ Example:
             isJson: true,
             points: 10,
             tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/x402.json</code>, this is the standard discovery metadata file for the HTTP 402-native open payments protocol.<br/><br/><strong>Why it's critical:</strong> It publishes machine-readable details about pricing, accepted assets (like USDC), payment networks (via CAIP-2 identifiers), and target wallet addresses so AI agents can pay programmatically.<br/><br/><strong>Impact of missing it:</strong> AI agents cannot discover your payment configuration. They will not be able to automatically authorize and execute micro-payments to purchase access to your APIs or protected data.<br/><br/><strong>Implementation Example:</strong> Publish a JSON configuration at <code>/.well-known/x402.json</code> specifying your pricing terms, network CAIP-2 identifiers (e.g., eip155:8453 for Base), and target wallet addresses.`
+        },
+        {
+            name: "security.txt",
+            prompt: `Please check if \`/.well-known/security.txt\` exists. If it exists, update it; otherwise, create it following RFC 9116. It should include Contact, Expires, and Preferred-Languages fields to help AI security scanners report vulnerabilities.`,
+            path: '/.well-known/security.txt',
+            spec: 'https://securitytxt.org/',
+            isJson: false,
+            points: 5,
+            tooltip: `<strong>What it is:</strong> A standard plaintext file at <code>/.well-known/security.txt</code> defining security reporting policies.<br/><br/><strong>Why it's critical:</strong> Autonomous AI agents that discover security misconfigurations or vulnerabilities need a standardized way to report them to your team safely and legally.<br/><br/><strong>Impact of missing it:</strong> Security-focused agents will not know who to contact, leaving potential vulnerabilities unaddressed.<br/><br/><strong>Implementation Example:</strong> Publish a file at <code>/.well-known/security.txt</code> with <code>Contact: mailto:security@example.com</code> and an <code>Expires</code> date.`
         }
     ];
 
@@ -915,11 +935,11 @@ Example:
                 },
                 {
                     name: "AI Training Blocked",
-                    prompt: `Update my robots.txt to disallow AI training and model scraping bots such as GPTBot, ClaudeBot, Google-Extended, and Amazonbot.`,
+                    prompt: `Update my robots.txt to disallow AI training and model scraping bots such as GPTBot, ClaudeBot, Google-Extended, Amazonbot, and Applebot-Extended.`,
                     status: hasAITrainingBlocked ? 'ok' : 'warn',
                     message: hasAITrainingBlocked ? "AI Training bots blocked" : "AI Training bots allowed or missing disallow directives",
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Amazonbot, cohere-ai).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Amazonbot, cohere-ai, applebot-extended).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
                     code: hasAITrainingBlocked ? 'Blocked' : 'Allowed'
                 },
                 {
@@ -1181,6 +1201,24 @@ Examples of specific types:
                     spec: "https://webmcp.dev/",
                     tooltip: `<strong>What it is:</strong> A frontend library (<a href="https://webmcp.dev/" target="_blank">WebMCP</a>) that allows websites to integrate with the Model Context Protocol directly in the browser.<br/><br/><strong>Why it's critical:</strong> It enables your website to expose local tools, prompts, and resources directly to the user's AI client (like Claude Desktop) without requiring them to manually configure a remote MCP server.<br/><br/><strong>Impact of missing it:</strong> Users must manually discover and configure your MCP server in their client settings, which introduces friction.<br/><br/><strong>Implementation Example:</strong> Include <code>&lt;script src="https://.../webmcp.js"&gt;&lt;/script&gt;</code> and register your tools via <code>mcp.registerTool(...)</code>.`,
                     code: hasWebMCP ? 'Found' : 'Missing'
+                },
+                {
+                    name: "ARIA Accessibility",
+                    prompt: `Add ARIA attributes like aria-label, aria-labelledby, and role to interactive elements in my DOM to help autonomous web agents understand and interact with the UI.`,
+                    status: hasARIA ? 'ok' : 'warn',
+                    message: hasARIA ? "ARIA attributes found" : "Missing ARIA attributes",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA",
+                    tooltip: `<strong>What it is:</strong> Accessible Rich Internet Applications (ARIA) attributes such as <code>aria-label</code> and <code>role</code> on HTML elements.<br/><br/><strong>Why it's critical:</strong> Autonomous web agents (like Browser-Use and Stagehand) analyze the Accessibility Tree and ARIA attributes to understand the purpose of non-standard interactive UI elements, enabling precise programmatic navigation and action targeting.<br/><br/><strong>Impact of missing it:</strong> AI agents will struggle to interact with dynamic web applications, especially those lacking standard HTML forms or buttons.<br/><br/><strong>Implementation Example:</strong> <code>&lt;div role="button" aria-label="Submit Form"&gt;...&lt;/div&gt;</code>`,
+                    code: hasARIA ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Meta Description",
+                    prompt: `Add a comprehensive <meta name="description"> and <meta property="og:description"> to the <head> of my HTML to provide a quick summary for AI crawlers.`,
+                    status: hasMetaDesc ? 'ok' : 'warn',
+                    message: hasMetaDesc ? "Meta description or Open Graph tags found" : "Missing meta description",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/meta/name",
+                    tooltip: `<strong>What it is:</strong> The <code>&lt;meta name="description"&gt;</code> or Open Graph (<code>og:</code>) tags in the HTML head.<br/><br/><strong>Why it's critical for GEO:</strong> Answer Engines and AI crawlers often extract these tags to quickly summarize a page when detailed schema is unavailable.<br/><br/><strong>Impact of missing it:</strong> AI models may generate sub-optimal or irrelevant summaries of your page content in search results.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="description" content="A comprehensive guide to..."&gt;</code>`,
+                    code: hasMetaDesc ? 'Found' : 'Missing'
                 }
             ].sort((a, b) => {
                 const weights = {
@@ -1189,7 +1227,7 @@ Examples of specific types:
                     "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45,
                     "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
                     "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
-                    "Quotation Addition": 10, "Statistics Addition": 5
+                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5
                 };
                 return (weights[b.name] || 0) - (weights[a.name] || 0);
             })

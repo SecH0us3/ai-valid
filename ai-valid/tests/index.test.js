@@ -77,7 +77,7 @@ class HTMLRewriterMock {
                     }
                 };
                 
-                traverse(doc.body || doc.documentElement);
+                traverse(doc.documentElement);
                 return htmlText;
             }
         };
@@ -387,6 +387,44 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(statisticsResult.code).toBe('Found');
     });
 
+    it('should detect ARIA Accessibility attributes', async () => {
+        const html = `
+            <html>
+                <body>
+                    <div aria-label="Menu" role="navigation"></div>
+                    <button aria-labelledby="button-label"></button>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const ariaResult = data.content.results.find(r => r.name === 'ARIA Accessibility');
+        expect(ariaResult).toBeDefined();
+        expect(ariaResult.status).toBe('ok');
+        expect(ariaResult.code).toBe('Found');
+    });
+
+    it('should detect Meta Description and Open Graph descriptions', async () => {
+        const htmlDesc = `<html><head><meta name="description" content="A valid description"></head><body></body></html>`;
+        const htmlOgDesc = `<html><head><meta property="og:description" content="A valid og description"></head><body></body></html>`;
+        const htmlOgImageOnly = `<html><head><meta property="og:image" content="image.png"></head><body></body></html>`;
+        
+        let data = await runAuditTest(htmlDesc);
+        let metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('ok');
+        expect(metaResult.code).toBe('Found');
+
+        data = await runAuditTest(htmlOgDesc);
+        metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('ok');
+        expect(metaResult.code).toBe('Found');
+
+        // Should ignore og:image
+        data = await runAuditTest(htmlOgImageOnly);
+        metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('warn');
+        expect(metaResult.code).toBe('Missing');
+    });
+
     it('should detect x402 Payment Standard configuration', async () => {
         const originalFetch = global.fetch;
         global.fetch = async (url) => {
@@ -450,6 +488,7 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
                         `User-agent: Google-Extended\nDisallow: /\n` +
                         `User-agent: Amazonbot\nDisallow: /\n` +
                         `User-agent: cohere-ai\nDisallow: /\n` +
+                        `User-agent: applebot-extended\nDisallow: /\n` +
                         `Content-Signal: search=yes, ai-train=no, use=reference\n` +
                         `Sitemap: https://example.com/sitemap.xml`,
                         { status: 200 }
@@ -586,7 +625,7 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
                     return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
                 }
                 if (urlStr.includes('robots.txt')) {
-                    return new Response('User-agent: GPTBot\nUser-agent: ClaudeBot\nUser-agent: Google-Extended\nUser-agent: Amazonbot\nUser-agent: cohere-ai\nDisallow: /\nUser-agent: PerplexityBot\nAllow: /', { status: 200 });
+                    return new Response('User-agent: GPTBot\nUser-agent: ClaudeBot\nUser-agent: Google-Extended\nUser-agent: Amazonbot\nUser-agent: cohere-ai\nUser-agent: applebot-extended\nDisallow: /\nUser-agent: PerplexityBot\nAllow: /', { status: 200 });
                 }
                 if (urlStr.includes('sitemap.xml')) {
                     return new Response('Not Found', { status: 404 });
