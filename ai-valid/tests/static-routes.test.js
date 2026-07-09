@@ -95,4 +95,19 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         const body = await res.json();
         expect(body.x402Version).toBe(2);
     });
+
+    it('should respond to OPTIONS request with CORS headers', async () => {
+        const req = new Request('https://localhost/api/audit', { method: 'OPTIONS' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+        expect(res.headers.get('Access-Control-Allow-Methods')).toBe('GET, HEAD, POST, OPTIONS');
+        expect(res.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type, Accept');
+    });
+
+    it('should include CORS headers on static files and API responses', async () => {
+        const req = new Request('https://localhost/style.css', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    });
 });

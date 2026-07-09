@@ -22,6 +22,10 @@ describe('AI-Valid Worker - SSRF Protection', () => {
             'http://[fd00::1]',
             'http://[fe80::1]',
             'http://[ff02::1]',
+            'http://[::ffff:127.0.0.1]',
+            'http://[::ffff:7f00:1]',
+            'http://[::127.0.0.1]',
+            'http://[::7f00:1]',
             'http://169.254.169.254/latest/meta-data/', // AWS IMDS
             'http://192.168.1.1',
             'http://10.0.0.5',
@@ -45,7 +49,7 @@ describe('AI-Valid Worker - SSRF Protection', () => {
         const originalFetch = global.fetch;
         global.fetch = async (url, options) => {
             const urlStr = url.toString();
-            if (urlStr.includes('evil.com')) {
+            if (urlStr.includes('evil.com') && !urlStr.includes('cloudflare-dns.com')) {
                 return new Response(null, {
                     status: 302,
                     headers: { 'Location': 'http://localhost' }
@@ -73,4 +77,67 @@ describe('AI-Valid Worker - SSRF Protection', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should block CGNAT IP ranges', async () => {
+        const cgnatIps = [
+            'http://100.64.0.1',
+            'http://100.127.255.254',
+            'http://100.100.100.100'
+        ];
+        for (const url of cgnatIps) {
+            const req = createRequest(url);
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(403);
+        }
+    });
+
+    it('should block SSRF via IPv6 (AAAA record) DNS resolution', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                // Return IPv6 localhost for AAAA
+                if (urlStr.includes('type=AAAA')) {
+                    return new Response(JSON.stringify({
+                        Answer: [{ type: 28, data: '::1' }]
+                    }), { headers: { 'Content-Type': 'application/dns-json' } });
+                }
+                return new Response(JSON.stringify({
+                    Answer: []
+                }), { headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            return originalFetch(url, options);
+        };
+        try {
+            const req = createRequest('http://resolved-ipv6-local.com');
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(403);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should block SSRF via IPv4-mapped and IPv4-compatible IPv6 addresses resolved via DNS', async () => {
+        const originalFetch = global.fetch;
+        const testIps = ['::ffff:127.0.0.1', '::127.0.0.1', '::ffff:10.0.0.1', '::10.0.0.1'];
+        for (const resolvedIp of testIps) {
+            global.fetch = async (url, options) => {
+                const urlStr = url.toString();
+                if (urlStr.includes('cloudflare-dns.com')) {
+                    return new Response(JSON.stringify({
+                        Answer: [{ type: 28, data: resolvedIp }]
+                    }), { headers: { 'Content-Type': 'application/dns-json' } });
+                }
+                return originalFetch(url, options);
+            };
+            try {
+                const req = createRequest('http://resolved-ipv6-mapped-local.com');
+                const res = await index.fetch(req, env, ctx);
+                expect(res.status, `Expected 403 for resolved IP ${resolvedIp}`).toBe(403);
+            } finally {
+                global.fetch = originalFetch;
+            }
+        }
+    });
 });
+

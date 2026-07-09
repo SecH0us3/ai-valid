@@ -13,6 +13,13 @@ import x402Json from "../public/.well-known/x402.json";
 
 
 const FETCH_TIMEOUT = 5000;
+
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Accept"
+};
+
 const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
@@ -22,7 +29,8 @@ const STATIC_ROUTES = {
                 headers: { 
                     "Content-Type": "text/markdown; charset=utf-8",
                     "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                    "Vary": "Accept"
+                    "Vary": "Accept",
+                    ...corsHeaders
                 },
             });
         }
@@ -30,74 +38,86 @@ const STATIC_ROUTES = {
             headers: { 
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                "Vary": "Accept"
+                "Vary": "Accept",
+                ...corsHeaders
             },
         });
     },
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/app.client.js": () => new Response(jsContent, {
         headers: { 
             "Content-Type": "application/javascript; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/favicon.svg": () => new Response(faviconSvg, {
         headers: { 
             "Content-Type": "image/svg+xml",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/favicon.ico": () => new Response(faviconSvg, {
         headers: { 
             "Content-Type": "image/svg+xml",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/og-image.png": () => new Response(ogImage, {
         headers: { 
             "Content-Type": "image/png",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/llms-full.txt": () => new Response(llmsFullTxt, {
         headers: { 
             "Content-Type": "text/markdown; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/llms.txt": () => new Response(llmsTxt, {
         headers: { 
             "Content-Type": "text/markdown; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/openapi.json": () => new Response(openApiJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/api-catalog": () => new Response(apiCatalogTxt, {
         headers: { 
             "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/tdmrep.json": () => new Response(tdmrepJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/policies/tdm-policy.json": () => new Response(tdmPolicyJson, {
         headers: { 
             "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         },
     }),
     "/.well-known/agent-skills/index.json": () => {
@@ -115,7 +135,8 @@ const STATIC_ROUTES = {
         return new Response(JSON.stringify(agentSkills, null, 2), {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
             },
         });
     },
@@ -142,11 +163,49 @@ const STATIC_ROUTES = {
         return new Response(body, {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
             },
         });
     }
 };
+
+
+export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
+    if (!response.body || typeof response.body.getReader !== 'function') {
+        return await response.text();
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let result = '';
+    let bytesRead = 0;
+    try {
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value) {
+                    bytesRead += value.byteLength || value.length || 0;
+                    if (typeof value === 'string') {
+                        result += value;
+                    } else {
+                        result += decoder.decode(value, { stream: true });
+                    }
+                    if (bytesRead > maxBytes) {
+                        await reader.cancel();
+                        break;
+                    }
+                }
+            }
+            result += decoder.decode();
+        } finally {
+            reader.releaseLock();
+        }
+    } catch {
+        // Fallback
+    }
+    return result;
+}
 
 
 export default {
@@ -182,10 +241,17 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
 
 function isPrivateIP(ip) {
     if (!ip) return false;
+    try {
+        const urlHost = ip.includes(':') && !ip.startsWith('[') ? `[${ip}]` : ip;
+        ip = new URL('http://' + urlHost).hostname.replace(/^\[/, '').replace(/\]$/, '');
+    } catch {
+        // Fallback to original
+    }
     ip = ip.replace(/^\[/, '').replace(/\]$/, '');
     const ipv4Patterns = [
         /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
-        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
+        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./,
+        /^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\./
     ];
     for (const pattern of ipv4Patterns) {
         if (pattern.test(ip)) return true;
@@ -211,9 +277,8 @@ function isPrivateIP(ip) {
             return true;
         }
 
-        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:')) {
-            // IPv4-mapped
-            const hex = fullIp.substring(30).replace(':', '');
+        if (fullIp.startsWith('0000:0000:0000:0000:0000:ffff:') || fullIp.startsWith('0000:0000:0000:0000:0000:0000:')) {
+            const hex = fullIp.substring(30).replace(/:/g, '');
             const ipv4 = [
                 parseInt(hex.substring(0, 2), 16),
                 parseInt(hex.substring(2, 4), 16),
@@ -244,19 +309,32 @@ async function isSafeUrl(targetUrl) {
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
-            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
-            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
-            if (res.ok) {
-                const data = await res.json();
-                if (data && data.Answer) {
-                    for (const record of data.Answer) {
-                        if (record.type === 1 || record.type === 28) { // A or AAAA
-                            if (isPrivateIP(record.data)) {
-                                return false;
+            const resolveDns = async (type) => {
+                try {
+                    const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=${type}`;
+                    const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+                    if (!res.ok) {
+                        return false;
+                    }
+                    const data = await res.json();
+                    if (data && data.Answer) {
+                        for (const record of data.Answer) {
+                            if (record.type === 1 || record.type === 28) { // A or AAAA
+                                if (isPrivateIP(record.data)) {
+                                    return false;
+                                }
                             }
                         }
                     }
+                    return true;
+                } catch {
+                    return false;
                 }
+            };
+
+            const [aSafe, aaaaSafe] = await Promise.all([resolveDns('A'), resolveDns('AAAA')]);
+            if (!aSafe || !aaaaSafe) {
+                return false;
             }
         }
         return true;
@@ -266,6 +344,10 @@ async function isSafeUrl(targetUrl) {
 }
 
 export async function handleRequest(request, env, ctx) {
+        if (request.method === "OPTIONS") {
+            return new Response(null, { headers: corsHeaders });
+        }
+
         const url = new URL(request.url);
         
         // --- Static File Routing ---
@@ -281,7 +363,7 @@ export async function handleRequest(request, env, ctx) {
                 if (!targetUrl || !targetUrl.startsWith('http')) {
                     return new Response(JSON.stringify({ error: "Invalid URL" }), { 
                         status: 400,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
@@ -290,7 +372,7 @@ export async function handleRequest(request, env, ctx) {
                 if (!safeUrl) {
                     return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
                         status: 403,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
@@ -301,20 +383,21 @@ export async function handleRequest(request, env, ctx) {
                 } catch {
                     return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
                         status: 400,
-                        headers: { "Content-Type": "application/json" }
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
                     });
                 }
 
                 const bypassCache = url.searchParams.get("bypassCache") === "true" || 
-                                    request.headers.get("Cache-Control")?.includes("no-cache") ||
-                                    request.headers.get("Pragma")?.includes("no-cache");
+                                     request.headers.get("Cache-Control")?.includes("no-cache") ||
+                                     request.headers.get("Pragma")?.includes("no-cache");
                 const result = await performAudit(targetUrl, url.origin, env, ctx);
                 return new Response(JSON.stringify(result), {
                     headers: { 
                         "Content-Type": "application/json",
                         "Cache-Control": bypassCache 
                             ? "no-store, no-cache, must-revalidate" 
-                            : "public, max-age=3600, stale-while-revalidate=86400"
+                            : "public, max-age=3600, stale-while-revalidate=86400",
+                        ...corsHeaders
                     }
                 });
 
@@ -322,12 +405,12 @@ export async function handleRequest(request, env, ctx) {
                 console.error('Audit API Error:', e);
                 return new Response(JSON.stringify({ error: "Internal Server Error" }), {
                     status: 500,
-                    headers: { "Content-Type": "application/json" }
+                    headers: { "Content-Type": "application/json", ...corsHeaders }
                 });
             }
         }
 
-        return new Response("Not Found", { status: 404 });
+        return new Response("Not Found", { status: 404, headers: corsHeaders });
 }
 
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
@@ -357,7 +440,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
-            robotsText = await r_robots.text();
+            robotsText = await safeReadText(r_robots);
             
             const rules = {};
             const lines = robotsText.split('\n');
@@ -433,26 +516,28 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             const sitemapMatch = robotsText.match(/^Sitemap:\s*(.*)$/im);
             if (sitemapMatch && sitemapMatch[1]) {
                 sitemapUrl = sitemapMatch[1].trim();
-
-                // Handle relative sitemap URL edge case
-                if (sitemapUrl.startsWith('/')) {
-                    sitemapUrl = `${base}${sitemapUrl}`;
+                try {
+                    sitemapUrl = new URL(sitemapUrl, base).href;
+                } catch {
+                    // Fallback
                 }
             }
         }
 
-        const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
-        if (r_sitemap.status === 200) {
-            sitemapFound = true;
-            totalScore += 5;
-            
-            const sitemapText = await r_sitemap.text();
-            const lastmodMatch = sitemapText.match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
-            if (lastmodMatch) {
-                const dateStr = lastmodMatch[1];
-                if (!isNaN(Date.parse(dateStr))) {
-                    hasSitemapLastmod = true;
-                    totalScore += 5;
+        if (await isSafeUrl(sitemapUrl)) {
+            const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
+            if (r_sitemap.status === 200) {
+                sitemapFound = true;
+                totalScore += 5;
+                
+                const sitemapText = await safeReadText(r_sitemap);
+                const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
+                if (lastmodMatch) {
+                    const dateStr = lastmodMatch[1];
+                    if (!isNaN(Date.parse(dateStr))) {
+                        hasSitemapLastmod = true;
+                        totalScore += 5;
+                    }
                 }
             }
         }
@@ -536,15 +621,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
 
-        const htmlText = await r_home.text();
+
 
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
         let currentJsonLd = '';
         let ignoredTagDepth = 0;
-        let statsTextBuffer = '';
+        let lowerHtmlText = '';
 
-        await new HTMLRewriter()
+        const transformed = new HTMLRewriter()
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
@@ -601,13 +686,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('*', {
                 text(chunk) {
-                    if (!hasStatistics && ignoredTagDepth === 0) {
-                        statsTextBuffer += chunk.text;
-                        if (chunk.lastInTextNode) {
-                            if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
-                                hasStatistics = true;
-                            }
-                            statsTextBuffer = '';
+                    if (ignoredTagDepth === 0 && lowerHtmlText.length < 500000) {
+                        lowerHtmlText += chunk.text.toLowerCase();
+                        if (lowerHtmlText.length > 500000) {
+                            lowerHtmlText = lowerHtmlText.substring(0, 500000);
                         }
                     }
                 }
@@ -620,7 +702,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const resolvedUrl = new URL(href, base);
                             const baseHostname = new URL(base).hostname;
                             if (resolvedUrl.hostname === baseHostname) {
-                                hasInternalLinks = true;
+                                  hasInternalLinks = true;
                             } else if (resolvedUrl.protocol.startsWith('http')) {
                                 hasCitations = true;
                             }
@@ -647,7 +729,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 },
                 text(chunk) {
                     if (hasWebMCP) return;
-                    currentScriptText += chunk.text;
+                    if (currentScriptText.length < 500000) {
+                        currentScriptText += chunk.text;
+                        if (currentScriptText.length > 500000) {
+                            currentScriptText = currentScriptText.substring(0, 500000);
+                        }
+                    }
                     if (chunk.lastInTextNode) {
                         if (currentScriptText.includes('new WebMCP')) {
                             hasWebMCP = true;
@@ -658,20 +745,51 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('script[type="application/ld+json"]', {
                 text(chunk) {
-                    currentJsonLd += chunk.text;
+                    if (currentJsonLd.length < 500000) {
+                        currentJsonLd += chunk.text;
+                        if (currentJsonLd.length > 500000) {
+                            currentJsonLd = currentJsonLd.substring(0, 500000);
+                        }
+                    }
                     if (chunk.lastInTextNode) {
-                        jsonLdChunks.push(currentJsonLd);
+                        if (jsonLdChunks.length < 50) { jsonLdChunks.push(currentJsonLd); }
                         currentJsonLd = '';
                     }
                 }
             })
-            .transform(new Response(htmlText, { headers: { 'content-type': 'text/html' } }))
-            .text();
+            .transform(r_home);
+
+        if (transformed.body) {
+            let bytesRead = 0;
+            const maxBytes = 2 * 1024 * 1024;
+            const reader = transformed.body.getReader();
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                        bytesRead += value.byteLength || value.length || 0;
+                        if (bytesRead > maxBytes) {
+                            await reader.cancel();
+                            break;
+                        }
+                    }
+                }
+            } finally {
+                reader.releaseLock();
+            }
+        }
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
-        const lowerHtmlText = htmlText.toLowerCase();
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
             hasAgentFallback = true;
+        }
+
+        if (!hasStatistics) {
+            const statsRegex = /(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/i;
+            if (statsRegex.test(lowerHtmlText)) {
+                hasStatistics = true;
+            }
         }
 
         if (hasNoAI) totalScore += 5;
@@ -981,6 +1099,7 @@ Example:
             hasFreshnessHeaders,
             hasConditionalGET,
             hasWebMCP,
+            hasStatistics,
             results: [
                 {
                     name: "Content Neg. (MD)",
