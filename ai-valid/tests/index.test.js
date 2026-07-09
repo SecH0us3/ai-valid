@@ -10,75 +10,81 @@ class HTMLRewriterMock {
         return this;
     }
     transform(response) {
-        return {
-            text: async () => {
-                const htmlText = await response.text();
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(htmlText, 'text/html');
+        const execute = async () => {
+            const htmlText = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlText, 'text/html');
+            
+            const traverse = (node) => {
+                let endTagCallbacks = [];
                 
-                const traverse = (node) => {
-                    let endTagCallbacks = [];
-                    
-                    if (node.nodeType === 1) { // Element node
-                        for (const { selector, handlers } of this.selectors) {
-                            if (selector !== '*' && node.matches(selector)) {
-                                if (handlers.element) {
-                                    handlers.element({
-                                        getAttribute(name) {
-                                            return node.getAttribute(name);
-                                        },
-                                        onEndTag(cb) {
-                                            endTagCallbacks.push(cb);
-                                        }
-                                    });
-                                }
-                                if (handlers.text) {
-                                    handlers.text({
-                                        text: node.textContent,
-                                        lastInTextNode: true
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Visit children
-                    for (const child of node.childNodes) {
-                        traverse(child);
-                    }
-                    
-                    // Handle * text node
-                    if (node.nodeType === 3) { // Text node
-                        for (const { selector, handlers } of this.selectors) {
-                            if (selector === '*' && handlers.text) {
-                                if (node.nodeValue.includes('[split]')) {
-                                    const parts = node.nodeValue.split('[split]');
-                                    for (let i = 0; i < parts.length; i++) {
-                                        handlers.text({
-                                            text: parts[i],
-                                            lastInTextNode: i === parts.length - 1
-                                        });
+                if (node.nodeType === 1) { // Element node
+                    for (const { selector, handlers } of this.selectors) {
+                        if (selector !== '*' && node.matches(selector)) {
+                            if (handlers.element) {
+                                handlers.element({
+                                    getAttribute(name) {
+                                        return node.getAttribute(name);
+                                    },
+                                    onEndTag(cb) {
+                                        endTagCallbacks.push(cb);
                                     }
-                                } else {
-                                    handlers.text({
-                                        text: node.nodeValue,
-                                        lastInTextNode: true
-                                    });
-                                }
+                                });
+                            }
+                            if (handlers.text) {
+                                handlers.text({
+                                    text: node.textContent,
+                                    lastInTextNode: true
+                                });
                             }
                         }
                     }
-                    
-                    // Trigger end tags
-                    if (node.nodeType === 1) {
-                        for (const cb of endTagCallbacks) {
-                            cb();
+                }
+                
+                // Visit children
+                for (const child of node.childNodes) {
+                    traverse(child);
+                }
+                
+                // Handle * text node
+                if (node.nodeType === 3) { // Text node
+                    for (const { selector, handlers } of this.selectors) {
+                        if (selector === '*' && handlers.text) {
+                            if (node.nodeValue.includes('[split]')) {
+                                const parts = node.nodeValue.split('[split]');
+                                for (let i = 0; i < parts.length; i++) {
+                                    handlers.text({
+                                        text: parts[i],
+                                        lastInTextNode: i === parts.length - 1
+                                    });
+                                }
+                            } else {
+                                handlers.text({
+                                    text: node.nodeValue,
+                                    lastInTextNode: true
+                                });
+                            }
                         }
                     }
-                };
+                }
                 
-                traverse(doc.documentElement);
-                return htmlText;
+                // Trigger end tags
+                if (node.nodeType === 1) {
+                    for (const cb of endTagCallbacks) {
+                        cb();
+                    }
+                }
+            };
+            
+            traverse(doc.documentElement);
+            return htmlText;
+        };
+
+        return {
+            text: execute,
+            arrayBuffer: async () => {
+                const text = await execute();
+                return new TextEncoder().encode(text).buffer;
             }
         };
     }
@@ -88,6 +94,15 @@ globalThis.HTMLRewriter = HTMLRewriterMock;
 
 
 describe('AI-Valid Worker - handleRequest API URL Validation', () => {
+
+    it('HTMLRewriterMock should support arrayBuffer method', async () => {
+        const mock = new HTMLRewriterMock();
+        const response = new Response("<html>hello</html>");
+        const transformResult = mock.transform(response);
+        expect(typeof transformResult.arrayBuffer).toBe('function');
+        const buffer = await transformResult.arrayBuffer();
+        expect(buffer.byteLength).toBe(18);
+    });
 
     // helper to create a mocked request
     const createRequest = (params) => {
