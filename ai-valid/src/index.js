@@ -218,7 +218,8 @@ function isPrivateIP(ip) {
     ip = ip.replace(/^\[/, '').replace(/\]$/, '');
     const ipv4Patterns = [
         /^127\./, /^10\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./, /^192\.168\./,
-        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./
+        /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^24[0-9]\./, /^25[0-5]\./,
+        /^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\./
     ];
     for (const pattern of ipv4Patterns) {
         if (pattern.test(ip)) return true;
@@ -277,19 +278,31 @@ async function isSafeUrl(targetUrl) {
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
-            const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
-            const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
-            if (res.ok) {
-                const data = await res.json();
-                if (data && data.Answer) {
-                    for (const record of data.Answer) {
-                        if (record.type === 1 || record.type === 28) { // A or AAAA
-                            if (isPrivateIP(record.data)) {
-                                return false;
+            const resolveDns = async (type) => {
+                try {
+                    const dohUrl = `https://cloudflare-dns.com/dns-query?name=${hostname}&type=${type}`;
+                    const res = await fetch(dohUrl, { headers: { 'accept': 'application/dns-json' } });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.Answer) {
+                            for (const record of data.Answer) {
+                                if (record.type === 1 || record.type === 28) { // A or AAAA
+                                    if (isPrivateIP(record.data)) {
+                                        return false;
+                                    }
+                                }
                             }
                         }
                     }
+                    return true;
+                } catch {
+                    return false;
                 }
+            };
+
+            const [aSafe, aaaaSafe] = await Promise.all([resolveDns('A'), resolveDns('AAAA')]);
+            if (!aSafe || !aaaaSafe) {
+                return false;
             }
         }
         return true;

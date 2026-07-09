@@ -73,4 +73,44 @@ describe('AI-Valid Worker - SSRF Protection', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should block CGNAT IP ranges', async () => {
+        const cgnatIps = [
+            'http://100.64.0.1',
+            'http://100.127.255.254',
+            'http://100.100.100.100'
+        ];
+        for (const url of cgnatIps) {
+            const req = createRequest(url);
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(403);
+        }
+    });
+
+    it('should block SSRF via IPv6 (AAAA record) DNS resolution', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                // Return IPv6 localhost for AAAA
+                if (urlStr.includes('type=AAAA')) {
+                    return new Response(JSON.stringify({
+                        Answer: [{ type: 28, data: '::1' }]
+                    }), { headers: { 'Content-Type': 'application/dns-json' } });
+                }
+                return new Response(JSON.stringify({
+                    Answer: []
+                }), { headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            return originalFetch(url, options);
+        };
+        try {
+            const req = createRequest('http://resolved-ipv6-local.com');
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(403);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
+
