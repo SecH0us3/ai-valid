@@ -149,6 +149,39 @@ const STATIC_ROUTES = {
 };
 
 
+export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
+    if (!response.body || typeof response.body.getReader !== 'function') {
+        return await response.text();
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let result = '';
+    let bytesRead = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+                bytesRead += value.byteLength || value.length || 0;
+                if (typeof value === 'string') {
+                    result += value;
+                } else {
+                    result += decoder.decode(value, { stream: true });
+                }
+                if (bytesRead > maxBytes) {
+                    await reader.cancel();
+                    break;
+                }
+            }
+        }
+        result += decoder.decode();
+    } catch {
+        // Fallback
+    }
+    return result;
+}
+
+
 export default {
     async fetch(request, env, ctx) {
         return await handleRequest(request, env, ctx);
@@ -357,7 +390,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (r_robots.status === 200) {
             robotsFound = true;
             totalScore += 5;
-            robotsText = await r_robots.text();
+            robotsText = await safeReadText(r_robots);
             
             const rules = {};
             const lines = robotsText.split('\n');
@@ -433,10 +466,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             const sitemapMatch = robotsText.match(/^Sitemap:\s*(.*)$/im);
             if (sitemapMatch && sitemapMatch[1]) {
                 sitemapUrl = sitemapMatch[1].trim();
-
-                // Handle relative sitemap URL edge case
-                if (sitemapUrl.startsWith('/')) {
-                    sitemapUrl = `${base}${sitemapUrl}`;
+                try {
+                    sitemapUrl = new URL(sitemapUrl, base).href;
+                } catch {
+                    // Fallback
                 }
             }
         }
@@ -446,8 +479,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             sitemapFound = true;
             totalScore += 5;
             
-            const sitemapText = await r_sitemap.text();
-            const lastmodMatch = sitemapText.match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
+            const sitemapText = await safeReadText(r_sitemap);
+            const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
             if (lastmodMatch) {
                 const dateStr = lastmodMatch[1];
                 if (!isNaN(Date.parse(dateStr))) {

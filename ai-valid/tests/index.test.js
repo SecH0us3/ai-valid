@@ -708,3 +708,164 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
     });
 });
 
+describe('safeReadText helper', () => {
+    it('safeReadText should limit reading to maxBytes', async () => {
+        const stream = new ReadableStream({
+            start(controller) {
+                const chunk = new TextEncoder().encode("a".repeat(1024 * 1024)); // 1MB chunk
+                controller.enqueue(chunk);
+                controller.enqueue(chunk); // 2MB total
+                controller.enqueue(chunk); // 3MB total
+                controller.close();
+            }
+        });
+        const response = new Response(stream);
+        const { safeReadText } = await import('../src/index.js');
+        expect(safeReadText).toBeDefined();
+        const text = await safeReadText(response, 2 * 1024 * 1024);
+        expect(text.length).toBeLessThanOrEqual(2 * 1024 * 1024 + 1024 * 1024);
+    });
+
+    it('should limit robots.txt reading to 2MB', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('robots.txt')) {
+                const stream = new ReadableStream({
+                    start(controller) {
+                        const chunk = new TextEncoder().encode("User-agent: *\nDisallow: /private\n");
+                        for (let i = 0; i < 100000; i++) { // 100k chunks * ~30 bytes = ~3MB
+                            controller.enqueue(chunk);
+                        }
+                        controller.close();
+                    }
+                });
+                return new Response(stream, { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should resolve relative sitemap URLs correctly', async () => {
+        const originalFetch = global.fetch;
+        let sitemapFetchedUrl = null;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('robots.txt')) {
+                return new Response('User-agent: *\nSitemap: /custom-relative-sitemap.xml', { status: 200 });
+            }
+            if (urlStr.includes('custom-relative-sitemap.xml')) {
+                sitemapFetchedUrl = urlStr;
+                return new Response('<urlset><url><loc>https://example.com/</loc><lastmod>2026-07-02</lastmod></url></urlset>', { status: 200 });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com/deep/path'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            expect(sitemapFetchedUrl).toBe('https://example.com/custom-relative-sitemap.xml');
+            const data = await res.json();
+            expect(data.bots.sitemapFound).toBe(true);
+            expect(data.bots.hasSitemapLastmod).toBe(true);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should parse sitemap XML correctly when sitemap is larger than 100k chars by slicing it', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('robots.txt')) {
+                return new Response('User-agent: *\nSitemap: https://example.com/huge-sitemap.xml', { status: 200 });
+            }
+            if (urlStr.includes('huge-sitemap.xml')) {
+                // Generate a sitemap XML that is longer than 100k characters.
+                // If it is sliced to 100k:
+                // Case 1: lastmod tag is at the beginning (should match)
+                // Case 2: lastmod tag is at the end (should not match because it's past 100k limit)
+                const prefix = '<urlset><url><loc>https://example.com/</loc><lastmod>2026-07-02</lastmod></url>';
+                const middle = 'a'.repeat(120000);
+                const suffix = '</urlset>';
+                return new Response(prefix + middle + suffix, { status: 200 });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            expect(data.bots.sitemapFound).toBe(true);
+            expect(data.bots.hasSitemapLastmod).toBe(true);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should NOT match lastmod if it is past the 100k characters limit in sitemap XML', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('robots.txt')) {
+                return new Response('User-agent: *\nSitemap: https://example.com/huge-sitemap-late.xml', { status: 200 });
+            }
+            if (urlStr.includes('huge-sitemap-late.xml')) {
+                const prefix = '<urlset><url><loc>https://example.com/</loc>';
+                const middle = 'a'.repeat(120000);
+                const suffix = '<lastmod>2026-07-02</lastmod></url></urlset>';
+                return new Response(prefix + middle + suffix, { status: 200 });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            expect(data.bots.sitemapFound).toBe(true);
+            expect(data.bots.hasSitemapLastmod).toBe(false); // Should be false because it was sliced to 100k
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+});
+
+
