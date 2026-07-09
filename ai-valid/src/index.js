@@ -569,13 +569,16 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         }
 
 
-        const htmlText = await r_home.text();
+        const clonedRes = r_home.clone();
+        if (r_home.body && typeof r_home.body.cancel === 'function') {
+            r_home.body.cancel().catch(() => {});
+        }
 
         // Parse HTML structure using Cloudflare's native HTMLRewriter (streaming, ReDoS-safe)
         const jsonLdChunks = [];
         let currentJsonLd = '';
         let ignoredTagDepth = 0;
-        let statsTextBuffer = '';
+        let lowerHtmlText = '';
 
         await new HTMLRewriter()
             .on('meta', {
@@ -634,13 +637,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('*', {
                 text(chunk) {
-                    if (!hasStatistics && ignoredTagDepth === 0) {
-                        statsTextBuffer += chunk.text;
-                        if (chunk.lastInTextNode) {
-                            if (/(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/.test(statsTextBuffer)) {
-                                hasStatistics = true;
-                            }
-                            statsTextBuffer = '';
+                    if (ignoredTagDepth === 0 && lowerHtmlText.length < 500000) {
+                        lowerHtmlText += chunk.text.toLowerCase();
+                        if (lowerHtmlText.length > 500000) {
+                            lowerHtmlText = lowerHtmlText.substring(0, 500000);
                         }
                     }
                 }
@@ -653,7 +653,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const resolvedUrl = new URL(href, base);
                             const baseHostname = new URL(base).hostname;
                             if (resolvedUrl.hostname === baseHostname) {
-                                hasInternalLinks = true;
+                                  hasInternalLinks = true;
                             } else if (resolvedUrl.protocol.startsWith('http')) {
                                 hasCitations = true;
                             }
@@ -680,7 +680,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 },
                 text(chunk) {
                     if (hasWebMCP) return;
-                    currentScriptText += chunk.text;
+                    if (currentScriptText.length < 500000) {
+                        currentScriptText += chunk.text;
+                        if (currentScriptText.length > 500000) {
+                            currentScriptText = currentScriptText.substring(0, 500000);
+                        }
+                    }
                     if (chunk.lastInTextNode) {
                         if (currentScriptText.includes('new WebMCP')) {
                             hasWebMCP = true;
@@ -691,20 +696,31 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('script[type="application/ld+json"]', {
                 text(chunk) {
-                    currentJsonLd += chunk.text;
+                    if (currentJsonLd.length < 500000) {
+                        currentJsonLd += chunk.text;
+                        if (currentJsonLd.length > 500000) {
+                            currentJsonLd = currentJsonLd.substring(0, 500000);
+                        }
+                    }
                     if (chunk.lastInTextNode) {
                         jsonLdChunks.push(currentJsonLd);
                         currentJsonLd = '';
                     }
                 }
             })
-            .transform(new Response(htmlText, { headers: { 'content-type': 'text/html' } }))
-            .text();
+            .transform(clonedRes)
+            .arrayBuffer();
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
-        const lowerHtmlText = htmlText.toLowerCase();
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
             hasAgentFallback = true;
+        }
+
+        if (!hasStatistics) {
+            const statsRegex = /(?:\$|\b(?:USD|EUR|GBP)\s?)\d+(?:,\d{3})*(?:\.\d+)?|\b\d+(?:,\d{3})*(?:\.\d+)?\s*%/;
+            if (statsRegex.test(lowerHtmlText)) {
+                hasStatistics = true;
+            }
         }
 
         if (hasNoAI) totalScore += 5;
@@ -1014,6 +1030,7 @@ Example:
             hasFreshnessHeaders,
             hasConditionalGET,
             hasWebMCP,
+            hasStatistics,
             results: [
                 {
                     name: "Content Neg. (MD)",

@@ -402,6 +402,34 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(statisticsResult.code).toBe('Found');
     });
 
+    it('should correctly detect statistics when separated by inline HTML tags', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('robots.txt') || urlStr.includes('sitemap.xml')) {
+                return new Response('Not Found', { status: 404 });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                return new Response('<html><body>Only <span>99</span>% of users succeeded!</body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            expect(data.content.hasStatistics).toBe(true);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
     it('should detect ARIA Accessibility attributes', async () => {
         const html = `
             <html>
