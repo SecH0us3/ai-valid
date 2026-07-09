@@ -565,7 +565,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         hasFreshness = true;
                     }
                     // Meta Description and Open Graph detection
-                    if ((name === 'description' || property.startsWith('og:')) && content.trim()) {
+                    if ((name === 'description' || property === 'og:description') && content.trim()) {
                         hasMetaDesc = true;
                     }
                 }

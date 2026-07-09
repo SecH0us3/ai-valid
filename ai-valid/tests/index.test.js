@@ -77,7 +77,7 @@ class HTMLRewriterMock {
                     }
                 };
                 
-                traverse(doc.body || doc.documentElement);
+                traverse(doc.documentElement);
                 return htmlText;
             }
         };
@@ -385,6 +385,44 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         const statisticsResult = data.content.results.find(r => r.name === 'Statistics Addition');
         expect(statisticsResult.status).toBe('ok');
         expect(statisticsResult.code).toBe('Found');
+    });
+
+    it('should detect ARIA Accessibility attributes', async () => {
+        const html = `
+            <html>
+                <body>
+                    <div aria-label="Menu" role="navigation"></div>
+                    <button aria-labelledby="button-label"></button>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+        const ariaResult = data.content.results.find(r => r.name === 'ARIA Accessibility');
+        expect(ariaResult).toBeDefined();
+        expect(ariaResult.status).toBe('ok');
+        expect(ariaResult.code).toBe('Found');
+    });
+
+    it('should detect Meta Description and Open Graph descriptions', async () => {
+        const htmlDesc = `<html><head><meta name="description" content="A valid description"></head><body></body></html>`;
+        const htmlOgDesc = `<html><head><meta property="og:description" content="A valid og description"></head><body></body></html>`;
+        const htmlOgImageOnly = `<html><head><meta property="og:image" content="image.png"></head><body></body></html>`;
+        
+        let data = await runAuditTest(htmlDesc);
+        let metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('ok');
+        expect(metaResult.code).toBe('Found');
+
+        data = await runAuditTest(htmlOgDesc);
+        metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('ok');
+        expect(metaResult.code).toBe('Found');
+
+        // Should ignore og:image
+        data = await runAuditTest(htmlOgImageOnly);
+        metaResult = data.content.results.find(r => r.name === 'Meta Description');
+        expect(metaResult.status).toBe('warn');
+        expect(metaResult.code).toBe('Missing');
     });
 
     it('should detect x402 Payment Standard configuration', async () => {
