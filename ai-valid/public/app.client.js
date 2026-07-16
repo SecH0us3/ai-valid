@@ -561,6 +561,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDownloadCard = document.getElementById('btn-download-card');
     const btnTwitterShare = document.getElementById('btn-twitter-share');
 
+    if (shareModal) {
+        shareModal.addEventListener('close', () => {
+            shareModal.classList.remove('active');
+        });
+    }
+
     if (shareModal && !('closedBy' in HTMLDialogElement.prototype)) {
         shareModal.addEventListener('click', (event) => {
             if (event.target !== shareModal) return;
@@ -588,6 +594,7 @@ document.addEventListener('DOMContentLoaded', () => {
             sharePreviewImg.src = pngUrl;
             
             shareModal.showModal();
+            shareModal.classList.add('active');
         });
     }
 
