@@ -1,6 +1,7 @@
 // Frontend Logic for AI-Valid API
 
 document.addEventListener('DOMContentLoaded', () => {
+    let currentAuditContext = { domain: '', passedCount: 0, warnCount: 0, failCount: 0, score: 0 };
     const form = document.getElementById('audit-form');
     const input = document.getElementById('url-input');
     input.addEventListener('input', () => {
@@ -277,6 +278,16 @@ document.addEventListener('DOMContentLoaded', () => {
         renderGridList('passed-grid', 'status-passed', passed, 'good', `Passed: ${passed.length}`);
         renderGridList('warn-grid', 'status-warn', warnings, warnings.length > 0 ? 'warn' : 'good', `Warnings: ${warnings.length}`);
         renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Not found: ${failed.length}`);
+
+        // Update share context
+        const score = data.score ? data.score.total : 0;
+        currentAuditContext = {
+            domain: input.value,
+            passedCount: passed.length,
+            warnCount: warnings.length,
+            failCount: failed.length,
+            score: score
+        };
     }
 
     function renderGridList(containerId, statusId, items, overallStatusClass, overallStatusText) {
@@ -403,5 +414,224 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         window.requestAnimationFrame(step);
+    }
+
+    function drawShareCard(canvas, domain, passed, warn, fail, score) {
+        const ctx = canvas.getContext('2d');
+        const scale = 2; // high-DPI
+        canvas.width = 1200 * scale;
+        canvas.height = 630 * scale;
+        ctx.scale(scale, scale);
+
+        // Background gradient
+        const bgGrad = ctx.createLinearGradient(0, 0, 1200, 630);
+        bgGrad.addColorStop(0, '#0b1329');
+        bgGrad.addColorStop(1, '#080b11');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, 1200, 630);
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(30, 41, 59, 0.4)';
+        ctx.lineWidth = 1;
+        for (let y = 105; y < 630; y += 105) {
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1200, y); ctx.stroke();
+        }
+        for (let x = 200; x < 1200; x += 200) {
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 630); ctx.stroke();
+        }
+
+        const startX = 100;
+        const startY = 80;
+
+        // Header Text
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '800 32px Outfit, system-ui, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('AI READINESS AUDIT', startX, startY);
+
+        // Domain Text
+        ctx.fillStyle = '#3b82f6';
+        ctx.font = '700 48px "JetBrains Mono", monospace';
+        ctx.fillText(domain, startX, startY + 65);
+
+        // Score Circle Gauge
+        const cx = startX + 200;
+        const cy = startY + 260;
+        const radius = 140;
+
+        // Outer track
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.lineWidth = 18;
+        ctx.strokeStyle = '#1e293b';
+        ctx.stroke();
+
+        // Active track glow shadow
+        ctx.shadowColor = 'rgba(59, 130, 246, 0.4)';
+        ctx.shadowBlur = 24;
+
+        // Active gauge gradient
+        const arcGrad = ctx.createLinearGradient(cx - radius, cy - radius, cx + radius, cy + radius);
+        arcGrad.addColorStop(0, '#3b82f6');
+        arcGrad.addColorStop(1, '#10b981');
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, -Math.PI / 2, (-Math.PI / 2) + (Math.PI * 2 * (score / 100)));
+        ctx.strokeStyle = arcGrad;
+        ctx.lineWidth = 18;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Reset shadows
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+
+        // Percentage Text
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '800 96px Outfit, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(score + '%', cx, cy + 15);
+
+        // AI-Ready label
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '600 20px Outfit, sans-serif';
+        ctx.fillText('AI-READY', cx, cy + 50);
+
+        // Metrics Cards List
+        const mx = startX + 550;
+        const my = startY + 160;
+        
+        const drawCard = (yOffset, label, count, color, glowColor) => {
+            // Card back rect
+            ctx.fillStyle = '#111827';
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(mx, my + yOffset, 380, 70, 8);
+            } else {
+                ctx.rect(mx, my + yOffset, 380, 70);
+            }
+            ctx.fill();
+            ctx.stroke();
+
+            // Left neon accent stripe with glow
+            ctx.shadowColor = glowColor;
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(mx, my + yOffset, 6, 70, 3);
+            } else {
+                ctx.rect(mx, my + yOffset, 6, 70);
+            }
+            ctx.fill();
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+
+            // Value text
+            ctx.fillStyle = color;
+            ctx.font = '800 36px Outfit, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText(count, mx + 30, my + yOffset + 46);
+
+            // Label text
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '600 16px Outfit, sans-serif';
+            ctx.fillText(label, mx + 110, my + yOffset + 42);
+        };
+
+        drawCard(0, 'Checks Passed', passed, '#10b981', 'rgba(16, 185, 129, 0.5)');
+        drawCard(95, 'Warnings', warn, '#d97706', 'rgba(217, 119, 6, 0.5)');
+        drawCard(190, 'Not Found', fail, '#e11d48', 'rgba(225, 29, 72, 0.5)');
+
+        // Branding footer
+        ctx.fillStyle = '#475569';
+        ctx.font = '600 20px Outfit, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('ai-valid.secmy.app', startX, 560);
+    }
+
+    // Share results interactive logic
+    const shareBtn = document.getElementById('share-results-btn');
+    const shareModal = document.getElementById('share-modal');
+    const shareClose = document.getElementById('share-modal-close');
+    const sharePreviewImg = document.getElementById('share-preview-img');
+    const btnCopyCard = document.getElementById('btn-copy-card');
+    const btnDownloadCard = document.getElementById('btn-download-card');
+    const btnTwitterShare = document.getElementById('btn-twitter-share');
+
+    if (shareModal && !('closedBy' in HTMLDialogElement.prototype)) {
+        shareModal.addEventListener('click', (event) => {
+            if (event.target !== shareModal) return;
+            const rect = shareModal.getBoundingClientRect();
+            const isContent = (
+                rect.top <= event.clientY &&
+                event.clientY <= rect.top + rect.height &&
+                rect.left <= event.clientX &&
+                event.clientX <= rect.left + rect.width
+            );
+            if (!isContent) shareModal.close();
+        });
+    }
+
+    if (shareClose) {
+        shareClose.addEventListener('click', () => shareModal.close());
+    }
+
+    if (shareBtn) {
+        shareBtn.addEventListener('click', () => {
+            const canvas = document.createElement('canvas');
+            drawShareCard(canvas, currentAuditContext.domain, currentAuditContext.passedCount, currentAuditContext.warnCount, currentAuditContext.failCount, currentAuditContext.score);
+            
+            const pngUrl = canvas.toDataURL('image/png');
+            sharePreviewImg.src = pngUrl;
+            
+            shareModal.showModal();
+        });
+    }
+
+    if (btnCopyCard) {
+        btnCopyCard.addEventListener('click', async () => {
+            try {
+                const canvas = document.createElement('canvas');
+                drawShareCard(canvas, currentAuditContext.domain, currentAuditContext.passedCount, currentAuditContext.warnCount, currentAuditContext.failCount, currentAuditContext.score);
+                canvas.toBlob(async (blob) => {
+                    if (!blob) throw new Error("Canvas blob error");
+                    try {
+                        await navigator.clipboard.write([
+                            new ClipboardItem({ 'image/png': blob })
+                        ]);
+                        btnCopyCard.innerHTML = '✅ Copied!';
+                        setTimeout(() => btnCopyCard.innerHTML = '<span>📋</span> Copy Image', 2000);
+                    } catch (clipErr) {
+                        console.error("Clipboard API write failed: ", clipErr);
+                        alert("Unable to copy image automatically. Please right-click the image to copy it.");
+                    }
+                }, 'image/png');
+            } catch (e) {
+                console.error(e);
+            }
+        });
+    }
+
+    if (btnDownloadCard) {
+        btnDownloadCard.addEventListener('click', () => {
+            const canvas = document.createElement('canvas');
+            drawShareCard(canvas, currentAuditContext.domain, currentAuditContext.passedCount, currentAuditContext.warnCount, currentAuditContext.failCount, currentAuditContext.score);
+            const link = document.createElement('a');
+            link.download = `ai-valid-${currentAuditContext.domain}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        });
+    }
+
+    if (btnTwitterShare) {
+        btnTwitterShare.addEventListener('click', () => {
+            const url = `https://${window.location.host}/share?domain=${encodeURIComponent(currentAuditContext.domain)}&passed=${currentAuditContext.passedCount}&warn=${currentAuditContext.warnCount}&fail=${currentAuditContext.failCount}`;
+            const tweetText = encodeURIComponent(`My website ${currentAuditContext.domain} is ${currentAuditContext.score}% AI-ready! Scan your site's AI accessibility at:`);
+            const twitterUrl = `https://twitter.com/intent/tweet?text=${tweetText}&url=${encodeURIComponent(url)}&hashtags=AIReady,WebDev`;
+            window.open(twitterUrl, '_blank');
+        });
     }
 });
