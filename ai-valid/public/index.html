@@ -110,6 +110,12 @@
                     <span class="summary-label">Not found</span>
                     <span class="summary-count failed-count" id="summary-failed">0</span>
                 </div>
+                <div class="summary-divider"></div>
+                <div class="summary-item share-column">
+                    <button id="share-results-btn" class="glow-button share-btn" style="margin-top: 0.25rem;">
+                        <span>🔗</span> Share Results
+                    </button>
+                </div>
             </div>
 
             <div class="metrics-grid">
@@ -148,6 +154,32 @@
             </div>
         </section>
     </main>
+
+    <!-- Share Results Modal -->
+    <dialog id="share-modal" class="modal-overlay" closedby="any" aria-labelledby="share-title">
+        <div class="modal-content glass-panel" style="max-width: 650px;">
+            <button id="share-modal-close" class="modal-close-btn">&times;</button>
+            <h3 id="share-title" class="modal-title">Share Your AI Readiness</h3>
+            
+            <div class="share-modal-body">
+                <div class="preview-image-container">
+                    <img id="share-preview-img" src="" alt="AI Readiness Scorecard">
+                </div>
+                
+                <div class="share-actions-grid">
+                    <button id="btn-copy-card" class="share-action-btn">
+                        <span>📋</span> Copy Image
+                    </button>
+                    <button id="btn-download-card" class="share-action-btn">
+                        <span>📥</span> Download PNG
+                    </button>
+                    <button id="btn-twitter-share" class="share-action-btn btn-twitter">
+                        <span>🐦</span> Post to X
+                    </button>
+                </div>
+            </div>
+        </div>
+    </dialog>
 
     <!-- Global Info Modal -->
     <div id="info-modal" class="modal-overlay">
