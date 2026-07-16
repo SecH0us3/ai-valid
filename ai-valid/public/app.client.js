@@ -560,6 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnCopyCard = document.getElementById('btn-copy-card');
     const btnDownloadCard = document.getElementById('btn-download-card');
     const btnTwitterShare = document.getElementById('btn-twitter-share');
+    const btnLinkedInShare = document.getElementById('btn-linkedin-share');
 
     if (shareModal) {
         shareModal.addEventListener('close', () => {
@@ -639,6 +640,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const tweetText = encodeURIComponent(`My website ${currentAuditContext.domain} is ${currentAuditContext.score}% AI-ready! Scan your site's AI accessibility at:`);
             const twitterUrl = `https://twitter.com/intent/tweet?text=${tweetText}&url=${encodeURIComponent(url)}&hashtags=AIReady,WebDev`;
             window.open(twitterUrl, '_blank');
+        });
+    }
+
+    if (btnLinkedInShare) {
+        btnLinkedInShare.addEventListener('click', () => {
+            const url = `https://${window.location.host}/share?domain=${encodeURIComponent(currentAuditContext.domain)}&passed=${currentAuditContext.passedCount}&warn=${currentAuditContext.warnCount}&fail=${currentAuditContext.failCount}`;
+            const linkedinUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`;
+            window.open(linkedinUrl, '_blank');
         });
     }
 });
