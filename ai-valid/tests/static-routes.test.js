@@ -110,4 +110,26 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         const res = await index.fetch(req, env, ctx);
         expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     });
+
+    describe("Share routes", () => {
+        it("should serve HTML for /share", async () => {
+            const req = new Request("https://localhost/share?domain=example.com&passed=10&warn=5&fail=2", { method: 'GET' });
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(200);
+            expect(res.headers.get('Content-Type')).toContain('text/html');
+            const html = await res.text();
+            expect(html).toContain('og:image');
+            expect(html).toContain('/api/og-image');
+        });
+
+        it("should serve SVG for /api/og-image", async () => {
+            const req = new Request("https://localhost/api/og-image?domain=example.com&passed=10&warn=5&fail=2", { method: 'GET' });
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(200);
+            expect(res.headers.get("Content-Type")).toBe("image/svg+xml");
+            const svg = await res.text();
+            expect(svg).toContain('<svg');
+            expect(svg).toContain('example.com');
+        });
+    });
 });

@@ -646,6 +646,98 @@ body {
     border-color: rgba(16, 185, 129, 0.15);
 }
 
+/* Share button and modal styles */
+.share-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--accent-blue-light);
+    color: var(--accent-blue);
+    border: 1px solid rgba(37, 99, 235, 0.15);
+    font-size: 0.95rem;
+    padding: 0.75rem 1.25rem;
+}
+
+.share-btn:hover {
+    background: rgba(37, 99, 235, 0.12);
+    transform: translateY(-1px);
+}
+
+.share-modal-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.5rem 0;
+}
+
+.preview-image-container {
+    width: 100%;
+    aspect-ratio: 1.905 / 1;
+    background: #0b1329;
+    border: 1px solid var(--border-clean);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.preview-image-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.share-actions-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    width: 100%;
+}
+
+.share-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.65rem;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border: 1px solid var(--border-clean);
+    background: var(--bg-panel);
+    color: var(--text-primary);
+    transition: all 0.2s ease;
+}
+
+.share-action-btn:hover {
+    background: var(--bg-deep);
+    border-color: #cbd5e1;
+}
+
+.share-action-btn.btn-twitter {
+    background: #000000;
+    color: white;
+    border-color: #000000;
+}
+
+.share-action-btn.btn-twitter:hover {
+    background: #1a1a1a;
+}
+
+.share-action-btn.btn-linkedin {
+    background: #0077b5;
+    color: white;
+    border-color: #0077b5;
+}
+
+.share-action-btn.btn-linkedin:hover {
+    background: #005a8b;
+}
+
 @media (max-width: 1024px) {
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     .compact-mode .hero { flex-direction: column; text-align: center; gap: 1rem;}
@@ -655,6 +747,22 @@ body {
     .hero-title { font-size: 2rem; }
     .metrics-grid { grid-template-columns: 1fr; }
     .score-card { flex-direction: column; text-align: center; }
+    .summary-card {
+        flex-direction: column;
+        gap: 1.25rem;
+        padding: 1.5rem 1rem;
+    }
+    .summary-divider {
+        display: none;
+    }
+    .share-column {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+    }
+    .share-actions-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
