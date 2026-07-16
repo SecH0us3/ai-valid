@@ -412,10 +412,11 @@ export async function handleRequest(request, env, ctx) {
 
         // --- Share & OG Image Routes ---
         if (request.method === "GET" && url.pathname === "/share") {
-            const domain = url.searchParams.get("domain") || "unknown";
-            const passed = parseInt(url.searchParams.get("passed") || "0", 10);
-            const warn = parseInt(url.searchParams.get("warn") || "0", 10);
-            const fail = parseInt(url.searchParams.get("fail") || "0", 10);
+            const rawDomain = url.searchParams.get("domain") || "unknown";
+            const domain = /^[a-zA-Z0-9.-]+(?::\d+)?$/.test(rawDomain) ? rawDomain : "unknown";
+            const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
+            const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
+            const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
             const total = passed + warn + fail;
             const score = total > 0 ? Math.round((passed / total) * 100) : 0;
             
@@ -442,10 +443,11 @@ export async function handleRequest(request, env, ctx) {
         }
 
         if (request.method === "GET" && url.pathname === "/api/og-image") {
-            const domain = url.searchParams.get("domain") || "unknown";
-            const passed = parseInt(url.searchParams.get("passed") || "0", 10);
-            const warn = parseInt(url.searchParams.get("warn") || "0", 10);
-            const fail = parseInt(url.searchParams.get("fail") || "0", 10);
+            const rawDomain = url.searchParams.get("domain") || "unknown";
+            const domain = /^[a-zA-Z0-9.-]+(?::\d+)?$/.test(rawDomain) ? rawDomain : "unknown";
+            const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
+            const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
+            const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
             const total = passed + warn + fail;
             const score = total > 0 ? Math.round((passed / total) * 100) : 0;
             

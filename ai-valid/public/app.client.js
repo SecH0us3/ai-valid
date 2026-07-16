@@ -605,8 +605,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const canvas = document.createElement('canvas');
                 drawShareCard(canvas, currentAuditContext.domain, currentAuditContext.passedCount, currentAuditContext.warnCount, currentAuditContext.failCount, currentAuditContext.score);
                 canvas.toBlob(async (blob) => {
-                    if (!blob) throw new Error("Canvas blob error");
                     try {
+                        if (!blob) throw new Error("Canvas blob error");
+                        if (typeof ClipboardItem === 'undefined' || !navigator.clipboard) {
+                            throw new Error("Clipboard API not supported");
+                        }
                         await navigator.clipboard.write([
                             new ClipboardItem({ 'image/png': blob })
                         ]);
