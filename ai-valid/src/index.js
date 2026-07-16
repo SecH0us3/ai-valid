@@ -410,6 +410,55 @@ export async function handleRequest(request, env, ctx) {
             }
         }
 
+        // --- Share & OG Image Routes ---
+        if (request.method === "GET" && url.pathname === "/share") {
+            const domain = url.searchParams.get("domain") || "unknown";
+            const passed = parseInt(url.searchParams.get("passed") || "0", 10);
+            const warn = parseInt(url.searchParams.get("warn") || "0", 10);
+            const fail = parseInt(url.searchParams.get("fail") || "0", 10);
+            const total = passed + warn + fail;
+            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
+            
+            const shareImageUrl = `${url.origin}/api/og-image?domain=${encodeURIComponent(domain)}&passed=${passed}&warn=${warn}&fail=${fail}`;
+            
+            const html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AI Readiness Audit for ${domain}</title>
+    <meta property="og:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
+    <meta property="og:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}. Check your site's AI accessibility.">
+    <meta property="og:image" content="${shareImageUrl}">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
+    <meta name="twitter:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}.">
+    <meta name="twitter:image" content="${shareImageUrl}">
+    <script>window.location.href = "/#" + encodeURIComponent("${domain}");</script>
+</head>
+<body>Redirecting...</body>
+</html>`;
+            return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", ...corsHeaders } });
+        }
+
+        if (request.method === "GET" && url.pathname === "/api/og-image") {
+            const domain = url.searchParams.get("domain") || "unknown";
+            const passed = parseInt(url.searchParams.get("passed") || "0", 10);
+            const warn = parseInt(url.searchParams.get("warn") || "0", 10);
+            const fail = parseInt(url.searchParams.get("fail") || "0", 10);
+            const total = passed + warn + fail;
+            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
+            
+            const svg = generateOgImageSvg(domain, passed, warn, fail, score);
+            return new Response(svg, {
+                headers: {
+                    "Content-Type": "image/svg+xml",
+                    "Cache-Control": "public, max-age=86400",
+                    ...corsHeaders
+                }
+            });
+        }
+
         return new Response("Not Found", { status: 404, headers: corsHeaders });
 }
 
@@ -1364,3 +1413,69 @@ Examples of specific types:
         }
     };
 }
+
+function generateOgImageSvg(domain, passed, warn, fail, score) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&amp;family=JetBrains+Mono:wght@700&amp;display=swap');
+      .title { font-family: 'Outfit', sans-serif; font-weight: 800; fill: #ffffff; font-size: 32px; letter-spacing: 0.05em; }
+      .domain { font-family: 'JetBrains Mono', monospace; font-weight: 700; fill: #3b82f6; font-size: 48px; }
+      .score-num { font-family: 'Outfit', sans-serif; font-weight: 800; fill: #ffffff; font-size: 96px; text-anchor: middle; }
+      .score-label { font-family: 'Outfit', sans-serif; font-weight: 600; fill: #94a3b8; font-size: 20px; text-anchor: middle; text-transform: uppercase; letter-spacing: 0.1em; }
+      .stat-val { font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 36px; }
+      .stat-lbl { font-family: 'Outfit', sans-serif; font-weight: 600; fill: #94a3b8; font-size: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .footer { font-family: 'Outfit', sans-serif; font-weight: 600; fill: #475569; font-size: 20px; letter-spacing: 0.05em; }
+      .glow-green { filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.5)); }
+      .glow-yellow { filter: drop-shadow(0 0 8px rgba(217, 119, 6, 0.5)); }
+      .glow-red { filter: drop-shadow(0 0 8px rgba(225, 29, 72, 0.5)); }
+      .glow-blue { filter: drop-shadow(0 0 12px rgba(59, 130, 246, 0.4)); }
+    </style>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b1329" />
+      <stop offset="100%" stop-color="#080b11" />
+    </linearGradient>
+    <linearGradient id="circleGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bgGrad)" />
+  <path d="M 0 105 L 1200 105 M 0 210 L 1200 210 M 0 315 L 1200 315 M 0 420 L 1200 420 M 0 525 L 1200 525" stroke="#1e293b" stroke-width="1" opacity="0.3" />
+  <path d="M 200 0 L 200 630 M 400 0 L 400 630 M 600 0 L 600 630 M 800 0 L 800 630 M 1000 0 L 1000 630" stroke="#1e293b" stroke-width="1" opacity="0.3" />
+  <g transform="translate(100, 80)">
+    <text x="0" y="0" class="title">AI READINESS AUDIT</text>
+    <text x="0" y="65" class="domain">${domain}</text>
+    <g transform="translate(200, 260)">
+      <circle cx="0" cy="0" r="140" fill="none" stroke="#1e293b" stroke-width="18" />
+      <circle cx="0" cy="0" r="140" fill="none" stroke="url(#circleGrad)" stroke-width="18"
+              stroke-dasharray="879.6" stroke-dashoffset="${879.6 - (879.6 * score / 100)}"
+              stroke-linecap="round" transform="rotate(-90)" class="glow-blue" />
+      <text x="0" y="15" class="score-num">${score}%</text>
+      <text x="0" y="50" class="score-label">AI-READY</text>
+    </g>
+    <g transform="translate(550, 160)">
+      <g transform="translate(0, 0)">
+        <rect width="380" height="70" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1" />
+        <rect width="6" height="70" rx="3" fill="#10b981" class="glow-green" />
+        <text x="30" y="46" class="stat-val" fill="#10b981">${passed}</text>
+        <text x="110" y="42" class="stat-lbl">Checks Passed</text>
+      </g>
+      <g transform="translate(0, 95)">
+        <rect width="380" height="70" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1" />
+        <rect width="6" height="70" rx="3" fill="#d97706" class="glow-yellow" />
+        <text x="30" y="46" class="stat-val" fill="#d97706">${warn}</text>
+        <text x="110" y="42" class="stat-lbl">Warnings</text>
+      </g>
+      <g transform="translate(0, 190)">
+        <rect width="380" height="70" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1" />
+        <rect width="6" height="70" rx="3" fill="#e11d48" class="glow-red" />
+        <text x="30" y="46" class="stat-val" fill="#e11d48">${fail}</text>
+        <text x="110" y="42" class="stat-lbl">Not Found</text>
+      </g>
+    </g>
+  </g>
+  <text x="100" y="560" class="footer">ai-valid.secmy.app</text>
+</svg>`;
+}
+
