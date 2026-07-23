@@ -1028,6 +1028,41 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should detect RSS/Atom feeds and HTML lang attribute properly', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                const html = `
+                <html lang="en">
+                <head>
+                    <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+                    <link rel="alternate" type="application/atom+xml" href="/atom.xml">
+                </head>
+                <body></body>
+                </html>
+                `;
+                return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+            expect(data.content.hasRssFeed).toBe(true);
+            expect(data.content.hasHtmlLang).toBe(true);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
 

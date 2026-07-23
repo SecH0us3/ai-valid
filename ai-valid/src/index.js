@@ -619,6 +619,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasWebMCP = false;
     let hasARIA = false;
     let hasMetaDesc = false;
+    let hasRssFeed = false;
+    let hasHtmlLang = false;
     let currentScriptText = '';
 
     try {
@@ -681,6 +683,22 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         let lowerHtmlText = '';
 
         const transformed = new HTMLRewriter()
+            .on('html', {
+                element(el) {
+                    if (el.getAttribute('lang')) {
+                        hasHtmlLang = true;
+                    }
+                }
+            })
+            .on('link', {
+                element(el) {
+                    const rel = (el.getAttribute('rel') || '').toLowerCase();
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    if (rel === 'alternate' && (type === 'application/rss+xml' || type === 'application/atom+xml')) {
+                        hasRssFeed = true;
+                    }
+                }
+            })
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
@@ -856,6 +874,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasWebMCP) totalScore += 10;
         if (hasARIA) totalScore += 5;
         if (hasMetaDesc) totalScore += 5;
+        if (hasRssFeed) totalScore += 5;
+        if (hasHtmlLang) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -1151,6 +1171,8 @@ Example:
             hasConditionalGET,
             hasWebMCP,
             hasStatistics,
+            hasRssFeed,
+            hasHtmlLang,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -1389,6 +1411,24 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/meta/name",
                     tooltip: `<strong>What it is:</strong> The <code>&lt;meta name="description"&gt;</code> or Open Graph (<code>og:</code>) tags in the HTML head.<br/><br/><strong>Why it's critical for GEO:</strong> Answer Engines and AI crawlers often extract these tags to quickly summarize a page when detailed schema is unavailable.<br/><br/><strong>Impact of missing it:</strong> AI models may generate sub-optimal or irrelevant summaries of your page content in search results.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="description" content="A comprehensive guide to..."&gt;</code>`,
                     code: hasMetaDesc ? 'Found' : 'Missing'
+                },
+                {
+                    name: "RSS/Atom Feed",
+                    prompt: `Add an RSS or Atom feed to my website and link to it in the <head> of my HTML using a <link rel="alternate"> tag to help AI agents reliably consume my latest content updates without web scraping.`,
+                    status: hasRssFeed ? 'ok' : 'warn',
+                    message: hasRssFeed ? "RSS or Atom feed found" : "Missing RSS or Atom feed",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/link",
+                    tooltip: `<strong>What it is:</strong> A standardized syndication feed (RSS or Atom) linked via <code>&lt;link rel="alternate" type="application/rss+xml"&gt;</code>.<br/><br/><strong>Why it's critical for GEO:</strong> RSS eliminates HTML noise (like navigation bars and ads). AI agents can reliably monitor feeds for your latest content, ensuring immediate ingestion without guessing your DOM structure.<br/><br/><strong>Impact of missing it:</strong> AI agents must fallback to traditional HTML scraping, which is brittle and prone to extracting irrelevant boilerplate text.<br/><br/><strong>Implementation Example:</strong> <code>&lt;link rel="alternate" type="application/rss+xml" href="/feed.xml"&gt;</code>`,
+                    code: hasRssFeed ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTML Lang Attribute",
+                    prompt: `Ensure my website's root <html> tag includes a descriptive 'lang' attribute (e.g., <html lang="en">) to help AI agents understand the primary language of the content.`,
+                    status: hasHtmlLang ? 'ok' : 'warn',
+                    message: hasHtmlLang ? "HTML lang attribute found" : "Missing HTML lang attribute",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/lang",
+                    tooltip: `<strong>What it is:</strong> The <code>lang</code> attribute explicitly defined on the root <code>&lt;html&gt;</code> element.<br/><br/><strong>Why it's critical for GEO:</strong> AI models and autonomous agents use the language attribute to instantly set the correct linguistic context for parsing and summarizing, which prevents inference errors in multi-lingual models.<br/><br/><strong>Impact of missing it:</strong> Models may waste processing time inferring the language or incorrectly parse localized data, degrading the accuracy of citations.<br/><br/><strong>Implementation Example:</strong> <code>&lt;html lang="en"&gt;</code>`,
+                    code: hasHtmlLang ? 'Found' : 'Missing'
                 }
             ].sort((a, b) => {
                 const weights = {
@@ -1397,7 +1437,8 @@ Examples of specific types:
                     "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45,
                     "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
                     "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
-                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5
+                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5,
+                    "RSS/Atom Feed": 45, "HTML Lang Attribute": 40
                 };
                 return (weights[b.name] || 0) - (weights[a.name] || 0);
             })
