@@ -619,6 +619,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasWebMCP = false;
     let hasARIA = false;
     let hasMetaDesc = false;
+    let hasHtmlLang = false;
+    let hasTitleTag = false;
+    let hasImgAlt = false;
+    let hasRssFeed = false;
     let currentScriptText = '';
 
     try {
@@ -681,6 +685,35 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         let lowerHtmlText = '';
 
         const transformed = new HTMLRewriter()
+            .on('html', {
+                element(el) {
+                    if (el.getAttribute('lang')) {
+                        hasHtmlLang = true;
+                    }
+                }
+            })
+            .on('title', {
+                element() {
+                    hasTitleTag = true;
+                }
+            })
+            .on('img', {
+                element(el) {
+                    const alt = el.getAttribute('alt');
+                    if (alt && alt.trim() !== '') {
+                        hasImgAlt = true;
+                    }
+                }
+            })
+            .on('link', {
+                element(el) {
+                    const rel = (el.getAttribute('rel') || '').toLowerCase();
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    if (rel === 'alternate' && (type === 'application/rss+xml' || type === 'application/atom+xml')) {
+                        hasRssFeed = true;
+                    }
+                }
+            })
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
@@ -856,6 +889,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasWebMCP) totalScore += 10;
         if (hasARIA) totalScore += 5;
         if (hasMetaDesc) totalScore += 5;
+        if (hasHtmlLang) totalScore += 5;
+        if (hasTitleTag) totalScore += 5;
+        if (hasImgAlt) totalScore += 5;
+        if (hasRssFeed) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -1389,6 +1426,42 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/meta/name",
                     tooltip: `<strong>What it is:</strong> The <code>&lt;meta name="description"&gt;</code> or Open Graph (<code>og:</code>) tags in the HTML head.<br/><br/><strong>Why it's critical for GEO:</strong> Answer Engines and AI crawlers often extract these tags to quickly summarize a page when detailed schema is unavailable.<br/><br/><strong>Impact of missing it:</strong> AI models may generate sub-optimal or irrelevant summaries of your page content in search results.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="description" content="A comprehensive guide to..."&gt;</code>`,
                     code: hasMetaDesc ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTML Language Attribute",
+                    prompt: `Add a 'lang' attribute to the <html> tag of my website to declare the primary language of the document.`,
+                    status: hasHtmlLang ? 'ok' : 'warn',
+                    message: hasHtmlLang ? "HTML language attribute found" : "Missing HTML language attribute",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/lang",
+                    tooltip: `<strong>What it is:</strong> The <code>lang</code> attribute on the root <code>&lt;html&gt;</code> element.<br/><br/><strong>Why it's critical for GEO:</strong> It explicitly tells AI and answer engines the language of the content, ensuring correct indexing and appropriate responses for international users.<br/><br/><strong>Impact of missing it:</strong> LLMs might misidentify the language, reducing the likelihood of your content being cited in localized queries.<br/><br/><strong>Implementation Example:</strong> <code>&lt;html lang="en"&gt;</code>`,
+                    code: hasHtmlLang ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Title Tag",
+                    prompt: `Add a descriptive <title> tag to the <head> of my website.`,
+                    status: hasTitleTag ? 'ok' : 'warn',
+                    message: hasTitleTag ? "Title tag found" : "Missing title tag",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/title",
+                    tooltip: `<strong>What it is:</strong> The <code>&lt;title&gt;</code> element within the <code>&lt;head&gt;</code>.<br/><br/><strong>Why it's critical for GEO:</strong> It provides a concise, high-level summary of the page's topic. Answer engines heavily weigh titles to determine relevance to user queries.<br/><br/><strong>Impact of missing it:</strong> AI systems lack a critical piece of context, which can drastically reduce your page's discoverability.<br/><br/><strong>Implementation Example:</strong> <code>&lt;title&gt;My Awesome Website&lt;/title&gt;</code>`,
+                    code: hasTitleTag ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Image Alt Text",
+                    prompt: `Ensure all meaningful images on my website have descriptive 'alt' attributes.`,
+                    status: hasImgAlt ? 'ok' : 'warn',
+                    message: hasImgAlt ? "Image alt text found" : "Missing image alt text",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/alt",
+                    tooltip: `<strong>What it is:</strong> The <code>alt</code> attribute on <code>&lt;img&gt;</code> tags that describes the image content.<br/><br/><strong>Why it's critical for GEO:</strong> Multimodal AI models use alt text to understand images when they cannot analyze the pixels directly, improving the page's overall semantic richness.<br/><br/><strong>Impact of missing it:</strong> Visual information is lost to AI crawlers, potentially making your content less competitive for queries requiring multi-modal understanding.<br/><br/><strong>Implementation Example:</strong> <code>&lt;img src="chart.png" alt="Sales growth chart for 2024"&gt;</code>`,
+                    code: hasImgAlt ? 'Found' : 'Missing'
+                },
+                {
+                    name: "RSS/Atom Feed",
+                    prompt: `Provide an RSS or Atom feed for my website's content and link to it in the <head>.`,
+                    status: hasRssFeed ? 'ok' : 'warn',
+                    message: hasRssFeed ? "RSS/Atom feed found" : "Missing RSS/Atom feed",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/link",
+                    tooltip: `<strong>What it is:</strong> A link element pointing to an RSS or Atom feed.<br/><br/><strong>Why it's critical for GEO:</strong> Feeds offer a structured, easily parsable stream of your latest content. AI engines can subscribe to feeds to ingest updates faster than regular crawling.<br/><br/><strong>Impact of missing it:</strong> Your newest content might experience a delay before being incorporated into AI models' knowledge bases.<br/><br/><strong>Implementation Example:</strong> <code>&lt;link rel="alternate" type="application/rss+xml" href="/feed.xml"&gt;</code>`,
+                    code: hasRssFeed ? 'Found' : 'Missing'
                 }
             ].sort((a, b) => {
                 const weights = {
