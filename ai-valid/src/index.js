@@ -619,6 +619,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasWebMCP = false;
     let hasARIA = false;
     let hasMetaDesc = false;
+    let hasTitle = false;
+    let hasLang = false;
+    let hasImageAlt = false;
+    let hasRss = false;
+    let hasOrgSchema = false;
     let currentScriptText = '';
 
     try {
@@ -681,6 +686,33 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         let lowerHtmlText = '';
 
         const transformed = new HTMLRewriter()
+            .on('html', {
+                element(el) {
+                    const lang = el.getAttribute('lang');
+                    if (lang && lang.trim()) {
+                        hasLang = true;
+                    }
+                }
+            })
+            .on('title', {
+                element() { hasTitle = true; }
+            })
+            .on('img', {
+                element(el) {
+                    const alt = el.getAttribute('alt');
+                    if (alt && alt.trim()) {
+                        hasImageAlt = true;
+                    }
+                }
+            })
+            .on('link[rel="alternate"]', {
+                element(el) {
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    if (type === 'application/rss+xml' || type === 'application/atom+xml') {
+                        hasRss = true;
+                    }
+                }
+            })
             .on('meta', {
                 element(el) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
@@ -856,6 +888,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         if (hasWebMCP) totalScore += 10;
         if (hasARIA) totalScore += 5;
         if (hasMetaDesc) totalScore += 5;
+        if (hasTitle) totalScore += 5;
+        if (hasLang) totalScore += 5;
+        if (hasImageAlt) totalScore += 5;
+        if (hasRss) totalScore += 5;
 
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
@@ -870,6 +906,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
                         if (typeList.includes('FAQPage') || typeList.includes('Question')) {
                             hasFaqSchema = true;
+                        }
+                        if (typeList.includes('Organization')) {
+                            hasOrgSchema = true;
                         }
                     }
                     if (obj['author']) {
@@ -1389,6 +1428,51 @@ Examples of specific types:
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/meta/name",
                     tooltip: `<strong>What it is:</strong> The <code>&lt;meta name="description"&gt;</code> or Open Graph (<code>og:</code>) tags in the HTML head.<br/><br/><strong>Why it's critical for GEO:</strong> Answer Engines and AI crawlers often extract these tags to quickly summarize a page when detailed schema is unavailable.<br/><br/><strong>Impact of missing it:</strong> AI models may generate sub-optimal or irrelevant summaries of your page content in search results.<br/><br/><strong>Implementation Example:</strong> <code>&lt;meta name="description" content="A comprehensive guide to..."&gt;</code>`,
                     code: hasMetaDesc ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTML Title Tag",
+                    prompt: `Ensure my HTML document has a descriptive <title> tag in the <head>.`,
+                    status: hasTitle ? 'ok' : 'warn',
+                    message: hasTitle ? "Title tag found" : "Missing title tag",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/title",
+                    tooltip: `<strong>What it is:</strong> The <code>&lt;title&gt;</code> element in the document's <code>&lt;head&gt;</code>.<br/><br/><strong>Why it's critical for GEO:</strong> AI search models rely on the title tag as a primary signal for the overall topic of the page.<br/><br/><strong>Impact of missing it:</strong> The AI may struggle to accurately categorize your page, leading to lower relevance scores for user queries.<br/><br/><strong>Implementation Example:</strong> <code>&lt;title&gt;Your Descriptive Page Title&lt;/title&gt;</code>`,
+                    code: hasTitle ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTML Lang Attribute",
+                    prompt: `Add a 'lang' attribute to the <html> tag of my website to declare the primary language.`,
+                    status: hasLang ? 'ok' : 'warn',
+                    message: hasLang ? "Language attribute found" : "Missing language attribute",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/lang",
+                    tooltip: `<strong>What it is:</strong> The <code>lang</code> attribute on the root <code>&lt;html&gt;</code> element.<br/><br/><strong>Why it's critical for GEO:</strong> Helps AI models immediately understand the language of the content, which is crucial for internationalized queries and ensuring responses match the user's language.<br/><br/><strong>Impact of missing it:</strong> AI engines might misinterpret the language or have to expend extra processing to infer it, potentially causing it to skip the page for strict language-matched queries.<br/><br/><strong>Implementation Example:</strong> <code>&lt;html lang="en"&gt;</code>`,
+                    code: hasLang ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Image Alt Text",
+                    prompt: `Ensure all images (<img>) have descriptive 'alt' attributes.`,
+                    status: hasImageAlt ? 'ok' : 'warn',
+                    message: hasImageAlt ? "Image alt text found" : "Missing image alt text",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/img#attr-alt",
+                    tooltip: `<strong>What it is:</strong> The <code>alt</code> attribute on <code>&lt;img&gt;</code> tags providing a text alternative.<br/><br/><strong>Why it's critical for GEO:</strong> Multimodal AI models use alt text to understand the context and content of images if they don't process the image directly, or to ground the image data.<br/><br/><strong>Impact of missing it:</strong> Important visual information is lost to text-based crawlers, and the page's overall semantic richness is reduced.<br/><br/><strong>Implementation Example:</strong> <code>&lt;img src="chart.png" alt="Sales growth chart for Q3"&gt;</code>`,
+                    code: hasImageAlt ? 'Found' : 'Missing'
+                },
+                {
+                    name: "RSS/Atom Feed",
+                    prompt: `Provide an RSS or Atom feed and link to it in the HTML <head>.`,
+                    status: hasRss ? 'ok' : 'warn',
+                    message: hasRss ? "RSS/Atom feed linked" : "No RSS/Atom feed detected",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTML/Element/link",
+                    tooltip: `<strong>What it is:</strong> A <code>&lt;link rel="alternate"&gt;</code> tag pointing to an RSS or Atom XML feed.<br/><br/><strong>Why it's critical for GEO:</strong> Feeds provide a structured, chronological list of updates. AI crawlers can use them to efficiently discover new or updated content without crawling the whole site.<br/><br/><strong>Impact of missing it:</strong> Slower discovery of fresh content by AI systems that monitor feeds for timely updates.<br/><br/><strong>Implementation Example:</strong> <code>&lt;link rel="alternate" type="application/rss+xml" href="/feed.xml"&gt;</code>`,
+                    code: hasRss ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Organization Schema",
+                    prompt: `Implement Schema.org Organization markup to establish brand entity.`,
+                    status: hasOrgSchema ? 'ok' : 'warn',
+                    message: hasOrgSchema ? "Organization Schema found" : "Missing Organization Schema",
+                    spec: "https://schema.org/Organization",
+                    tooltip: `<strong>What it is:</strong> JSON-LD structured data defining an <code>Organization</code> entity.<br/><br/><strong>Why it's critical for GEO:</strong> Helps AI models build a clear knowledge graph entity for your brand, linking your domain to your company name, social profiles, and contact info.<br/><br/><strong>Impact of missing it:</strong> AI models may hallucinate company details or fail to recognize your brand as the authoritative source for your own products/services.<br/><br/><strong>Implementation Example:</strong> Add JSON-LD with <code>"@type": "Organization"</code>.`,
+                    code: hasOrgSchema ? 'Found' : 'Missing'
                 }
             ].sort((a, b) => {
                 const weights = {
@@ -1397,7 +1481,8 @@ Examples of specific types:
                     "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45,
                     "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
                     "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
-                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5
+                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5,
+                    "HTML Title Tag": 10, "HTML Lang Attribute": 10, "Image Alt Text": 10, "RSS/Atom Feed": 5, "Organization Schema": 50
                 };
                 return (weights[b.name] || 0) - (weights[a.name] || 0);
             })
