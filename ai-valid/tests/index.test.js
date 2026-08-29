@@ -1028,6 +1028,133 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should detect HTML Title, Lang, Image Alt, RSS/Atom, and Organization Schema', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('/.well-known/security.txt')) {
+                return new Response('Contact: mailto:security@example.com\nExpires: 2027-12-31\n', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                const html = `<!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <title>Example Domain</title>
+                    <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+                    <script type="application/ld+json">
+                    {
+                        "@context": "https://schema.org",
+                        "@type": "Organization",
+                        "name": "Example Inc."
+                    }
+                    </script>
+                </head>
+                <body>
+                    <img src="/logo.png" alt="Example Logo">
+                </body>
+                </html>`;
+                return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            // Check content booleans
+            expect(data.content.hasTitle).toBe(true);
+            expect(data.content.hasLang).toBe(true);
+            expect(data.content.hasImageAlt).toBe(true);
+            expect(data.content.hasRss).toBe(true);
+            expect(data.content.hasOrgSchema).toBe(true);
+
+            // Check result entries
+            const titleRes = data.content.results.find(r => r.name === 'HTML Title Tag');
+            expect(titleRes?.status).toBe('ok');
+
+            const langRes = data.content.results.find(r => r.name === 'HTML Lang Attribute');
+            expect(langRes?.status).toBe('ok');
+
+            const altRes = data.content.results.find(r => r.name === 'Image Alt Text');
+            expect(altRes?.status).toBe('ok');
+
+            const rssRes = data.content.results.find(r => r.name === 'RSS/Atom Feed');
+            expect(rssRes?.status).toBe('ok');
+
+            const orgRes = data.content.results.find(r => r.name === 'Organization Schema');
+            expect(orgRes?.status).toBe('ok');
+
+            // Check protocol security.txt
+            const secRes = data.protocols.results.find(r => r.name === 'security.txt');
+            expect(secRes?.status).toBe('ok');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should report warnings when Title, Lang, Image Alt, RSS, and Organization Schema are missing', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.includes('example.com') || urlStr.includes('93.184.216.34')) {
+                // HTML without lang, title, alt text, or RSS feeds
+                const html = `<html>
+                <body>
+                    <img src="/blank.png">
+                </body>
+                </html>`;
+                return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            expect(data.content.hasTitle).toBe(false);
+            expect(data.content.hasLang).toBe(false);
+            expect(data.content.hasImageAlt).toBe(false);
+            expect(data.content.hasRss).toBe(false);
+            expect(data.content.hasOrgSchema).toBe(false);
+
+            const titleRes = data.content.results.find(r => r.name === 'HTML Title Tag');
+            expect(titleRes?.status).toBe('warn');
+
+            const langRes = data.content.results.find(r => r.name === 'HTML Lang Attribute');
+            expect(langRes?.status).toBe('warn');
+
+            const altRes = data.content.results.find(r => r.name === 'Image Alt Text');
+            expect(altRes?.status).toBe('warn');
+
+            const rssRes = data.content.results.find(r => r.name === 'RSS/Atom Feed');
+            expect(rssRes?.status).toBe('warn');
+
+            const orgRes = data.content.results.find(r => r.name === 'Organization Schema');
+            expect(orgRes?.status).toBe('warn');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
 

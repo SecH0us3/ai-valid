@@ -219,6 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
             "AI Fallback (No-JS)": 10,
             "Content-Signal": 10,
             "Semantic JSON-LD": 10,
+            "WebMCP Integration": 10,
             
             "AI Search Allowed": 10,
             "AI Agent Allowed": 10,
@@ -226,10 +227,15 @@ document.addEventListener('DOMContentLoaded', () => {
             "Differentiated Policy": 10,
             "Conditional Requests (304)": 10,
 
+            "HTML Title Tag": 10,
+            "HTML Lang Attribute": 10,
+            "Image Alt Text": 10,
+
             "robots.txt": 5,
             "AI Directives": 5,
             "sitemap.xml": 5,
             "FAQ Schema": 5,
+            "Organization Schema": 5,
             "Authorship (E-E-A-T)": 5,
             "Content Freshness": 5,
             "External Citations": 5,
@@ -248,7 +254,11 @@ document.addEventListener('DOMContentLoaded', () => {
             "ai.txt": 5,
             "Sitemap Lastmod": 5,
             "Content-Use Parameter": 5,
-            "Freshness Headers": 5
+            "Freshness Headers": 5,
+            "ARIA Accessibility": 5,
+            "Meta Description": 5,
+            "RSS/Atom Feed": 5,
+            "security.txt": 5
         };
 
         // Flatten all checks into array and sort by importance descending, then alphabetically by name

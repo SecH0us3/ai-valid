@@ -167,6 +167,85 @@ const STATIC_ROUTES = {
                 ...corsHeaders
             },
         });
+    },
+    "/.well-known/security.txt": () => {
+        const securityTxt = `Contact: mailto:security@secmy.app\nExpires: 2027-12-31T23:59:59.000Z\nPreferred-Languages: en\nCanonical: https://ai-valid.secmy.app/.well-known/security.txt\nPolicy: https://github.com/SecH0us3/ai-valid/security/policy\n`;
+        return new Response(securityTxt, {
+            headers: {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/robots.txt": () => {
+        const robotsTxt = `User-agent: *\nAllow: /\n\nUser-agent: GPTBot\nDisallow: /\n\nUser-agent: ClaudeBot\nDisallow: /\n\nUser-agent: Google-Extended\nDisallow: /\n\nUser-agent: Amazonbot\nDisallow: /\n\nUser-agent: Applebot-Extended\nDisallow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n\nUser-agent: ChatGPT-User\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n`;
+        return new Response(robotsTxt, {
+            headers: {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/.well-known/mcp/server-card.json": () => {
+        const serverCard = {
+            "serverInfo": {
+                "name": "ai-valid-mcp",
+                "version": "1.0.0"
+            },
+            "description": "AI-Readiness Audit Platform MCP Server",
+            "tools": [
+                {
+                    "name": "audit_website",
+                    "description": "Perform an AI readiness audit for a given URL",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "targetUrl": {
+                                "type": "string",
+                                "description": "The URL to audit"
+                            }
+                        },
+                        "required": ["targetUrl"]
+                    }
+                }
+            ]
+        };
+        return new Response(JSON.stringify(serverCard, null, 2), {
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/.well-known/agent-card.json": () => {
+        const agentCard = {
+            "name": "AI-Valid Auditor",
+            "description": "Autonomous AI Readiness and GEO audit agent",
+            "version": "1.0.0",
+            "url": "https://ai-valid.secmy.app",
+            "capabilities": [
+                "ai-readiness-audit",
+                "geo-analysis",
+                "robots-policy-check"
+            ],
+            "endpoints": [
+                {
+                    "path": "/api/audit",
+                    "method": "GET",
+                    "description": "Execute AI readiness audit on target URL"
+                }
+            ]
+        };
+        return new Response(JSON.stringify(agentCard, null, 2), {
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
     }
 };
 
@@ -1190,6 +1269,28 @@ Example:
             hasConditionalGET,
             hasWebMCP,
             hasStatistics,
+            hasTitle,
+            hasLang,
+            hasImageAlt,
+            hasRss,
+            hasOrgSchema,
+            hasARIA,
+            hasMetaDesc,
+            hasSemanticTags,
+            hasH1,
+            hasH2,
+            hasLists,
+            hasInternalLinks,
+            hasCitations,
+            hasQuotations,
+            hasAuthorship,
+            hasFreshness,
+            hasFaqSchema,
+            hasSchema,
+            schemaType,
+            hasNoAI,
+            hasViewport,
+            hasAgentFallback,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -1493,7 +1594,7 @@ Examples of specific types:
                     "MCP Server": 100, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
                     "Agent Skills": 80, "A2A Agent Card": 75, "x402 Payment Standard": 70,
                     "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55, "OAuth Discovery": 50,
-                    "Universal Commerce": 45
+                    "Universal Commerce": 45, "security.txt": 40
                 };
                 return (weights[b.name] || 0) - (weights[a.name] || 0);
             })

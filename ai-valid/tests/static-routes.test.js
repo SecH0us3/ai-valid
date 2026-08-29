@@ -96,6 +96,44 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(body.x402Version).toBe(2);
     });
 
+    it('should serve Text for /.well-known/security.txt', async () => {
+        const req = new Request('https://localhost/.well-known/security.txt', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+        const text = await res.text();
+        expect(text).toContain('Contact:');
+    });
+
+    it('should serve Text for /robots.txt', async () => {
+        const req = new Request('https://localhost/robots.txt', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+        const text = await res.text();
+        expect(text).toContain('User-agent:');
+    });
+
+    it('should serve JSON for /.well-known/mcp/server-card.json', async () => {
+        const req = new Request('https://localhost/.well-known/mcp/server-card.json', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body = await res.json();
+        expect(body.serverInfo.name).toBe('ai-valid-mcp');
+    });
+
+    it('should serve JSON for /.well-known/agent-card.json', async () => {
+        const req = new Request('https://localhost/.well-known/agent-card.json', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body = await res.json();
+        expect(body.name).toBe('AI-Valid Auditor');
+    });
+
     it('should respond to OPTIONS request with CORS headers', async () => {
         const req = new Request('https://localhost/api/audit', { method: 'OPTIONS' });
         const res = await index.fetch(req, env, ctx);
