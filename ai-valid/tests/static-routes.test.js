@@ -160,6 +160,22 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(Array.isArray(body.capabilities)).toBe(true);
     });
 
+    it('should serve JSON for /.well-known/oauth-protected-resource/mcp and /.well-known/oauth-protected-resource', async () => {
+        const req1 = new Request('https://localhost/.well-known/oauth-protected-resource/mcp', { method: 'GET' });
+        const res1 = await index.fetch(req1, env, ctx);
+        expect(res1.status).toBe(200);
+        expect(res1.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body1 = await res1.json();
+        expect(body1.resource).toBe('https://ai-valid.secmy.app/mcp');
+
+        const req2 = new Request('https://localhost/.well-known/oauth-protected-resource', { method: 'GET' });
+        const res2 = await index.fetch(req2, env, ctx);
+        expect(res2.status).toBe(200);
+        expect(res2.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body2 = await res2.json();
+        expect(body2.resource).toBe('https://ai-valid.secmy.app');
+    });
+
     it('should respond to OPTIONS request with CORS headers', async () => {
         const req = new Request('https://localhost/api/audit', { method: 'OPTIONS' });
         const res = await index.fetch(req, env, ctx);

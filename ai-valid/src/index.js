@@ -310,6 +310,46 @@ const STATIC_ROUTES = {
                 ...corsHeaders
             }
         });
+    },
+    "/.well-known/oauth-protected-resource/mcp": () => {
+        const resourceMeta = {
+            "resource": "https://ai-valid.secmy.app/mcp",
+            "authorization_servers": [
+                "https://ai-valid.secmy.app"
+            ],
+            "bearer_methods_supported": [
+                "header"
+            ],
+            "scopes_supported": [
+                "mcp:read",
+                "mcp:write"
+            ]
+        };
+        return new Response(JSON.stringify(resourceMeta, null, 2), {
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/.well-known/oauth-protected-resource": () => {
+        const resourceMeta = {
+            "resource": "https://ai-valid.secmy.app",
+            "authorization_servers": [
+                "https://ai-valid.secmy.app"
+            ],
+            "bearer_methods_supported": [
+                "header"
+            ]
+        };
+        return new Response(JSON.stringify(resourceMeta, null, 2), {
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
     }
 };
 
@@ -1327,6 +1367,55 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             tooltip: `<strong>What it is:</strong> RFC 8414 standard for OAuth 2.0 discovery.<br/><br/><strong>Why it's critical:</strong> Allows agents to understand exactly how to authenticate, which scopes are available, and where token endpoints live.<br/><br/><strong>Impact of missing it:</strong> Agents will be completely blocked out of secure/private areas of your platform. They cannot dynamically request user consent to perform actions on their behalf.<br/><br/><strong>Implementation Example:</strong> Serve metadata at <code>/.well-known/oauth-authorization-server</code> highlighting your issuer URI and token endpoints so LLM apps can securely acquire human user consent.`
         },
         {
+            name: 'OAuth Protected Resource',
+            prompt: `Create an RFC 9728 OAuth 2.0 Protected Resource Metadata file at /.well-known/oauth-protected-resource/mcp (or /.well-known/oauth-protected-resource) linking my MCP server to its authorization server.
+Example:
+\`\`\`json
+{
+  "resource": "https://ai-valid.secmy.app/mcp",
+  "authorization_servers": ["https://ai-valid.secmy.app"],
+  "bearer_methods_supported": ["header"],
+  "scopes_supported": ["mcp:read", "mcp:write"]
+}
+\`\`\``,
+            path: '/.well-known/oauth-protected-resource/mcp',
+            spec: 'https://www.rfc-editor.org/rfc/rfc9728.txt',
+            isJson: true,
+            points: 5,
+            tooltip: `<strong>What it is:</strong> RFC 9728 OAuth 2.0 Protected Resource Metadata (expected at <code>/.well-known/oauth-protected-resource/mcp</code> or <code>/.well-known/oauth-protected-resource</code>).<br/><br/><strong>Why it's critical:</strong> Used natively by Claude Code, OpenAI Assistants, and AI agents to automatically discover OAuth 2.0 authorization servers when connecting to protected Remote MCP endpoints.<br/><br/><strong>Impact of missing it:</strong> AI clients cannot automatically initiate browser-based OAuth consent flow when attempting to connect to protected MCP server tools.<br/><br/><strong>Implementation Example:</strong> Publish a JSON metadata file at <code>/.well-known/oauth-protected-resource/mcp</code> declaring your <code>resource</code> URL and <code>authorization_servers</code>.`,
+            validate: async (req, statusCode, cType, base) => {
+                if (statusCode === 404) {
+                    try {
+                        const fallbackReq = await iFetch(`${base}/.well-known/oauth-protected-resource`, { headers: headersStandard, cf: { cacheEverything: false } });
+                        if (fallbackReq.status === 200) {
+                            req = fallbackReq;
+                            statusCode = 200;
+                            cType = (fallbackReq.headers.get('content-type') || '').toLowerCase();
+                        }
+                    } catch {}
+                }
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    try {
+                        const json = await req.json();
+                        if (json && typeof json === 'object') {
+                            const authServers = Array.isArray(json.authorization_servers) ? json.authorization_servers.length : 0;
+                            return {
+                                status: 'ok',
+                                message: `RFC 9728 Protected Resource metadata verified (${authServers > 0 ? `${authServers} auth server(s)` : 'valid config'})`,
+                                code: 'Found',
+                                addScore: 5
+                            };
+                        }
+                    } catch {}
+                    return { status: 'err', message: 'Invalid JSON in oauth-protected-resource metadata', code: 'Invalid JSON' };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
+        },
+        {
             name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.`
         },
@@ -1886,7 +1975,7 @@ Examples of specific types:
             results: protoResults.sort((a, b) => {
                 const weights = {
                     "MCP Server": 100, "AGENTS.md": 98, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
-                    "Agent Skills": 80, "A2A Agent Card": 75, "x402 Payment Standard": 70,
+                    "Agent Skills": 80, "A2A Agent Card": 75, "OAuth Protected Resource": 72, "x402 Payment Standard": 70,
                     "agents.json": 68, "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55,
                     "OAuth Discovery": 50, "Universal Commerce": 45, "security.txt": 40
                 };

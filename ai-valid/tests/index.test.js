@@ -1424,6 +1424,43 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should validate RFC 9728 OAuth Protected Resource metadata', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.endsWith('/.well-known/oauth-protected-resource/mcp')) {
+                return new Response(JSON.stringify({
+                    resource: 'https://example.com/mcp',
+                    authorization_servers: ['https://example.com/oauth'],
+                    bearer_methods_supported: ['header']
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            const oauthRes = data.protocols.results.find(r => r.name === 'OAuth Protected Resource');
+            expect(oauthRes?.status).toBe('ok');
+            expect(oauthRes?.code).toBe('Found');
+            expect(oauthRes?.message).toContain('1 auth server(s)');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
 

@@ -222,6 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
             "WebMCP Integration": 10,
             "AGENTS.md": 10,
             "agents.json": 10,
+            "OAuth Protected Resource": 10,
             
             "AI Search Allowed": 10,
             "AI Agent Allowed": 10,
