@@ -1347,6 +1347,83 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should detect direct /mcp endpoint with OAuth 2.0 protection (e.g., Finom pattern)', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.endsWith('/.well-known/mcp/server-card.json')) {
+                return new Response('<html>Page not found</html>', { status: 404, headers: { 'Content-Type': 'text/html' } });
+            }
+            if (urlStr.endsWith('/mcp')) {
+                return new Response(JSON.stringify({ error: 'invalid_token' }), {
+                    status: 401,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'WWW-Authenticate': 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource/mcp"'
+                    }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            const mcp = data.protocols.results.find(r => r.name === 'MCP Server');
+            expect(mcp?.status).toBe('ok');
+            expect(mcp?.code).toBe('OAuth Protected');
+            expect(mcp?.message).toContain('OAuth 2.0 protected');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should detect direct /mcp SSE endpoint returning text/event-stream', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.endsWith('/.well-known/mcp/server-card.json')) {
+                return new Response('<html>404 Not Found</html>', { status: 404, headers: { 'Content-Type': 'text/html' } });
+            }
+            if (urlStr.endsWith('/mcp')) {
+                return new Response(': ping\n\n', {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'text/event-stream'
+                    }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            const mcp = data.protocols.results.find(r => r.name === 'MCP Server');
+            expect(mcp?.status).toBe('ok');
+            expect(mcp?.code).toBe('Live & Operational');
+            expect(mcp?.message).toContain('SSE endpoint active');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
 

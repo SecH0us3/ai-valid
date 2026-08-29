@@ -1194,15 +1194,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.`
         },
         {
-            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json that exposes my application's core functions as tools, and ensure the live SSE/HTTP endpoint responds to initialize and tools/list requests.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.`,
+            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json or deploy a live MCP endpoint at /mcp exposing your tools via SSE or Stream.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> Model Context Protocol (MCP) server integration.<br/><br/><strong>Why it's critical:</strong> It allows AI ecosystems (Claude Desktop, Cursor, intelligent agents) to securely connect to your platform, stream resources, and execute callable tools.<br/><br/><strong>Impact of missing it:</strong> Agents will not be able to interact with your business logic dynamically.<br/><br/><strong>Implementation Example:</strong> Deploy an MCP endpoint at <code>/mcp</code> or <code>/mcp/sse</code>, or publish a discovery manifest at <code>/.well-known/mcp/server-card.json</code>.`,
             validate: async (req, statusCode, cType, base) => {
                 let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                
+                // 1. Check server-card.json if valid
                 if (statusCode === 200 && !isSoft404) {
                     try {
                         const jsonBody = await req.json();
-                        let liveTarget = jsonBody.endpoints?.sse || jsonBody.endpoints?.http || jsonBody.url;
+                        let liveTarget = jsonBody.endpoints?.sse || jsonBody.endpoints?.http || jsonBody.url || '/mcp';
                         let liveProbeOk = false;
+                        let isOAuthProtected = false;
                         let toolCount = Array.isArray(jsonBody.tools) ? jsonBody.tools.length : 0;
 
                         if (liveTarget) {
@@ -1222,6 +1225,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                                             toolCount = resJson.result.tools.length;
                                         }
                                     } catch {}
+                                } else if ([401, 403].includes(probeReq.status)) {
+                                    const authHeader = (probeReq.headers.get('www-authenticate') || '').toLowerCase();
+                                    isOAuthProtected = authHeader.includes('bearer') || authHeader.includes('resource_metadata') || authHeader.includes('oauth');
+                                    if (!isOAuthProtected) {
+                                        try {
+                                            const probeBody = await probeReq.text();
+                                            if (probeBody.includes('token') || probeBody.includes('unauthorized') || probeBody.includes('auth')) {
+                                                isOAuthProtected = true;
+                                            }
+                                        } catch {}
+                                    }
                                 }
                             } catch {}
                         }
@@ -1229,13 +1243,80 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         if (liveProbeOk) {
                             return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational', addScore: 5 };
                         }
+                        if (isOAuthProtected) {
+                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected', addScore: 5 };
+                        }
                         if (toolCount > 0) {
                             return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active', addScore: 5 };
                         }
                         return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest', addScore: 5 };
                     } catch {}
-                    return { status: 'err', message: 'Invalid JSON content in server card', code: 'Invalid JSON' };
                 }
+
+                // 2. Direct probe of /mcp and /mcp/sse endpoints
+                const candidatePaths = ['/mcp', '/mcp/sse'];
+                for (const candPath of candidatePaths) {
+                    try {
+                        const mcpUrl = `${base}${candPath}`;
+                        const mcpGetReq = await iFetch(mcpUrl, {
+                            headers: { ...headersStandard, 'Accept': 'application/json, text/event-stream, */*' },
+                            cf: { cacheEverything: false }
+                        });
+                        const getStatus = mcpGetReq.status;
+                        const getCType = (mcpGetReq.headers.get('content-type') || '').toLowerCase();
+                        const getAuth = (mcpGetReq.headers.get('www-authenticate') || '').toLowerCase();
+                        const isGetSoft404 = getStatus === 200 && getCType.includes('text/html');
+
+                        if (getStatus === 200 && !isGetSoft404) {
+                            if (getCType.includes('text/event-stream')) {
+                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                            }
+                            try {
+                                const jsonRes = await mcpGetReq.json();
+                                const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
+                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational', addScore: 5 };
+                            } catch {
+                                return { status: 'ok', message: `Live MCP endpoint responding at ${candPath}`, code: 'Live', addScore: 5 };
+                            }
+                        }
+
+                        if ([401, 403].includes(getStatus)) {
+                            let isOAuth = getAuth.includes('bearer') || getAuth.includes('resource_metadata') || getAuth.includes('oauth');
+                            let bodySnippet = '';
+                            try {
+                                bodySnippet = await safeReadText(mcpGetReq, 4 * 1024);
+                                if (bodySnippet.includes('token') || bodySnippet.includes('unauthorized') || bodySnippet.includes('error')) {
+                                    isOAuth = true;
+                                }
+                            } catch {}
+
+                            if (isOAuth) {
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected', addScore: 5 };
+                            }
+                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected', addScore: 5 };
+                        }
+
+                        if (getStatus === 405) {
+                            const mcpPostReq = await iFetch(mcpUrl, {
+                                method: 'POST',
+                                headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+                                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+                                cf: { cacheEverything: false }
+                            });
+                            const postStatus = mcpPostReq.status;
+                            const postAuth = (mcpPostReq.headers.get('www-authenticate') || '').toLowerCase();
+
+                            if (postStatus === 200 || postStatus === 204) {
+                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                            }
+                            if ([401, 403].includes(postStatus)) {
+                                const isOAuth = postAuth.includes('bearer') || postAuth.includes('resource_metadata') || postAuth.includes('oauth');
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected', addScore: 5 };
+                            }
+                        }
+                    } catch {}
+                }
+
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
                 return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
