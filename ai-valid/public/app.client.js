@@ -220,6 +220,8 @@ document.addEventListener('DOMContentLoaded', () => {
             "Content-Signal": 10,
             "Semantic JSON-LD": 10,
             "WebMCP Integration": 10,
+            "AGENTS.md": 10,
+            "agents.json": 10,
             
             "AI Search Allowed": 10,
             "AI Agent Allowed": 10,

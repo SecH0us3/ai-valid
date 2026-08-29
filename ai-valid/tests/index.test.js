@@ -1155,6 +1155,199 @@ describe('safeReadText helper', () => {
             global.fetch = originalFetch;
         }
     });
+
+    it('should validate AGENTS.md, agents.json, deep llms.txt linting, OpenAPI tool readiness, and Live MCP probe', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url, opts) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.endsWith('/AGENTS.md')) {
+                return new Response('# AGENTS.md\n\n> Autonomous agent manual\n\n## Capabilities\n- Audit', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/markdown' }
+                });
+            }
+            if (urlStr.endsWith('/.well-known/agents.json')) {
+                return new Response(JSON.stringify({
+                    name: 'test-agent',
+                    version: '1.0.0',
+                    capabilities: [{ name: 'audit' }]
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (urlStr.endsWith('/llms.txt')) {
+                return new Response('# Test App\n\n> Summary description\n\n- [Docs](https://example.com/docs): Full technical documentation', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+            }
+            if (urlStr.endsWith('/llms-full.txt')) {
+                return new Response('# Test App Full\n\n## Overview\nComplete manual', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+            }
+            if (urlStr.endsWith('/.well-known/api-catalog')) {
+                return new Response('https://example.com/openapi.json', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+            }
+            if (urlStr.endsWith('/openapi.json')) {
+                return new Response(JSON.stringify({
+                    openapi: '3.0.0',
+                    paths: {
+                        '/api/audit': {
+                            get: {
+                                operationId: 'performAudit',
+                                summary: 'Perform website audit',
+                                description: 'Analyzes target site for AI readiness'
+                            }
+                        }
+                    }
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (urlStr.endsWith('/.well-known/mcp/server-card.json')) {
+                return new Response(JSON.stringify({
+                    serverInfo: { name: 'test-mcp' },
+                    endpoints: { sse: '/mcp/sse' },
+                    tools: [{ name: 'audit_website' }]
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (urlStr.endsWith('/mcp/sse')) {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: 1,
+                    result: { tools: [{ name: 'audit_website' }] }
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            const agentsMd = data.protocols.results.find(r => r.name === 'AGENTS.md');
+            expect(agentsMd?.status).toBe('ok');
+            expect(agentsMd?.message).toContain('Valid AGENTS.md instructions');
+
+            const agentsJson = data.protocols.results.find(r => r.name === 'agents.json');
+            expect(agentsJson?.status).toBe('ok');
+            expect(agentsJson?.message).toContain('1 capabilities declared');
+
+            const llmsTxt = data.protocols.results.find(r => r.name === 'LLMs.txt');
+            expect(llmsTxt?.status).toBe('ok');
+            expect(llmsTxt?.code).toBe('Compliant');
+
+            const llmsFullTxt = data.protocols.results.find(r => r.name === 'LLMs-Full.txt');
+            expect(llmsFullTxt?.status).toBe('ok');
+            expect(llmsFullTxt?.code).toBe('Compliant');
+
+            const apiCat = data.protocols.results.find(r => r.name === 'API Catalog');
+            expect(apiCat?.status).toBe('ok');
+            expect(apiCat?.code).toBe('100% Ready');
+
+            const mcp = data.protocols.results.find(r => r.name === 'MCP Server');
+            expect(mcp?.status).toBe('ok');
+            expect(mcp?.code).toBe('Live & Operational');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('should correctly handle partial llms.txt and manifest-only MCP server', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (urlStr.endsWith('/llms.txt')) {
+                // llms.txt with H1 and links but missing blockquote summary
+                return new Response('# Test App\n- [Link](https://example.com)', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+            }
+            if (urlStr.endsWith('/.well-known/mcp/server-card.json')) {
+                // MCP server card with tools declared in manifest, but no live endpoint
+                return new Response(JSON.stringify({
+                    serverInfo: { name: 'manifest-only-mcp' },
+                    tools: [{ name: 'tool_a' }, { name: 'tool_b' }]
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            if (urlStr.endsWith('/.well-known/api-catalog')) {
+                return new Response('/openapi.json', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+            }
+            if (urlStr.endsWith('/openapi.json')) {
+                // 1 ready operation out of 2 (50% ready)
+                return new Response(JSON.stringify({
+                    openapi: '3.0.0',
+                    paths: {
+                        '/api/users': {
+                            get: {
+                                operationId: 'getUsers',
+                                summary: 'List users'
+                            },
+                            post: {
+                                // missing operationId and summary
+                            }
+                        }
+                    }
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com'), {
+                method: 'GET'
+            });
+            const res = await index.fetch(req, {}, {});
+            expect(res.status).toBe(200);
+            const data = await res.json();
+
+            const llmsTxt = data.protocols.results.find(r => r.name === 'LLMs.txt');
+            expect(llmsTxt?.status).toBe('ok');
+            expect(llmsTxt?.code).toBe('Partial');
+
+            const mcp = data.protocols.results.find(r => r.name === 'MCP Server');
+            expect(mcp?.status).toBe('ok');
+            expect(mcp?.code).toBe('Active');
+            expect(mcp?.message).toContain('2 defined tools');
+
+            const apiCat = data.protocols.results.find(r => r.name === 'API Catalog');
+            expect(apiCat?.status).toBe('ok');
+            expect(apiCat?.code).toBe('50% Ready');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
+
 
 

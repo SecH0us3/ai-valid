@@ -4,5 +4,5 @@ export default defineConfig({
     test: {
         environment: 'jsdom',
     },
-    assetsInclude: ['**/*.html', '**/*.css', '**/*.svg', '**/*.png', '**/*.txt', '**/*.json']
+    assetsInclude: ['**/*.html', '**/*.css', '**/*.svg', '**/*.png', '**/*.txt', '**/*.json', '**/*.md']
 });

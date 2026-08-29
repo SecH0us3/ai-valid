@@ -1,0 +1,22 @@
+{
+  "name": "ai-valid-agent",
+  "version": "1.0.0",
+  "description": "AI-Readiness and GEO Audit Agent for modern web platforms",
+  "homepage": "https://ai-valid.secmy.app",
+  "documentation": "https://ai-valid.secmy.app/AGENTS.md",
+  "capabilities": [
+    {
+      "name": "audit_website",
+      "description": "Performs AI readiness analysis for a given URL",
+      "endpoint": "/api/audit",
+      "method": "GET",
+      "parameters": {
+        "targetUrl": {
+          "type": "string",
+          "required": true,
+          "description": "URL to audit"
+        }
+      }
+    }
+  ]
+}

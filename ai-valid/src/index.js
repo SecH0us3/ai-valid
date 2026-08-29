@@ -10,6 +10,8 @@ import tdmrepJson from "../public/.well-known/tdmrep.json";
 import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 import x402Json from "../public/.well-known/x402.json";
+import agentsMd from "../public/AGENTS.md";
+import agentsJson from "../public/.well-known/agents.json";
 
 
 const FETCH_TIMEOUT = 5000;
@@ -240,6 +242,68 @@ const STATIC_ROUTES = {
             ]
         };
         return new Response(JSON.stringify(agentCard, null, 2), {
+            headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/AGENTS.md": () => {
+        const mdText = typeof agentsMd === 'string' && agentsMd.startsWith('#') ? agentsMd : `# AGENTS.md — AI-Valid Agent Guidelines\n\n> Autonomous agent operating manual and integration rules for AI-Valid.\n\n## Overview\nAI-Valid is a web-based AI-Readiness and Generative Engine Optimization (GEO) audit platform. Autonomous AI agents can invoke our public endpoints to inspect websites, validate compliance with emerging machine protocols, and retrieve structured diagnostic reports.\n\n## Core Capabilities\n- **AI Audit**: Analyze websites for robots.txt, llms.txt, MCP server manifests, WebMCP widgets, Schema.org metadata, and RSS feeds.\n- **Protocol Discovery**: Validate A2A, UCP, RFC 9727 API Catalog, RFC 8414 OAuth, and x402 payment configurations.\n\n## API Integration for Agents\n\`\`\`http\nGET /api/audit?targetUrl=https://example.com HTTP/1.1\nHost: ai-valid.secmy.app\nAccept: application/json\n\`\`\`\n\n## Agent Operating Constraints & Guardrails\n- **Rate Limiting**: Honor Retry-After headers and maintain polite request intervals.\n- **Target URL Validation**: Ensure targetUrl parameter contains a valid HTTP or HTTPS scheme.\n`;
+        return new Response(mdText, {
+            headers: {
+                "Content-Type": "text/markdown; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/.well-known/agents.md": () => {
+        const mdText = typeof agentsMd === 'string' && agentsMd.startsWith('#') ? agentsMd : `# AGENTS.md — AI-Valid Agent Guidelines\n\n> Autonomous agent operating manual and integration rules for AI-Valid.\n\n## Overview\nAI-Valid is a web-based AI-Readiness and Generative Engine Optimization (GEO) audit platform. Autonomous AI agents can invoke our public endpoints to inspect websites, validate compliance with emerging machine protocols, and retrieve structured diagnostic reports.\n\n## Core Capabilities\n- **AI Audit**: Analyze websites for robots.txt, llms.txt, MCP server manifests, WebMCP widgets, Schema.org metadata, and RSS feeds.\n- **Protocol Discovery**: Validate A2A, UCP, RFC 9727 API Catalog, RFC 8414 OAuth, and x402 payment configurations.\n\n## API Integration for Agents\n\`\`\`http\nGET /api/audit?targetUrl=https://example.com HTTP/1.1\nHost: ai-valid.secmy.app\nAccept: application/json\n\`\`\`\n\n## Agent Operating Constraints & Guardrails\n- **Rate Limiting**: Honor Retry-After headers and maintain polite request intervals.\n- **Target URL Validation**: Ensure targetUrl parameter contains a valid HTTP or HTTPS scheme.\n`;
+        return new Response(mdText, {
+            headers: {
+                "Content-Type": "text/markdown; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                ...corsHeaders
+            }
+        });
+    },
+    "/.well-known/agents.json": () => {
+        let content = "";
+        if (typeof agentsJson === 'object' && agentsJson !== null && agentsJson.name) {
+            content = JSON.stringify(agentsJson, null, 2);
+        } else if (typeof agentsJson === 'string' && (agentsJson.trim().startsWith('{') || agentsJson.trim().startsWith('['))) {
+            try {
+                const parsed = JSON.parse(agentsJson);
+                if (parsed.name) content = JSON.stringify(parsed, null, 2);
+            } catch {}
+        }
+        if (!content) {
+            content = JSON.stringify({
+                "name": "ai-valid-agent",
+                "version": "1.0.0",
+                "description": "AI-Readiness and GEO Audit Agent for modern web platforms",
+                "homepage": "https://ai-valid.secmy.app",
+                "documentation": "https://ai-valid.secmy.app/AGENTS.md",
+                "capabilities": [
+                    {
+                        "name": "audit_website",
+                        "description": "Performs AI readiness analysis for a given URL",
+                        "endpoint": "/api/audit",
+                        "method": "GET",
+                        "parameters": {
+                            "targetUrl": {
+                                "type": "string",
+                                "required": true,
+                                "description": "URL to audit"
+                            }
+                        }
+                    }
+                ]
+            }, null, 2);
+        }
+        return new Response(content, {
             headers: {
                 "Content-Type": "application/json; charset=utf-8",
                 "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
@@ -1020,26 +1084,169 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     // 3. Protocol Discovery Detailed Tooltips
     const wellKnownFiles = [
         {
-            name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 10,
+            name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/agent-card.json</code>, this is the standard Agent-to-Agent (A2A) protocol entry point.<br/><br/><strong>Why it's critical:</strong> It details exactly what your application is capable of doing from a machine's perspective, listing supported actions and state schemas.<br/><br/><strong>Impact of missing it:</strong> Other autonomous agents cannot dynamically negotiate data exchanges with your platform, isolating you from the agentic economy. You lose machine-to-machine traffic.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing your agent's name, capabilities (Skills), endpoints, and OAuth 2.0 authorization rules.`
         },
         {
-            name: 'API Catalog', prompt: `Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation.`, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: true, points: 5,            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.`
+            name: 'AGENTS.md', prompt: `Create an AGENTS.md file at the root of my project defining operational guidelines, tool constraints, and workflow instructions for autonomous AI agents.`, path: '/AGENTS.md', spec: 'https://agents.md/', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> A dedicated Markdown manifest at <code>/AGENTS.md</code> or <code>/.well-known/agents.md</code> that provides operational guidelines, tool constraints, and instructions specifically for autonomous AI agents.<br/><br/><strong>Why it's critical:</strong> Gives agents explicit operating context, helping them navigate your codebase and APIs safely without hallucinating workflows.<br/><br/><strong>Impact of missing it:</strong> Agents execute blindly based on generic model priors, increasing the risk of unexpected behaviors or failed task executions.<br/><br/><strong>Implementation Example:</strong> Create <code>/AGENTS.md</code> with an H1 title, summary blockquote, and sections for Core Capabilities, Guardrails, and API Integration.`,
+            validate: async (req, statusCode, cType, base) => {
+                if (statusCode === 404) {
+                    try {
+                        const fallbackReq = await iFetch(`${base}/.well-known/agents.md`, { headers: headersStandard, cf: { cacheEverything: false } });
+                        if (fallbackReq.status === 200) {
+                            req = fallbackReq;
+                            statusCode = 200;
+                            cType = (fallbackReq.headers.get('content-type') || '').toLowerCase();
+                        }
+                    } catch {}
+                }
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    const text = await safeReadText(req, 256 * 1024);
+                    const hasH1 = /^#\s+.+/m.test(text);
+                    const hasInstructions = /agent|guideline|instruction|capabilit|overview|rule|task|endpoint|api/i.test(text);
+                    if (hasH1 && hasInstructions) {
+                        return { status: 'ok', message: 'Valid AGENTS.md instructions found', code: 'Found', addScore: 5 };
+                    }
+                    return { status: 'ok', message: 'AGENTS.md document found', code: 'Found', addScore: 5 };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
         },
         {
-            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 10,
+            name: 'agents.json', prompt: `Create an agents.json manifest at /.well-known/agents.json declaring my AI agent's name, version, and callable capabilities.`, path: '/.well-known/agents.json', spec: 'https://agents.md/', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> Machine-readable agent configuration manifest at <code>/.well-known/agents.json</code>.<br/><br/><strong>Why it's critical:</strong> Provides structured metadata (name, version, endpoints, capabilities) for automated agent discovery registers and multi-agent systems.<br/><br/><strong>Impact of missing it:</strong> Autonomous agent discovery platforms cannot programmatically ingest your agent's capabilities.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing <code>name</code>, <code>version</code>, and <code>capabilities</code> list at <code>/.well-known/agents.json</code>.`,
+            validate: async (req, statusCode, cType) => {
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    try {
+                        const json = await req.json();
+                        if (json && typeof json === 'object') {
+                            const capCount = Array.isArray(json.capabilities) ? json.capabilities.length : (Array.isArray(json.tools) ? json.tools.length : 0);
+                            const detail = capCount > 0 ? `${capCount} capabilities declared` : 'Config found';
+                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found', addScore: 5 };
+                        }
+                    } catch {}
+                    return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
+        },
+        {
+            name: 'API Catalog', prompt: `Create an RFC 9727 HTTP API Catalog file at /.well-known/api-catalog that points to my OpenAPI/Swagger documentation, and ensure endpoints have operationIds and schema descriptions for LLM tool calling.`, path: '/.well-known/api-catalog', spec: 'https://www.rfc-editor.org/rfc/rfc9727.txt', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> RFC 9727 HTTP API Catalog.<br/><br/><strong>Why it's critical:</strong> It standardizes where autonomous systems can find machine-readable descriptions (like OpenAPI/Swagger) of your APIs.<br/><br/><strong>Impact of missing it:</strong> LLMs won't be able to map out your API endpoints natively. If an agent wants to extract specific business data or trigger an action, it will fail to 'understand' how to structure the HTTP requests, reducing integrations to zero.<br/><br/><strong>Implementation Example:</strong> Create a <code>/.well-known/api-catalog</code> that points to your public <code>openapi.json</code> or Swagger documentation so models instantly learn your exact HTTP request structures.`,
+            validate: async (req, statusCode, cType, base) => {
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    let openapiUrl = `${base}/openapi.json`;
+                    try {
+                        const text = await safeReadText(req, 64 * 1024);
+                        const match = text.match(/https?:\/\/[^\s]+|\/[a-zA-Z0-9_\-\.\/]+\.json/i);
+                        if (match) {
+                            openapiUrl = match[0].startsWith('http') ? match[0] : `${base}${match[0]}`;
+                        }
+                    } catch {}
+
+                    try {
+                        const openapiReq = await iFetch(openapiUrl, { headers: headersStandard, cf: { cacheEverything: false } });
+                        if (openapiReq.status === 200) {
+                            const spec = await openapiReq.json();
+                            if (spec && typeof spec.paths === 'object') {
+                                let totalOps = 0;
+                                let readyOps = 0;
+                                for (const p of Object.keys(spec.paths)) {
+                                    const pathItem = spec.paths[p];
+                                    if (pathItem && typeof pathItem === 'object') {
+                                        ['get', 'post', 'put', 'delete', 'patch', 'options', 'head'].forEach(m => {
+                                            const op = pathItem[m];
+                                            if (op && typeof op === 'object') {
+                                                totalOps++;
+                                                const hasOpId = Boolean(op.operationId && String(op.operationId).trim());
+                                                const hasDesc = Boolean((op.description || op.summary) && String(op.description || op.summary).trim());
+                                                if (hasOpId && hasDesc) {
+                                                    readyOps++;
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                if (totalOps > 0) {
+                                    const pct = Math.round((readyOps / totalOps) * 100);
+                                    return { status: 'ok', message: `RFC 9727 API Catalog (Tool-Ready: ${readyOps}/${totalOps} operations, ${pct}%)`, code: `${pct}% Ready`, addScore: 5 };
+                                }
+                            }
+                        }
+                    } catch {}
+                    return { status: 'ok', message: 'Valid API Catalog found', code: 'Found', addScore: 5 };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
+        },
+        {
+            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.`
         },
         {
-            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json that exposes my application's core functions as tools.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 10,
-            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.`
+            name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json that exposes my application's core functions as tools, and ensure the live SSE/HTTP endpoint responds to initialize and tools/list requests.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> The Model Context Protocol (MCP) is like a 'USB-C cable for AI'. Instead of forcing AI to scrape HTML or figure out REST APIs, you host an MCP Server that streams data directly to agents via SSE (Server-Sent Events).<br/><br/><strong>Why it's critical:</strong> It allows your platform to expose its core functions as <em>Resources</em>, <em>Tools</em>, and <em>Prompts</em> natively to AI ecosystems like Claude Desktop or Cursor.<br/><br/><strong>Impact of missing it:</strong> Your platform remains isolated in the "human-only" web. Agents will not be able to securely read user data or take actions securely within their native AI workflows.<br/><br/><strong>Implementation Example:</strong> Deploy a Remote MCP Server on your infrastructure (e.g., at <code>/mcp/sse</code>) that exposes your business logic as callable Tools. Add a discovery manifest at <code>/.well-known/mcp/server-card.json</code> so agents can automatically find and connect to it.`,
+            validate: async (req, statusCode, cType, base) => {
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    try {
+                        const jsonBody = await req.json();
+                        let liveTarget = jsonBody.endpoints?.sse || jsonBody.endpoints?.http || jsonBody.url;
+                        let liveProbeOk = false;
+                        let toolCount = Array.isArray(jsonBody.tools) ? jsonBody.tools.length : 0;
+
+                        if (liveTarget) {
+                            try {
+                                const targetUrl = liveTarget.startsWith('http') ? liveTarget : `${base}${liveTarget.startsWith('/') ? '' : '/'}${liveTarget}`;
+                                const probeReq = await iFetch(targetUrl, {
+                                    method: 'POST',
+                                    headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+                                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+                                    cf: { cacheEverything: false }
+                                });
+                                if (probeReq.status === 200 || probeReq.status === 204) {
+                                    liveProbeOk = true;
+                                    try {
+                                        const resJson = await probeReq.json();
+                                        if (resJson?.result?.tools?.length) {
+                                            toolCount = resJson.result.tools.length;
+                                        }
+                                    } catch {}
+                                }
+                            } catch {}
+                        }
+
+                        if (liveProbeOk) {
+                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational', addScore: 5 };
+                        }
+                        if (toolCount > 0) {
+                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active', addScore: 5 };
+                        }
+                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest', addScore: 5 };
+                    } catch {}
+                    return { status: 'err', message: 'Invalid JSON content in server card', code: 'Invalid JSON' };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
         },
         {
             name: 'OAuth Discovery', prompt: `Create an OAuth 2.0 discovery metadata file at /.well-known/oauth-authorization-server following RFC 8414.`, path: '/.well-known/oauth-authorization-server', spec: 'https://www.rfc-editor.org/rfc/rfc8414.txt', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> RFC 8414 standard for OAuth 2.0 discovery.<br/><br/><strong>Why it's critical:</strong> Allows agents to understand exactly how to authenticate, which scopes are available, and where token endpoints live.<br/><br/><strong>Impact of missing it:</strong> Agents will be completely blocked out of secure/private areas of your platform. They cannot dynamically request user consent to perform actions on their behalf.<br/><br/><strong>Implementation Example:</strong> Serve metadata at <code>/.well-known/oauth-authorization-server</code> highlighting your issuer URI and token endpoints so LLM apps can securely acquire human user consent.`
         },
         {
-            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 10,
+            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.`
         },
         {
@@ -1047,72 +1254,68 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             tooltip: `<strong>What it is:</strong> Protocol specifically designed for agent-based e-commerce operations.<br/><br/><strong>Why it's critical:</strong> It formats product data, checkout flows, and inventory constraints transparently for AI shopping agents.<br/><br/><strong>Impact of missing it:</strong> If your site sells goods or services, AI purchasing agents will not be able to seamlessly 'click' through your funnel or verify prices, losing you fully automated AI-driven revenue.<br/><br/><strong>Implementation Example:</strong> Place a configuration at <code>/.well-known/ucp</code> pointing agents to your headless commerce endpoints, allowing autonomous bots to load shopping carts.`
         },
         {
-            name: 'LLMs.txt', prompt: `Create an llms.txt file for my root directory containing an H1 title, a summary quote box, and a Markdown list of links to my technical documentation.`, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
-            tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.`
+            name: 'LLMs.txt', prompt: `Create an llms.txt file for my root directory containing an H1 title, a summary quote box, and a Markdown list of links to my technical documentation.`, path: '/llms.txt', spec: 'https://llmstxt.org/', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> A navigation manifesto designed specifically for Large Language Models.<br/><br/><strong>Why it's critical:</strong> It provides a clean, markdown-based table of contents of your documentation, sidestepping heavy UI routing.<br/><br/><strong>Impact of missing it:</strong> Models trying to understand your platform's documentation will hallucinate or get stuck traversing endless JS-heavy web pages. Giving them an explicit map drastically improves AI response accuracy regarding your product.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms.txt</code> to your root. Formatting: an H1 Title, a summary quote box, and a clean Markdown list of links pointing to raw <code>.md</code> technical docs.`,
+            validate: async (req, statusCode, cType) => {
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    const text = await safeReadText(req, 256 * 1024);
+                    const hasH1 = /^#\s+.+/m.test(text);
+                    const hasBlockquote = /^>\s+.+/m.test(text);
+                    const hasLinkList = /^-\s+\[.+\]\(.+\)/m.test(text);
+
+                    if (hasH1 && hasBlockquote && hasLinkList) {
+                        return { status: 'ok', message: 'Full llmstxt.org spec compliant (H1, Summary, Links)', code: 'Compliant', addScore: 5 };
+                    } else if (hasH1 || hasLinkList) {
+                        return { status: 'ok', message: 'Valid llms.txt found (partial structure: missing summary blockquote or link list)', code: 'Partial', addScore: 5 };
+                    }
+                    return { status: 'ok', message: 'Readable llms.txt found', code: 'Found', addScore: 5 };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
         },
         {
             name: "LLMs-Full.txt",
-                    prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation.
-Example format:
-\`\`\`markdown
-# My App Docs Full
-> A comprehensive guide to the application.
-
-## Getting Started
-To install the application...
-
-## API Reference
-### \`GET /api/users\`
-Returns a list of users...
-\`\`\``, path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 10,
-            tooltip: `<strong>What it is:</strong> A complete, machine-readable export of your entire documentation in structured Markdown format.<br/><br/><strong>Why it's critical:</strong> It provides LLMs and agents with all context in a single file, eliminating the need for multiple API calls or web scraping.<br/><br/><strong>Impact of missing it:</strong> AI systems might miss critical details if they only read summaries or have to navigate multiple links, increasing the chance of hallucinations and degraded agentic capabilities.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms-full.txt</code> to your root. Include all relevant documentation content (e.g., tutorials, API references, code samples) concatenated in clear, structured Markdown.`
+            prompt: `Please check if \`/llms-full.txt\` exists in my project root. If it exists, update it; otherwise, create it. It should provide a comprehensive, concatenated Markdown version of all my primary technical documentation.`,
+            path: '/llms-full.txt', spec: 'https://llmstxt.org/', isJson: false, points: 5,
+            tooltip: `<strong>What it is:</strong> A complete, machine-readable export of your entire documentation in structured Markdown format.<br/><br/><strong>Why it's critical:</strong> It provides LLMs and agents with all context in a single file, eliminating the need for multiple API calls or web scraping.<br/><br/><strong>Impact of missing it:</strong> AI systems might miss critical details if they only read summaries or have to navigate multiple links, increasing the chance of hallucinations and degraded agentic capabilities.<br/><br/><strong>Implementation Example:</strong> Add <code>/llms-full.txt</code> to your root. Include all relevant documentation content (e.g., tutorials, API references, code samples) concatenated in clear, structured Markdown.`,
+            validate: async (req, statusCode, cType) => {
+                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    const text = await safeReadText(req, 500 * 1024);
+                    const hasH1 = /^#\s+.+/m.test(text);
+                    const hasSections = /^##\s+.+/m.test(text);
+                    if (hasH1 && hasSections) {
+                        return { status: 'ok', message: 'Structured full markdown documentation found', code: 'Compliant', addScore: 5 };
+                    }
+                    return { status: 'ok', message: 'Full documentation text found', code: 'Found', addScore: 5 };
+                }
+                if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+                if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+                return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+            }
         },
         {
             name: "TDM Reservation",
-            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.
-Example:
-\`\`\`json
-{
-  "tdm-reservation": 1,
-  "tdm-policy": "https://ai-valid.secmy.app/policies/tdm-policy.json"
-}
-\`\`\``, path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
+            prompt: `Please check if \`/.well-known/tdmrep.json\` exists. If it exists, update it; otherwise, create it. It should implement the TDM Reservation Protocol to express my Text and Data Mining (TDM) rights for AI scraping and training. You must also create the \`/policies/tdm-policy.json\` file referenced in the \`tdm-policy\` field if it does not already exist.`,
+            path: '/.well-known/tdmrep.json', spec: 'https://www.w3.org/community/reports/tdmrep/CG-FINAL-tdmrep-20240510/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> The W3C Text and Data Mining (TDM) Reservation Protocol.<br/><br/><strong>Why it's critical:</strong> It provides a machine-readable way to formally opt-out of or set policies for AI model training and automated scraping, which is critical for compliance with the EU CDSM Directive Article 4.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and scrapers may assume they have the right to scrape your data for model training purposes. You lack a standardized mechanism to declare your copyright reservation.<br/><br/><strong>Implementation Example:</strong> Host a JSON file at <code>/.well-known/tdmrep.json</code> with a <code>tdm-reservation</code> flag and an optional link to your licensing policy.`
         },
         {
             name: "ai.txt",
-            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.
-Example:
-\`\`\`text
-# ai.txt — Spawning format
-# Declares TDM permissions per EU CDSM Article 4
-
-User-Agent: GPTBot\nDisallow: /\n\`\`\``, path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
+            prompt: `Please check if \`/ai.txt\` exists. If it exists, update it; otherwise, create it. It should define permissions for AI data mining and scraping, following the Spawning.ai format.`,
+            path: '/ai.txt', spec: 'https://site.spawning.ai/spawning-ai-txt', isJson: false, points: 5,
             tooltip: `<strong>What it is:</strong> A plain text file declaring your website's policies for AI system interaction, such as permissions for AI data mining and model training, following the Spawning format.<br/><br/><strong>Why it's critical:</strong> It adheres to the EU's Digital Single Market TDM Article 4 exception by providing a machine-readable opt-out targeted at commercial AI model training.<br/><br/><strong>Impact of missing it:</strong> AI crawlers and data scrapers may assume they have full permission to scrape and use your content for commercial AI model training.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/ai.txt</code> with explicit bot directives: <br><code>User-Agent: GPTBot<br>Disallow: /</code>`
         },
         {
             name: "x402 Payment Standard",
-            prompt: `Please check if \`/.well-known/x402.json\` exists. If it exists, update it; otherwise, create it. It should define my API pricing and payment parameters (assets, network CAIP-2, wallet address) following the x402 open payment standard.
-Example:
-\`\`\`json
-{
-  "x402Version": 2,
-  "endpoints": [
-    {
-      "url": "https://api.example.com/data",
-      "description": "Premium data access",
-      "amount": "10000",
-      "currency": "USDC",
-      "network": "eip155:8453",
-      "payTo": "0xYourWalletAddress"
-    }
-  ]
-}
-\`\`\``,
+            prompt: `Please check if \`/.well-known/x402.json\` exists. If it exists, update it; otherwise, create it. It should define my API pricing and payment parameters (assets, network CAIP-2, wallet address) following the x402 open payment standard.`,
             path: '/.well-known/x402.json',
             spec: 'https://www.x402.org/',
             isJson: true,
-            points: 10,
+            points: 5,
             tooltip: `<strong>What it is:</strong> Expected at <code>/.well-known/x402.json</code>, this is the standard discovery metadata file for the HTTP 402-native open payments protocol.<br/><br/><strong>Why it's critical:</strong> It publishes machine-readable details about pricing, accepted assets (like USDC), payment networks (via CAIP-2 identifiers), and target wallet addresses so AI agents can pay programmatically.<br/><br/><strong>Impact of missing it:</strong> AI agents cannot discover your payment configuration. They will not be able to automatically authorize and execute micro-payments to purchase access to your APIs or protected data.<br/><br/><strong>Implementation Example:</strong> Publish a JSON configuration at <code>/.well-known/x402.json</code> specifying your pricing terms, network CAIP-2 identifiers (e.g., eip155:8453 for Base), and target wallet addresses.`
         },
         {
@@ -1125,7 +1328,6 @@ Example:
             tooltip: `<strong>What it is:</strong> A standard plaintext file at <code>/.well-known/security.txt</code> defining security reporting policies.<br/><br/><strong>Why it's critical:</strong> Autonomous AI agents that discover security misconfigurations or vulnerabilities need a standardized way to report them to your team safely and legally.<br/><br/><strong>Impact of missing it:</strong> Security-focused agents will not know who to contact, leaving potential vulnerabilities unaddressed.<br/><br/><strong>Implementation Example:</strong> Publish a file at <code>/.well-known/security.txt</code> with <code>Contact: mailto:security@example.com</code> and an <code>Expires</code> date.`
         }
     ];
-
 
     // Fetch protocols in batches to avoid unbounded concurrency
     const protoResults = [];
@@ -1141,34 +1343,45 @@ Example:
                 const req = await iFetch(url, { headers: headersStandard, cf: { cacheEverything: false } });
                 code = req.status;
                 let cType = (req.headers.get('content-type') || '').toLowerCase();
-                let isSoft404 = code === 200 && cType.includes('text/html');
 
-                if (code === 200 && !isSoft404) {
-                    if (data.isJson) {
-                        try {
-                            const jsonBody = await req.json();
-                            status = 'ok';
-                            message = 'Valid JSON found';
-                            totalScore += data.points;
-                        } catch (err) {
-                            message = 'Invalid JSON content';
-                        }
-                    } else {
-                        if (!cType.includes('text/html')) {
-                            status = 'ok';
-                            message = 'Readable format found';
-                            totalScore += data.points;
-                        } else {
-                            message = 'Received HTML (Soft 404)';
-                        }
+                if (typeof data.validate === 'function') {
+                    const customResult = await data.validate(req, code, cType, base);
+                    status = customResult.status || status;
+                    message = customResult.message || message;
+                    code = customResult.code || (status === 'ok' ? 'Found' : 'Missing');
+                    if (customResult.addScore) {
+                        totalScore += customResult.addScore;
                     }
-                } else if (isSoft404) {
-                    message = 'Soft 404 (Placeholder page)';
-                } else if ([401, 403].includes(code)) {
-                    status = 'warn';
-                    message = 'Authorization required';
                 } else {
-                    message = `Not found (${code})`;
+                    let isSoft404 = code === 200 && cType.includes('text/html');
+
+                    if (code === 200 && !isSoft404) {
+                        if (data.isJson) {
+                            try {
+                                const jsonBody = await req.json();
+                                status = 'ok';
+                                message = 'Valid JSON found';
+                                totalScore += data.points;
+                            } catch (err) {
+                                message = 'Invalid JSON content';
+                            }
+                        } else {
+                            if (!cType.includes('text/html')) {
+                                status = 'ok';
+                                message = 'Readable format found';
+                                totalScore += data.points;
+                            } else {
+                                message = 'Received HTML (Soft 404)';
+                            }
+                        }
+                    } else if (isSoft404) {
+                        message = 'Soft 404 (Placeholder page)';
+                    } else if ([401, 403].includes(code)) {
+                        status = 'warn';
+                        message = 'Authorization required';
+                    } else {
+                        message = `Not found (${code})`;
+                    }
                 }
             } catch (e) {
                 message = 'Network error';
@@ -1591,10 +1804,10 @@ Examples of specific types:
         protocols: {
             results: protoResults.sort((a, b) => {
                 const weights = {
-                    "MCP Server": 100, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
+                    "MCP Server": 100, "AGENTS.md": 98, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
                     "Agent Skills": 80, "A2A Agent Card": 75, "x402 Payment Standard": 70,
-                    "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55, "OAuth Discovery": 50,
-                    "Universal Commerce": 45, "security.txt": 40
+                    "agents.json": 68, "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55,
+                    "OAuth Discovery": 50, "Universal Commerce": 45, "security.txt": 40
                 };
                 return (weights[b.name] || 0) - (weights[a.name] || 0);
             })

@@ -134,6 +134,32 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(body.name).toBe('AI-Valid Auditor');
     });
 
+    it('should serve Markdown for /AGENTS.md and /.well-known/agents.md', async () => {
+        const req1 = new Request('https://localhost/AGENTS.md', { method: 'GET' });
+        const res1 = await index.fetch(req1, env, ctx);
+        expect(res1.status).toBe(200);
+        expect(res1.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+        const text1 = await res1.text();
+        expect(text1).toContain('# AGENTS.md');
+
+        const req2 = new Request('https://localhost/.well-known/agents.md', { method: 'GET' });
+        const res2 = await index.fetch(req2, env, ctx);
+        expect(res2.status).toBe(200);
+        expect(res2.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+        const text2 = await res2.text();
+        expect(text2).toContain('# AGENTS.md');
+    });
+
+    it('should serve JSON for /.well-known/agents.json', async () => {
+        const req = new Request('https://localhost/.well-known/agents.json', { method: 'GET' });
+        const res = await index.fetch(req, env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+        const body = await res.json();
+        expect(body.name).toBe('ai-valid-agent');
+        expect(Array.isArray(body.capabilities)).toBe(true);
+    });
+
     it('should respond to OPTIONS request with CORS headers', async () => {
         const req = new Request('https://localhost/api/audit', { method: 'OPTIONS' });
         const res = await index.fetch(req, env, ctx);
