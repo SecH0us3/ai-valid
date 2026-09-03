@@ -362,6 +362,73 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(quotationResult.code).toBe('Found');
     });
 
+    it('should detect Fluency Optimization, Authoritative Voice, and Clean URLs metrics', async () => {
+        // Constructing HTML that:
+        // 1. Has an internal link without query parameters to trigger Clean URLs (hasInternalLinks = true, hasDirtyUrls = false).
+        // 2. Has an authoritative phrase ("research shows") to trigger Authoritative Voice.
+        // 3. Has sufficient readable text to pass the Flesch Reading Ease check for Fluency Optimization (words > 50, valid score).
+        const readableSentences = "This is a simple sentence to test readability. ".repeat(15);
+
+        const html = `
+            <html>
+                <body>
+                    <p>According to our data, the research shows that this approach is effective.</p>
+                    <a href="https://example.com/about-us">About Us</a>
+                    <p>${readableSentences}</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+
+        expect(data.content.hasFluency).toBe(true);
+        expect(data.content.hasAuthoritativeVoice).toBe(true);
+        expect(data.content.hasCleanUrls).toBe(true);
+
+        const fluencyResult = data.content.results.find(r => r.name === 'Fluency Optimization');
+        expect(fluencyResult).toBeDefined();
+        expect(fluencyResult.status).toBe('ok');
+        expect(fluencyResult.code).toBe('Optimal');
+
+        const authVoiceResult = data.content.results.find(r => r.name === 'Authoritative Voice');
+        expect(authVoiceResult).toBeDefined();
+        expect(authVoiceResult.status).toBe('ok');
+        expect(authVoiceResult.code).toBe('Found');
+
+        const cleanUrlsResult = data.content.results.find(r => r.name === 'Clean URLs');
+        expect(cleanUrlsResult).toBeDefined();
+        expect(cleanUrlsResult.status).toBe('ok');
+        expect(cleanUrlsResult.code).toBe('Found');
+    });
+
+    it('should detect missing Fluency Optimization, Authoritative Voice, and Dirty URLs', async () => {
+        // Constructing HTML that:
+        // 1. Has an internal link with query parameters (triggering dirty URLs -> Clean URLs: false)
+        // 2. Has too few words to pass fluency optimization.
+        // 3. Does not contain authoritative phrases.
+        const html = `
+            <html>
+                <body>
+                    <p>Some generic text.</p>
+                    <a href="https://example.com/page?id=123">Click here</a>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+
+        expect(data.content.hasFluency).toBe(false);
+        expect(data.content.hasAuthoritativeVoice).toBe(false);
+        expect(data.content.hasCleanUrls).toBe(false);
+
+        const fluencyResult = data.content.results.find(r => r.name === 'Fluency Optimization');
+        expect(fluencyResult.status).toBe('warn');
+
+        const authVoiceResult = data.content.results.find(r => r.name === 'Authoritative Voice');
+        expect(authVoiceResult.status).toBe('warn');
+
+        const cleanUrlsResult = data.content.results.find(r => r.name === 'Clean URLs');
+        expect(cleanUrlsResult.status).toBe('warn');
+    });
+
     it('should detect Statistics Addition (percentages and currency values)', async () => {
         const html = `
             <html>

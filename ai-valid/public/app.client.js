@@ -223,6 +223,8 @@ document.addEventListener('DOMContentLoaded', () => {
             "AGENTS.md": 10,
             "agents.json": 10,
             "OAuth Protected Resource": 10,
+            "Fluency Optimization": 10,
+            "Authoritative Voice": 10,
             
             "AI Search Allowed": 10,
             "AI Agent Allowed": 10,
@@ -249,6 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
             "Semantic HTML": 5,
             "Heading Hierarchy": 5,
             "Scannable Formats": 5,
+            "Clean URLs": 5,
             "Internal Architecture": 5,
             "API Catalog": 5,
             "OAuth Discovery": 5,
