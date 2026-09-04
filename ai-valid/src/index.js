@@ -793,6 +793,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasH2 = false;
     let hasLists = false;
     let hasInternalLinks = false;
+    let hasDirtyUrls = false;
+    let hasCleanUrls = false;
+    let hasFluency = false;
+    let hasAuthoritativeVoice = false;
     let hasFaqSchema = false;
     let hasAuthorship = false;
     let hasFreshness = false;
@@ -968,7 +972,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const resolvedUrl = new URL(href, base);
                             const baseHostname = new URL(base).hostname;
                             if (resolvedUrl.hostname === baseHostname) {
-                                  hasInternalLinks = true;
+                                hasInternalLinks = true;
+                                if (resolvedUrl.search && resolvedUrl.search.length > 1) {
+                                    hasDirtyUrls = true;
+                                }
                             } else if (resolvedUrl.protocol.startsWith('http')) {
                                 hasCitations = true;
                             }
@@ -1046,6 +1053,32 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         }
 
+        // Evaluate new metrics
+        hasCleanUrls = hasInternalLinks && !hasDirtyUrls;
+
+        const sentences = lowerHtmlText.split(/[.!?]+(?=\s+|$)/).filter(s => s.trim().length > 0).length || 1;
+        const words = lowerHtmlText.split(/\s+/).filter(w => w.length > 0).length || 1;
+        const isCyrillic = /[а-яё]/i.test(lowerHtmlText);
+        const syllables = (lowerHtmlText.match(/[aeiouyаеёиоуыэюяàáâãäåèéêëìíîïòóôõöùúûüýÿ]{1,2}/gi) || []).length || 1;
+        if (words > 50) {
+            const asl = words / sentences;
+            const asw = syllables / words;
+            const flesch = isCyrillic
+                ? 206.835 - 1.3 * asl - 60.1 * asw
+                : 206.835 - 1.015 * asl - 84.6 * asw;
+            if (flesch >= 30 && flesch <= 100) {
+                hasFluency = true;
+            }
+        }
+
+        const authPhrases = [
+            'research shows', 'study', 'proven', 'according to', 'expert', 'analysis', 'demonstrates',
+            'исследование', 'исследования', 'согласно', 'доказано', 'эксперт', 'анализ'
+        ];
+        if (authPhrases.some(p => lowerHtmlText.includes(p))) {
+            hasAuthoritativeVoice = true;
+        }
+
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
             hasAgentFallback = true;
@@ -1057,6 +1090,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 hasStatistics = true;
             }
         }
+
+        if (hasCleanUrls) totalScore += 5;
+        if (hasFluency) totalScore += 10;
+        if (hasAuthoritativeVoice) totalScore += 5;
 
         if (hasNoAI) totalScore += 5;
         if (hasViewport) totalScore += 5;
@@ -1674,6 +1711,9 @@ Example:
             hasNoAI,
             hasViewport,
             hasAgentFallback,
+            hasFluency,
+            hasAuthoritativeVoice,
+            hasCleanUrls,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -1957,12 +1997,39 @@ Examples of specific types:
                     spec: "https://schema.org/Organization",
                     tooltip: `<strong>What it is:</strong> JSON-LD structured data defining an <code>Organization</code> entity.<br/><br/><strong>Why it's critical for GEO:</strong> Helps AI models build a clear knowledge graph entity for your brand, linking your domain to your company name, social profiles, and contact info.<br/><br/><strong>Impact of missing it:</strong> AI models may hallucinate company details or fail to recognize your brand as the authoritative source for your own products/services.<br/><br/><strong>Implementation Example:</strong> Add JSON-LD with <code>"@type": "Organization"</code>.`,
                     code: hasOrgSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Clean URLs",
+                    prompt: `Ensure all internal links use clean URL architectures without complex query strings or parameters to improve AI extraction and trust.`,
+                    status: hasCleanUrls ? 'ok' : 'warn',
+                    message: hasCleanUrls ? "Clean URL structures found" : "Missing clean URLs or complex query parameters detected",
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/url-structure",
+                    tooltip: `<strong>What it is:</strong> Internal links that are semantically clear and lack excessive query strings (e.g., <code>?id=123</code>).<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines prefer resources with predictable, semantic URL paths. Complex URLs confuse crawlers and reduce trust.<br/><br/><strong>Impact of missing it:</strong> The AI may struggle to map your site's hierarchy or interpret the context of linked content.<br/><br/><strong>Implementation Example:</strong> Use <code>/about-us</code> instead of <code>/page?id=12</code>.`,
+                    code: hasCleanUrls ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Fluency Optimization",
+                    prompt: `Rewrite complex text to improve readability (Flesch Reading Ease score between 30 and 100) and use clear, accessible language.`,
+                    status: hasFluency ? 'ok' : 'warn',
+                    message: hasFluency ? "Text readability within optimal range" : "Text lacks sufficient length or optimal fluency",
+                    spec: "https://en.wikipedia.org/wiki/Flesch%E2%80%93Kincaid_readability_tests",
+                    tooltip: `<strong>What it is:</strong> Ensuring content is easy to read and understand (e.g., Flesch Reading Ease score between 30-100).<br/><br/><strong>Why it's critical for GEO:</strong> The Princeton GEO paper found that Fluency Optimization significantly boosts AI visibility, as LLMs prefer synthesizing clear, well-structured text over overly complex jargon.<br/><br/><strong>Impact of missing it:</strong> Overly complex text is harder for AI to extract and synthesize into user-friendly answers.<br/><br/><strong>Implementation Example:</strong> Use shorter sentences, active voice, and plain language while maintaining professional depth.`,
+                    code: hasFluency ? 'Optimal' : 'Sub-optimal'
+                },
+                {
+                    name: "Authoritative Voice",
+                    prompt: `Inject authoritative language and expert framing (e.g., "research shows", "proven", "expert analysis") to strengthen the perceived credibility of the content.`,
+                    status: hasAuthoritativeVoice ? 'ok' : 'warn',
+                    message: hasAuthoritativeVoice ? "Authoritative language detected" : "Missing authoritative framing",
+                    spec: "https://arxiv.org/abs/2311.09735",
+                    tooltip: `<strong>What it is:</strong> Using language that signals expertise, conviction, and evidence (e.g., "according to", "demonstrates").<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines are tuned to favor authoritative and persuasive content, especially when citing sources for factual answers.<br/><br/><strong>Impact of missing it:</strong> The AI might overlook the content as a definitive source compared to competitors using stronger credibility signals.<br/><br/><strong>Implementation Example:</strong> Instead of "We think this might help," use "Our research demonstrates that this solution improves outcomes."`,
+                    code: hasAuthoritativeVoice ? 'Found' : 'Missing'
                 }
             ].sort((a, b) => {
                 const weights = {
-                    "Semantic JSON-LD": 100, "Content Neg. (MD)": 95, "WebMCP Integration": 90, "AI Fallback (No-JS)": 85,
+                    "Semantic JSON-LD": 100, "Content Neg. (MD)": 95, "Fluency Optimization": 92, "WebMCP Integration": 90, "Authoritative Voice": 88, "AI Fallback (No-JS)": 85,
                     "Semantic HTML": 80, "Heading Hierarchy": 75, "Scannable Formats": 70, "Content-Signal": 65,
-                    "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45,
+                    "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45, "Clean URLs": 42,
                     "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
                     "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
                     "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5,

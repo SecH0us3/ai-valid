@@ -8,3 +8,4 @@ tmp/
 .antigravitycli
 .superpowers/
 docs/superpowers/
+*.log
