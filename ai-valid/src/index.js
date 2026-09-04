@@ -403,6 +403,9 @@ async function internalFetch(url, options = {}, base, requestOrigin, env, ctx) {
         return await handleRequest(req, env, ctx);
     }
     let currentUrl = url;
+    if (!await isSafeUrl(currentUrl)) {
+        throw new Error("SSRF attempt blocked");
+    }
     let redirectCount = 0;
     const maxRedirects = 5;
     let res = await fetch(currentUrl, { redirect: "manual", ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT) });
@@ -954,7 +957,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     });
                 }
             })
-            .on('*', {
+            .on('body', {
                 text(chunk) {
                     if (ignoredTagDepth === 0 && lowerHtmlText.length < 500000) {
                         lowerHtmlText += chunk.text.toLowerCase();
@@ -1223,7 +1226,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     let openapiUrl = `${base}/openapi.json`;
                     try {
                         const text = await safeReadText(req, 64 * 1024);
-                        const match = text.match(/https?:\/\/[^\s]+|\/[a-zA-Z0-9_\-\.\/]+\.json/i);
+                        const match = text.match(/https?:\/\/[^\s"',;<>()]+|\/[a-zA-Z0-9_\-\.\/]+\.json/i);
                         if (match) {
                             openapiUrl = match[0].startsWith('http') ? match[0] : `${base}${match[0]}`;
                         }
@@ -1351,10 +1354,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             try {
                                 const jsonRes = await mcpGetReq.json();
                                 const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
-                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational', addScore: 5 };
-                            } catch {
-                                return { status: 'ok', message: `Live MCP endpoint responding at ${candPath}`, code: 'Live', addScore: 5 };
-                            }
+                                const isMcpJson = jsonRes && (jsonRes.jsonrpc === '2.0' || Array.isArray(jsonRes.tools) || jsonRes.capabilities || jsonRes.serverInfo);
+                                if (isMcpJson) {
+                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational', addScore: 5 };
+                                }
+                            } catch {}
                         }
 
                         if ([401, 403].includes(getStatus)) {
@@ -1421,7 +1425,7 @@ Example:
             points: 5,
             tooltip: `<strong>What it is:</strong> RFC 9728 OAuth 2.0 Protected Resource Metadata (expected at <code>/.well-known/oauth-protected-resource/mcp</code> or <code>/.well-known/oauth-protected-resource</code>).<br/><br/><strong>Why it's critical:</strong> Used natively by Claude Code, OpenAI Assistants, and AI agents to automatically discover OAuth 2.0 authorization servers when connecting to protected Remote MCP endpoints.<br/><br/><strong>Impact of missing it:</strong> AI clients cannot automatically initiate browser-based OAuth consent flow when attempting to connect to protected MCP server tools.<br/><br/><strong>Implementation Example:</strong> Publish a JSON metadata file at <code>/.well-known/oauth-protected-resource/mcp</code> declaring your <code>resource</code> URL and <code>authorization_servers</code>.`,
             validate: async (req, statusCode, cType, base) => {
-                if (statusCode === 404) {
+                if ([404, 405, 501].includes(statusCode)) {
                     try {
                         const fallbackReq = await iFetch(`${base}/.well-known/oauth-protected-resource`, { headers: headersStandard, cf: { cacheEverything: false } });
                         if (fallbackReq.status === 200) {

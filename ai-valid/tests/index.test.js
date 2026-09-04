@@ -31,12 +31,6 @@ class HTMLRewriterMock {
                                     }
                                 });
                             }
-                            if (handlers.text) {
-                                handlers.text({
-                                    text: node.textContent,
-                                    lastInTextNode: true
-                                });
-                            }
                         }
                     }
                 }
@@ -46,10 +40,16 @@ class HTMLRewriterMock {
                     traverse(child);
                 }
                 
-                // Handle * text node
+                // Handle text nodes
                 if (node.nodeType === 3) { // Text node
                     for (const { selector, handlers } of this.selectors) {
-                        if (selector === '*' && handlers.text) {
+                        let matches = false;
+                        if (selector === '*' || selector === 'body') {
+                            matches = selector === '*' || !!node.parentElement?.closest('body');
+                        } else if (node.parentElement && node.parentElement.matches && node.parentElement.matches(selector)) {
+                            matches = true;
+                        }
+                        if (matches && handlers.text) {
                             if (node.nodeValue.includes('[split]')) {
                                 const parts = node.nodeValue.split('[split]');
                                 for (let i = 0; i < parts.length; i++) {

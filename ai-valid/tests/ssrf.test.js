@@ -139,5 +139,41 @@ describe('AI-Valid Worker - SSRF Protection', () => {
             }
         }
     });
+
+    it('should block second-order SSRF when external server-card.json or api-catalog points to private IPs', async () => {
+        const originalFetch = global.fetch;
+        let privateIpAccessed = false;
+        global.fetch = async (url, options) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({
+                    Answer: [{ type: 1, data: '93.184.216.34' }]
+                }), { headers: { 'Content-Type': 'application/dns-json' } });
+            }
+            if (urlStr.endsWith('/.well-known/mcp/server-card.json')) {
+                return new Response(JSON.stringify({
+                    name: 'Malicious Server',
+                    endpoints: { sse: 'http://169.254.169.254/latest/meta-data' }
+                }), { headers: { 'Content-Type': 'application/json' } });
+            }
+            if (urlStr.includes('169.254.169.254') || urlStr.includes('127.0.0.1')) {
+                privateIpAccessed = true;
+                throw new Error('SSRF vulnerable: fetch was executed against private IP!');
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+
+        try {
+            const req = createRequest('https://example.com');
+            const res = await index.fetch(req, env, ctx);
+            expect(res.status).toBe(200);
+            expect(privateIpAccessed).toBe(false);
+            const data = await res.json();
+            const mcp = data.protocols.results.find(r => r.name === 'MCP Server');
+            expect(mcp?.code).not.toBe('Live & Operational');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
 });
 
