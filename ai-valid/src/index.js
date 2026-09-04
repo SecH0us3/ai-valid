@@ -973,7 +973,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const baseHostname = new URL(base).hostname;
                             if (resolvedUrl.hostname === baseHostname) {
                                 hasInternalLinks = true;
-                                if (href.includes('?')) {
+                                if (resolvedUrl.search && resolvedUrl.search.length > 1) {
                                     hasDirtyUrls = true;
                                 }
                             } else if (resolvedUrl.protocol.startsWith('http')) {
@@ -1058,15 +1058,23 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         const sentences = lowerHtmlText.split(/[.!?]+(?=\s+|$)/).filter(s => s.trim().length > 0).length || 1;
         const words = lowerHtmlText.split(/\s+/).filter(w => w.length > 0).length || 1;
-        const syllables = (lowerHtmlText.match(/[aeiouy]{1,2}/g) || []).length || 1;
+        const isCyrillic = /[а-яё]/i.test(lowerHtmlText);
+        const syllables = (lowerHtmlText.match(/[aeiouyаеёиоуыэюяàáâãäåèéêëìíîïòóôõöùúûüýÿ]{1,2}/gi) || []).length || 1;
         if (words > 50) {
-            const flesch = 206.835 - 1.015 * (words / sentences) - 84.6 * (syllables / words);
-            if (flesch >= 30 && flesch <= 80) {
+            const asl = words / sentences;
+            const asw = syllables / words;
+            const flesch = isCyrillic
+                ? 206.835 - 1.3 * asl - 60.1 * asw
+                : 206.835 - 1.015 * asl - 84.6 * asw;
+            if (flesch >= 30 && flesch <= 100) {
                 hasFluency = true;
             }
         }
 
-        const authPhrases = ['research shows', 'study', 'proven', 'according to', 'expert', 'analysis', 'demonstrates'];
+        const authPhrases = [
+            'research shows', 'study', 'proven', 'according to', 'expert', 'analysis', 'demonstrates',
+            'исследование', 'исследования', 'согласно', 'доказано', 'эксперт', 'анализ'
+        ];
         if (authPhrases.some(p => lowerHtmlText.includes(p))) {
             hasAuthoritativeVoice = true;
         }
@@ -2001,11 +2009,11 @@ Examples of specific types:
                 },
                 {
                     name: "Fluency Optimization",
-                    prompt: `Rewrite complex text to improve readability (Flesch Reading Ease score between 30 and 80) and use clear, accessible language.`,
+                    prompt: `Rewrite complex text to improve readability (Flesch Reading Ease score between 30 and 100) and use clear, accessible language.`,
                     status: hasFluency ? 'ok' : 'warn',
                     message: hasFluency ? "Text readability within optimal range" : "Text lacks sufficient length or optimal fluency",
                     spec: "https://en.wikipedia.org/wiki/Flesch%E2%80%93Kincaid_readability_tests",
-                    tooltip: `<strong>What it is:</strong> Ensuring content is easy to read and understand (e.g., Flesch Reading Ease score between 30-80).<br/><br/><strong>Why it's critical for GEO:</strong> The Princeton GEO paper found that Fluency Optimization significantly boosts AI visibility, as LLMs prefer synthesizing clear, well-structured text over overly complex jargon.<br/><br/><strong>Impact of missing it:</strong> Overly complex text is harder for AI to extract and synthesize into user-friendly answers.<br/><br/><strong>Implementation Example:</strong> Use shorter sentences, active voice, and plain language while maintaining professional depth.`,
+                    tooltip: `<strong>What it is:</strong> Ensuring content is easy to read and understand (e.g., Flesch Reading Ease score between 30-100).<br/><br/><strong>Why it's critical for GEO:</strong> The Princeton GEO paper found that Fluency Optimization significantly boosts AI visibility, as LLMs prefer synthesizing clear, well-structured text over overly complex jargon.<br/><br/><strong>Impact of missing it:</strong> Overly complex text is harder for AI to extract and synthesize into user-friendly answers.<br/><br/><strong>Implementation Example:</strong> Use shorter sentences, active voice, and plain language while maintaining professional depth.`,
                     code: hasFluency ? 'Optimal' : 'Sub-optimal'
                 },
                 {

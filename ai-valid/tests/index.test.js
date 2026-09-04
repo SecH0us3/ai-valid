@@ -429,6 +429,24 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(cleanUrlsResult.status).toBe('warn');
     });
 
+    it('should detect Fluency Optimization and Authoritative Voice for multilingual/Cyrillic content', async () => {
+        const readableCyrillicSentences = "Это простой пример предложения для проверки читаемости текста на русском языке. ".repeat(15);
+        const html = `
+            <html>
+                <body>
+                    <p>Согласно исследованию экспертов, данная методология доказала высокую эффективность.</p>
+                    <a href="https://example.com/about">О нас</a>
+                    <p>${readableCyrillicSentences}</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+
+        expect(data.content.hasFluency).toBe(true);
+        expect(data.content.hasAuthoritativeVoice).toBe(true);
+        expect(data.content.hasCleanUrls).toBe(true);
+    });
+
     it('should detect Statistics Addition (percentages and currency values)', async () => {
         const html = `
             <html>
