@@ -1948,7 +1948,16 @@ export async function handleRequest(request, env, ctx) {
 
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
+    // Two different questions need two different Accept headers.
+    //
+    // Asking for `text/markdown` and then parsing the reply as HTML punished
+    // every site that implements the content negotiation this tool recommends:
+    // a correct server returns Markdown, and the structural checks — title,
+    // lang, headings, JSON-LD, alt text — then all reported "missing". The
+    // markdown probe is now its own request, and the structural analysis runs
+    // against the HTML representation.
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
+    const headersHtml = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' };
     
     // Ensure baseUrl doesn't end with slash securely
     const base = new URL(baseUrl).origin;
@@ -2082,6 +2091,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let supportsMarkdown = false;
     let hasContentSignal = false;
     let hasContentUse = false;
+    let hasVaryAccept = false;
     let hasFreshnessHeaders = false;
     let hasConditionalGET = false;
     let hasSchema = false;
@@ -2127,11 +2137,30 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasServerRenderedContent = false;
     let currentScriptText = '';
 
+    // --- Phase 2a: does the origin serve Markdown to an agent that asks? ---
+    // Its own request, so the structural analysis below can ask for HTML.
+    const markdownPhase = (async () => {
+        try {
+            const r_md = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+            const mdType = (r_md.headers.get('content-type') || '').toLowerCase();
+            if (r_md.status === 200 && (mdType.includes('text/markdown') || mdType.includes('text/x-markdown'))) {
+                supportsMarkdown = true;
+                // The point of negotiation is that both representations stay
+                // cacheable; without Vary a shared cache will serve one to the
+                // audience for the other.
+                hasVaryAccept = (r_md.headers.get('vary') || '').toLowerCase().includes('accept');
+            }
+            if (r_md.body && typeof r_md.body.cancel === 'function') {
+                await r_md.body.cancel();
+            }
+        } catch { /* the HTML fetch decides reachability, not this probe */ }
+    })();
+
     // --- Phase 2: the homepage itself (headers + streamed HTML analysis) ---
     const contentPhase = (async () => {
     let r_home;
     try {
-        r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        r_home = await iFetch(base, { headers: headersHtml, cf: { cacheEverything: false } });
     } catch {
         // The origin answered nothing at all: there is no audit to report.
         throw new UnreachableTargetError(base);
@@ -2146,6 +2175,8 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         hasBlockingXRobots = /\b(noindex|nosnippet|noai|noimageai)\b/.test(xRobotsTag);
 
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
+        // A server that hands Markdown to everyone regardless of Accept still
+        // negotiates correctly as far as an agent is concerned.
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
         }
@@ -2181,7 +2212,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             hasFreshnessHeaders = true;
 
             try {
-                const condHeaders = { ...headersAgent };
+                const condHeaders = { ...headersHtml };
                 if (etag) condHeaders['If-None-Match'] = etag;
                 if (lastModified) condHeaders['If-Modified-Since'] = lastModified;
 
@@ -2929,7 +2960,7 @@ Example:
 
     // Surface an unreachable origin as such; everything else degrades silently
     // into a "not found" result for the individual check.
-    await Promise.all([contentPhase, sitemapPhase, protoPhase]);
+    await Promise.all([contentPhase, markdownPhase, sitemapPhase, protoPhase]);
     timings.durationMs = Date.now() - timings.startedAt;
 
     const auditResult = {
@@ -3012,6 +3043,7 @@ Example:
         },
         content: {
             supportsMarkdown,
+            hasVaryAccept,
             hasContentSignal,
             hasContentUse,
             hasFreshnessHeaders,
@@ -3060,10 +3092,14 @@ Example:
                     name: "Content Neg. (MD)",
                     prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`,
                     status: supportsMarkdown ? 'ok' : 'err',
-                    message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
+                    message: supportsMarkdown
+                        ? (hasVaryAccept
+                            ? "Server provides markdown, with Vary: Accept"
+                            : "Server provides markdown, but the response is missing Vary: Accept — a shared cache may serve it to browsers")
+                        : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
                     tooltip: `<strong>What it is:</strong> Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.<br/><br/><strong>Why it's critical:</strong> LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.<br/><br/><strong>Impact of missing it:</strong> Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.<br/><br/><strong>Implementation Example:</strong> Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps.`,
-                    code: supportsMarkdown ? 'Supported' : 'Failed'
+                    code: supportsMarkdown ? (hasVaryAccept ? 'Supported' : 'No Vary') : 'Failed'
                 },
                 {
                     name: "Content-Signal",

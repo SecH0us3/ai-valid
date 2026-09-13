@@ -227,3 +227,85 @@ describe('audit envelope', () => {
         }
     });
 });
+
+describe('content negotiation', () => {
+    /** A server that does exactly what the tool recommends: Markdown to agents, HTML to browsers. */
+    function negotiatingOrigin({ vary = true } = {}) {
+        return async (url, options = {}) => {
+            const u = url.toString();
+            if (u.includes('cloudflare-dns.com')) {
+                return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            }
+            if (u === 'https://example.com' || u === 'https://example.com/') {
+                const accept = (options.headers && (options.headers.Accept || options.headers.accept)) || '';
+                if (accept.includes('text/markdown')) {
+                    const headers = { 'Content-Type': 'text/markdown; charset=utf-8' };
+                    if (vary) headers.Vary = 'Accept';
+                    return new Response('# Acme\n\nA markdown rendering of the page.\n', { status: 200, headers });
+                }
+                return new Response(
+                    `<html lang="en"><head><title>Acme</title>
+                     <meta name="description" content="Acme does things well and clearly.">
+                     <link rel="canonical" href="https://example.com/">
+                     <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Acme"}</script>
+                     </head><body><main><h1>Acme</h1><h2>What we do</h2>
+                     <p>${'This is a simple sentence about the product. '.repeat(40)}</p>
+                     </main></body></html>`,
+                    { status: 200, headers: { 'Content-Type': 'text/html', 'Vary': 'Accept' } }
+                );
+            }
+            return new Response('Not Found', { status: 404 });
+        };
+    }
+
+    async function auditNegotiating(opts) {
+        const originalFetch = global.fetch;
+        global.fetch = negotiatingOrigin(opts);
+        try {
+            const res = await index.fetch(
+                new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://example.com')),
+                {}, {}
+            );
+            return await res.json();
+        } finally {
+            global.fetch = originalFetch;
+        }
+    }
+
+    it('credits a site that serves Markdown to agents', async () => {
+        const data = await auditNegotiating();
+        expect(data.content.supportsMarkdown).toBe(true);
+        expect(find(data, 'Content Neg. (MD)').status).toBe('ok');
+    });
+
+    it('still reads the HTML structure of a site that serves Markdown to agents', async () => {
+        // The audit used to request Markdown and then parse the reply as HTML,
+        // so a correctly negotiating server failed every structural check.
+        const data = await auditNegotiating();
+        expect(data.content.hasTitle).toBe(true);
+        expect(data.content.hasLang).toBe(true);
+        expect(data.content.hasMetaDesc).toBe(true);
+        expect(data.content.hasCanonical).toBe(true);
+        expect(data.content.hasSchema).toBe(true);
+        expect(data.content.hasOrgSchema).toBe(true);
+        expect(data.content.hasSemanticTags).toBe(true);
+        expect(data.content.hasH1 && data.content.hasH2).toBe(true);
+        expect(data.content.hasServerRenderedContent).toBe(true);
+    });
+
+    it('notes a Markdown response that is missing Vary: Accept', async () => {
+        const data = await auditNegotiating({ vary: false });
+        expect(data.content.supportsMarkdown).toBe(true);
+        expect(data.content.hasVaryAccept).toBe(false);
+        const check = find(data, 'Content Neg. (MD)');
+        expect(check.status).toBe('ok');
+        expect(check.code).toBe('No Vary');
+        expect(check.message).toContain('Vary: Accept');
+    });
+
+    it('confirms Vary: Accept when the server sends it', async () => {
+        const data = await auditNegotiating({ vary: true });
+        expect(data.content.hasVaryAccept).toBe(true);
+        expect(find(data, 'Content Neg. (MD)').code).toBe('Supported');
+    });
+});
