@@ -16,6 +16,72 @@ import agentsJson from "../public/.well-known/agents.json";
 
 const FETCH_TIMEOUT = 5000;
 
+// Maximum number of outbound sub-requests kept in flight at once. Cloudflare
+// allows 6 simultaneous connections per Worker invocation; anything above that
+// is queued by the runtime anyway, so we queue it ourselves and keep the
+// ordering predictable.
+const MAX_CONCURRENCY = 6;
+
+// Resolving a hostname through DNS-over-HTTPS costs two sub-requests (A + AAAA).
+// A single audit touches ~25 URLs on the same host, so without memoisation the
+// SSRF guard alone burns 50 sub-requests and blows the per-invocation limit.
+// Positive results are held only briefly: caching "this host is safe" for long
+// would widen the DNS-rebinding window the guard exists to close. Negative
+// results are safe to hold longer.
+const DNS_CACHE_TTL_SAFE = 60 * 1000;
+const DNS_CACHE_TTL_UNSAFE = 5 * 60 * 1000;
+const DNS_CACHE_MAX = 500;
+const dnsSafetyCache = new Map();
+
+function getCachedHostSafety(hostname) {
+    const hit = dnsSafetyCache.get(hostname);
+    if (!hit) return undefined;
+    if (hit.expires < Date.now()) {
+        dnsSafetyCache.delete(hostname);
+        return undefined;
+    }
+    return hit.safe;
+}
+
+function setCachedHostSafety(hostname, safe) {
+    if (dnsSafetyCache.size >= DNS_CACHE_MAX) {
+        const oldest = dnsSafetyCache.keys().next().value;
+        if (oldest !== undefined) dnsSafetyCache.delete(oldest);
+    }
+    const ttl = safe ? DNS_CACHE_TTL_SAFE : DNS_CACHE_TTL_UNSAFE;
+    dnsSafetyCache.set(hostname, { safe, expires: Date.now() + ttl });
+}
+
+/**
+ * Runs tasks with a bounded number of them in flight at any one time.
+ * Returns a function that queues a task and resolves with its result.
+ */
+export function createLimiter(limit) {
+    let active = 0;
+    const queue = [];
+
+    const drain = () => {
+        if (active >= limit || queue.length === 0) return;
+        const task = queue.shift();
+        active++;
+        Promise.resolve()
+            .then(task.fn)
+            .then(task.resolve, task.reject)
+            .finally(() => {
+                active--;
+                drain();
+            });
+    };
+
+    return (fn) => new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        drain();
+    });
+}
+
+/** Thrown when the target origin cannot be reached at all. */
+class UnreachableTargetError extends Error {}
+
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
@@ -354,6 +420,188 @@ const STATIC_ROUTES = {
 };
 
 
+/**
+ * Single source of truth for how much each check counts and where it belongs.
+ *
+ * `weight` drives the score, the ordering of the result lists and the
+ * "fix this next" ranking in the UI. Before this table those three things
+ * lived in four separate hard-coded maps that had already drifted apart.
+ *
+ * Tiers:
+ *   10 - table stakes; a site that misses these is invisible or unreadable to agents
+ *    6 - strong signal, applicable to essentially every site
+ *    3 - advanced or emerging protocol
+ *    1 - niche; only meaningful for a subset of sites, so it barely moves the score
+ *
+ * `advisory: true` marks a check that reports a *policy choice* rather than a
+ * defect. Blocking AI training is a legitimate business decision in either
+ * direction, so those checks are reported but left out of the score entirely.
+ */
+export const CHECK_CATALOG = {
+    // --- Discoverability & bot policy ---
+    "robots.txt":                  { weight: 10, category: "Discoverability" },
+    "sitemap.xml":                 { weight: 10, category: "Discoverability" },
+    "AI Search Allowed":           { weight: 10, category: "Discoverability" },
+    "AI Agent Allowed":            { weight: 6,  category: "Discoverability" },
+    "Sitemap Lastmod":             { weight: 3,  category: "Discoverability" },
+    "AI Training Blocked":         { weight: 0,  category: "Policy", advisory: true },
+    "Differentiated Policy":       { weight: 0,  category: "Policy", advisory: true },
+    "NoAI Meta Tag":               { weight: 0,  category: "Policy", advisory: true },
+    "TDM Reservation":             { weight: 0,  category: "Policy", advisory: true },
+    "ai.txt":                      { weight: 0,  category: "Policy", advisory: true },
+    "Content-Signal":              { weight: 3,  category: "Policy" },
+    "Content-Use Parameter":       { weight: 1,  category: "Policy" },
+
+    // --- Content structure & readability ---
+    "HTML Title Tag":              { weight: 10, category: "Content" },
+    "Meta Description":            { weight: 6,  category: "Content" },
+    "HTML Lang Attribute":         { weight: 6,  category: "Content" },
+    "Semantic HTML":               { weight: 6,  category: "Content" },
+    "Heading Hierarchy":           { weight: 6,  category: "Content" },
+    "Canonical URL":               { weight: 6,  category: "Content" },
+    "Scannable Formats":           { weight: 3,  category: "Content" },
+    "Internal Architecture":       { weight: 3,  category: "Content" },
+    "Image Alt Text":              { weight: 3,  category: "Content" },
+    "ARIA Accessibility":          { weight: 3,  category: "Content" },
+    "Viewport Meta Tag":           { weight: 3,  category: "Content" },
+    "Clean URLs":                  { weight: 1,  category: "Content" },
+    "Content Depth":               { weight: 6,  category: "Content" },
+    "Server-Rendered Content":     { weight: 10, category: "Content" },
+
+    // --- Machine readability & freshness ---
+    "Semantic JSON-LD":            { weight: 10, category: "Structured Data" },
+    "Organization Schema":         { weight: 3,  category: "Structured Data" },
+    "FAQ Schema":                  { weight: 3,  category: "Structured Data" },
+    "Breadcrumb Schema":           { weight: 3,  category: "Structured Data" },
+    "Site Search Schema":          { weight: 1,  category: "Structured Data" },
+    "Authorship (E-E-A-T)":        { weight: 6,  category: "Trust" },
+    "Content Freshness":           { weight: 6,  category: "Trust" },
+    "External Citations":          { weight: 3,  category: "Trust" },
+    "Quotation Addition":          { weight: 1,  category: "Trust" },
+    "Statistics Addition":         { weight: 1,  category: "Trust" },
+    "Fluency Optimization":        { weight: 3,  category: "Trust" },
+    "Authoritative Voice":         { weight: 1,  category: "Trust" },
+
+    // --- Delivery & caching ---
+    "Content Neg. (MD)":           { weight: 6,  category: "Delivery" },
+    "Freshness Headers":           { weight: 6,  category: "Delivery" },
+    "Conditional Requests (304)":  { weight: 3,  category: "Delivery" },
+    "X-Robots-Tag Header":         { weight: 3,  category: "Delivery" },
+    "HTTPS & HSTS":                { weight: 6,  category: "Delivery" },
+    "RSS/Atom Feed":               { weight: 3,  category: "Delivery" },
+    "AI Fallback (No-JS)":         { weight: 1,  category: "Delivery" },
+
+    // --- Agent protocols ---
+    "LLMs.txt":                    { weight: 10, category: "Agent Protocols" },
+    "AGENTS.md":                   { weight: 6,  category: "Agent Protocols" },
+    "MCP Server":                  { weight: 6,  category: "Agent Protocols" },
+    "LLMs-Full.txt":               { weight: 3,  category: "Agent Protocols" },
+    "agents.json":                 { weight: 3,  category: "Agent Protocols" },
+    "A2A Agent Card":              { weight: 3,  category: "Agent Protocols" },
+    "Agent Skills":                { weight: 3,  category: "Agent Protocols" },
+    "API Catalog":                 { weight: 3,  category: "Agent Protocols" },
+    "AI Plugin":                   { weight: 1,  category: "Agent Protocols" },
+    "WebMCP Integration":          { weight: 1,  category: "Agent Protocols" },
+    "OAuth Discovery":             { weight: 1,  category: "Agent Protocols" },
+    "OAuth Protected Resource":    { weight: 1,  category: "Agent Protocols" },
+    "security.txt":                { weight: 1,  category: "Agent Protocols" },
+    "Universal Commerce":          { weight: 1,  category: "Commerce" },
+    "x402 Payment Standard":       { weight: 1,  category: "Commerce" }
+};
+
+const DEFAULT_CHECK_META = { weight: 3, category: "Other" };
+
+export function getCheckMeta(name) {
+    return CHECK_CATALOG[name] || DEFAULT_CHECK_META;
+}
+
+// Partial credit: a resource that exists but is gated behind auth, or a manifest
+// that is present but incomplete, is worth more than nothing and less than a
+// clean pass.
+const PARTIAL_CREDIT_CODES = new Set(["Protected", "OAuth Protected", "Partial", "Manifest"]);
+
+function creditFor(check) {
+    if (check.status === 'ok') return 1;
+    if (check.status === 'warn') return PARTIAL_CREDIT_CODES.has(check.code) ? 0.5 : 0;
+    return 0;
+}
+
+export function gradeFor(percent) {
+    if (percent >= 90) return 'A+';
+    if (percent >= 80) return 'A';
+    if (percent >= 70) return 'B';
+    if (percent >= 60) return 'C';
+    if (percent >= 45) return 'D';
+    if (percent >= 25) return 'E';
+    return 'F';
+}
+
+/**
+ * Derives the score from the checks themselves rather than from points sprinkled
+ * through the audit. Previously the running total could reach ~300 against a
+ * hard cap of 100, so any site clearing a third of the checks reported "100%".
+ */
+export function scoreAudit(checks) {
+    const categories = {};
+    let earned = 0;
+    let possible = 0;
+
+    for (const check of checks) {
+        const meta = getCheckMeta(check.name);
+        if (meta.advisory || !meta.weight) continue;
+
+        const credit = creditFor(check);
+        earned += meta.weight * credit;
+        possible += meta.weight;
+
+        const bucket = categories[meta.category] || (categories[meta.category] = { earned: 0, possible: 0, total: 0 });
+        bucket.earned += meta.weight * credit;
+        bucket.possible += meta.weight;
+    }
+
+    for (const bucket of Object.values(categories)) {
+        bucket.total = bucket.possible > 0 ? Math.round((bucket.earned / bucket.possible) * 100) : 0;
+        bucket.earned = Math.round(bucket.earned * 10) / 10;
+    }
+
+    const total = possible > 0 ? Math.round((earned / possible) * 100) : 0;
+    return {
+        total,
+        max: 100,
+        grade: gradeFor(total),
+        earnedPoints: Math.round(earned * 10) / 10,
+        possiblePoints: possible,
+        categories
+    };
+}
+
+/**
+ * The highest-weight failures, so the UI (and the API consumer) can lead with
+ * the handful of changes that actually move the number.
+ */
+export function topPriorities(checks, take = 5) {
+    return checks
+        .filter(c => c.status !== 'ok' && !getCheckMeta(c.name).advisory && getCheckMeta(c.name).weight > 0)
+        .sort((a, b) => {
+            const byWeight = getCheckMeta(b.name).weight - getCheckMeta(a.name).weight;
+            if (byWeight !== 0) return byWeight;
+            // A hard miss is more actionable than a warning of the same weight.
+            if (a.status !== b.status) return a.status === 'err' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        })
+        .slice(0, take)
+        .map(c => ({
+            name: c.name,
+            status: c.status,
+            weight: getCheckMeta(c.name).weight,
+            category: getCheckMeta(c.name).category,
+            message: c.message,
+            prompt: c.prompt,
+            spec: c.spec
+        }));
+}
+
+
 export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
     if (!response.body || typeof response.body.getReader !== 'function') {
         return await response.text();
@@ -494,6 +742,10 @@ async function isSafeUrl(targetUrl) {
 
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
+            // An audit hits the same host ~25 times; resolve it once per isolate.
+            const cached = getCachedHostSafety(hostname);
+            if (cached !== undefined) return cached;
+
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
             const resolveDns = async (type) => {
                 try {
@@ -519,9 +771,9 @@ async function isSafeUrl(targetUrl) {
             };
 
             const [aSafe, aaaaSafe] = await Promise.all([resolveDns('A'), resolveDns('AAAA')]);
-            if (!aSafe || !aaaaSafe) {
-                return false;
-            }
+            const safe = aSafe && aaaaSafe;
+            setCachedHostSafety(hostname, safe);
+            return safe;
         }
         return true;
     } catch {
@@ -562,30 +814,64 @@ export async function handleRequest(request, env, ctx) {
                     });
                 }
 
-                // Domain existence check
-                try {
-                    const parsedUrl = new URL(targetUrl);
-                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
-                } catch {
-                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
-                        status: 400,
-                        headers: { "Content-Type": "application/json", ...corsHeaders }
-                    });
-                }
-
                 const bypassCache = url.searchParams.get("bypassCache") === "true" || 
                                      request.headers.get("Cache-Control")?.includes("no-cache") ||
                                      request.headers.get("Pragma")?.includes("no-cache");
-                const result = await performAudit(targetUrl, url.origin, env, ctx);
-                return new Response(JSON.stringify(result), {
+
+                const wantsMarkdown = (request.headers.get("Accept") || "").includes("text/markdown") ||
+                                      url.searchParams.get("format") === "md";
+
+                // A full audit is ~25 outbound requests. Serving a repeat scan of the
+                // same origin from the edge cache turns a multi-second scan into a
+                // single round trip.
+                const cacheKey = new Request(`${url.origin}/api/audit?targetUrl=${encodeURIComponent(new URL(targetUrl).origin)}&format=${wantsMarkdown ? 'md' : 'json'}`, { method: 'GET' });
+                const edgeCache = typeof caches !== 'undefined' && caches.default ? caches.default : null;
+
+                if (edgeCache && !bypassCache) {
+                    try {
+                        const cached = await edgeCache.match(cacheKey);
+                        if (cached) {
+                            const hit = new Response(cached.body, cached);
+                            hit.headers.set("X-Audit-Cache", "HIT");
+                            return hit;
+                        }
+                    } catch { /* cache unavailable, fall through to a live audit */ }
+                }
+
+                let result;
+                try {
+                    result = await performAudit(targetUrl, url.origin, env, ctx);
+                } catch (auditError) {
+                    if (auditError instanceof UnreachableTargetError) {
+                        return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), {
+                            status: 400,
+                            headers: { "Content-Type": "application/json", ...corsHeaders }
+                        });
+                    }
+                    throw auditError;
+                }
+
+                const body = wantsMarkdown ? renderAuditMarkdown(result) : JSON.stringify(result);
+                const response = new Response(body, {
                     headers: { 
-                        "Content-Type": "application/json",
+                        "Content-Type": wantsMarkdown ? "text/markdown; charset=utf-8" : "application/json",
                         "Cache-Control": bypassCache 
                             ? "no-store, no-cache, must-revalidate" 
                             : "public, max-age=3600, stale-while-revalidate=86400",
+                        "Vary": "Accept",
+                        "X-Audit-Cache": "MISS",
                         ...corsHeaders
                     }
                 });
+
+                if (edgeCache && !bypassCache) {
+                    const storable = response.clone();
+                    if (ctx && typeof ctx.waitUntil === 'function') {
+                        ctx.waitUntil(edgeCache.put(cacheKey, storable).catch(() => {}));
+                    }
+                }
+
+                return response;
 
             } catch(e) {
                 console.error('Audit API Error:', e);
@@ -657,9 +943,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     // Ensure baseUrl doesn't end with slash securely
     const base = new URL(baseUrl).origin;
 
-    let totalScore = 0;
+    // Every outbound request goes through the same bounded queue so that the
+    // three audit phases can be kicked off together without opening more
+    // connections than the runtime will actually service in parallel.
+    const limit = createLimiter(MAX_CONCURRENCY);
+    const iFetch = async (url, options = {}) => await limit(() => internalFetch(url, options, base, requestOrigin, env, ctx));
 
-    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
+    const timings = { startedAt: Date.now() };
 
     // 1. Discoverability & Bots
     let robotsFound = false;
@@ -672,11 +962,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let robotsText = "";
     let robotsContentSignal = "";
 
+    // --- Phase 1: robots.txt (and, once parsed, the sitemap it points at) ---
+    const robotsPhase = (async () => {
     try {
         const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
-            totalScore += 5;
             robotsText = await safeReadText(r_robots);
             
             const rules = {};
@@ -740,13 +1031,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
-            if (hasAISearch) totalScore += 10;
-            if (hasAIAgent) totalScore += 10;
-            if (hasAITrainingBlocked) totalScore += 10;
-            if (hasDifferentiatedPolicy) totalScore += 10;
         }
     } catch { /* silent fail */ }
+    })();
 
+    const sitemapPhase = robotsPhase.then(async () => {
     try {
         let sitemapUrl = `${base}/sitemap.xml`;
         if (robotsText) {
@@ -765,7 +1054,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
             if (r_sitemap.status === 200) {
                 sitemapFound = true;
-                totalScore += 5;
                 
                 const sitemapText = await safeReadText(r_sitemap);
                 const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
@@ -773,12 +1061,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     const dateStr = lastmodMatch[1];
                     if (!isNaN(Date.parse(dateStr))) {
                         hasSitemapLastmod = true;
-                        totalScore += 5;
                     }
                 }
             }
         }
     } catch { /* silent fail for sitemap */ }
+    });
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
@@ -816,13 +1104,25 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasOrgSchema = false;
     let currentScriptText = '';
 
+    // --- Phase 2: the homepage itself (headers + streamed HTML analysis) ---
+    const contentPhase = (async () => {
+    let r_home;
     try {
-        const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+    } catch {
+        // The origin answered nothing at all: there is no audit to report.
+        throw new UnreachableTargetError(base);
+    }
+    try {
+        timings.homeRespondedAt = Date.now();
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
-            totalScore += 15;
         }
+
+        // Only the robots.txt fallback below needs the robots parse; the two
+        // fetches themselves already ran concurrently.
+        await robotsPhase;
 
         let contentSignalValue = '';
         if (r_home.headers.has('content-signal')) {
@@ -833,7 +1133,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         if (contentSignalValue) {
             hasContentSignal = true;
-            totalScore += 10;
 
             const params = {};
             contentSignalValue.split(',').forEach(part => {
@@ -843,7 +1142,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
             if (params['use'] && ['reference', 'immediate', 'full'].includes(params['use'])) {
                 hasContentUse = true;
-                totalScore += 5;
             }
         }
 
@@ -851,7 +1149,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         const lastModified = r_home.headers.get('last-modified');
         if (etag || lastModified) {
             hasFreshnessHeaders = true;
-            totalScore += 5;
 
             try {
                 const condHeaders = { ...headersAgent };
@@ -861,7 +1158,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 const r_cond = await iFetch(base, { headers: condHeaders, cf: { cacheEverything: false } });
                 if (r_cond.status === 304) {
                     hasConditionalGET = true;
-                    totalScore += 10;
                 }
             } catch { /* silent fail */ }
         }
@@ -1093,29 +1389,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 hasStatistics = true;
             }
         }
-
-        if (hasCleanUrls) totalScore += 5;
-        if (hasFluency) totalScore += 10;
-        if (hasAuthoritativeVoice) totalScore += 5;
-
-        if (hasNoAI) totalScore += 5;
-        if (hasViewport) totalScore += 5;
-        if (hasSemanticTags) totalScore += 5;
-        if (hasAgentFallback) totalScore += 10;
-        if (hasH1 && hasH2) totalScore += 5;
-        if (hasLists) totalScore += 5;
-        if (hasInternalLinks) totalScore += 5;
-        if (hasCitations) totalScore += 5;
-        if (hasQuotations) totalScore += 5;
-        if (hasStatistics) totalScore += 5;
-        if (hasWebMCP) totalScore += 10;
-        if (hasARIA) totalScore += 5;
-        if (hasMetaDesc) totalScore += 5;
-        if (hasTitle) totalScore += 5;
-        if (hasLang) totalScore += 5;
-        if (hasImageAlt) totalScore += 5;
-        if (hasRss) totalScore += 5;
-
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
             try {
@@ -1152,16 +1425,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             } catch { /* ignore parse error */ }
         }
         
-        if (hasFaqSchema) totalScore += 5;
-        if (hasAuthorship) totalScore += 5;
-        if (hasFreshness) totalScore += 5;
 
-        if (hasSchema) {
-            totalScore += 10;
-        }
     } catch { /* silent fail */ }
+    })();
 
-    // 3. Protocol Discovery Detailed Tooltips
+    // --- Phase 3: protocol / manifest discovery ---
     const wellKnownFiles = [
         {
             name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 5,
@@ -1187,9 +1455,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     const hasH1 = /^#\s+.+/m.test(text);
                     const hasInstructions = /agent|guideline|instruction|capabilit|overview|rule|task|endpoint|api/i.test(text);
                     if (hasH1 && hasInstructions) {
-                        return { status: 'ok', message: 'Valid AGENTS.md instructions found', code: 'Found', addScore: 5 };
+                        return { status: 'ok', message: 'Valid AGENTS.md instructions found', code: 'Found' };
                     }
-                    return { status: 'ok', message: 'AGENTS.md document found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'AGENTS.md document found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1207,7 +1475,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         if (json && typeof json === 'object') {
                             const capCount = Array.isArray(json.capabilities) ? json.capabilities.length : (Array.isArray(json.tools) ? json.tools.length : 0);
                             const detail = capCount > 0 ? `${capCount} capabilities declared` : 'Config found';
-                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found', addScore: 5 };
+                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found' };
                         }
                     } catch {}
                     return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
@@ -1257,12 +1525,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                                 }
                                 if (totalOps > 0) {
                                     const pct = Math.round((readyOps / totalOps) * 100);
-                                    return { status: 'ok', message: `RFC 9727 API Catalog (Tool-Ready: ${readyOps}/${totalOps} operations, ${pct}%)`, code: `${pct}% Ready`, addScore: 5 };
+                                    return { status: 'ok', message: `RFC 9727 API Catalog (Tool-Ready: ${readyOps}/${totalOps} operations, ${pct}%)`, code: `${pct}% Ready` };
                                 }
                             }
                         }
                     } catch {}
-                    return { status: 'ok', message: 'Valid API Catalog found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Valid API Catalog found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1321,15 +1589,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         }
 
                         if (liveProbeOk) {
-                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational', addScore: 5 };
+                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational' };
                         }
                         if (isOAuthProtected) {
-                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected', addScore: 5 };
+                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected' };
                         }
                         if (toolCount > 0) {
-                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active', addScore: 5 };
+                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active' };
                         }
-                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest', addScore: 5 };
+                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
                     } catch {}
                 }
 
@@ -1349,14 +1617,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
                         if (getStatus === 200 && !isGetSoft404) {
                             if (getCType.includes('text/event-stream')) {
-                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational' };
                             }
                             try {
                                 const jsonRes = await mcpGetReq.json();
                                 const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
                                 const isMcpJson = jsonRes && (jsonRes.jsonrpc === '2.0' || Array.isArray(jsonRes.tools) || jsonRes.capabilities || jsonRes.serverInfo);
                                 if (isMcpJson) {
-                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational', addScore: 5 };
+                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational' };
                                 }
                             } catch {}
                         }
@@ -1372,9 +1640,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             } catch {}
 
                             if (isOAuth) {
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected' };
                             }
-                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected', addScore: 5 };
+                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected' };
                         }
 
                         if (getStatus === 405) {
@@ -1388,11 +1656,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const postAuth = (mcpPostReq.headers.get('www-authenticate') || '').toLowerCase();
 
                             if (postStatus === 200 || postStatus === 204) {
-                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational' };
                             }
                             if ([401, 403].includes(postStatus)) {
                                 const isOAuth = postAuth.includes('bearer') || postAuth.includes('resource_metadata') || postAuth.includes('oauth');
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected' };
                             }
                         }
                     } catch {}
@@ -1476,11 +1744,11 @@ Example:
                     const hasLinkList = /^-\s+\[.+\]\(.+\)/m.test(text);
 
                     if (hasH1 && hasBlockquote && hasLinkList) {
-                        return { status: 'ok', message: 'Full llmstxt.org spec compliant (H1, Summary, Links)', code: 'Compliant', addScore: 5 };
+                        return { status: 'ok', message: 'Full llmstxt.org spec compliant (H1, Summary, Links)', code: 'Compliant' };
                     } else if (hasH1 || hasLinkList) {
-                        return { status: 'ok', message: 'Valid llms.txt found (partial structure: missing summary blockquote or link list)', code: 'Partial', addScore: 5 };
+                        return { status: 'ok', message: 'Valid llms.txt found (partial structure: missing summary blockquote or link list)', code: 'Partial' };
                     }
-                    return { status: 'ok', message: 'Readable llms.txt found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Readable llms.txt found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1499,9 +1767,9 @@ Example:
                     const hasH1 = /^#\s+.+/m.test(text);
                     const hasSections = /^##\s+.+/m.test(text);
                     if (hasH1 && hasSections) {
-                        return { status: 'ok', message: 'Structured full markdown documentation found', code: 'Compliant', addScore: 5 };
+                        return { status: 'ok', message: 'Structured full markdown documentation found', code: 'Compliant' };
                     }
-                    return { status: 'ok', message: 'Full documentation text found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Full documentation text found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1540,12 +1808,12 @@ Example:
         }
     ];
 
-    // Fetch protocols in batches to avoid unbounded concurrency
+    // All manifest probes are queued at once; the shared limiter caps how many
+    // are actually in flight. Fixed-size batches used to stall every probe in a
+    // batch behind that batch's slowest host.
     const protoResults = [];
-    const batchSize = 4;
-    for (let i = 0; i < wellKnownFiles.length; i += batchSize) {
-        const batch = wellKnownFiles.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(async (data) => {
+    const protoPhase = (async () => {
+        const settled = await Promise.all(wellKnownFiles.map(async (data) => {
             const url = `${base}${data.path}`;
             let status = 'err';
             let message = '';
@@ -1560,9 +1828,6 @@ Example:
                     status = customResult.status || status;
                     message = customResult.message || message;
                     code = customResult.code || (status === 'ok' ? 'Found' : 'Missing');
-                    if (customResult.addScore) {
-                        totalScore += customResult.addScore;
-                    }
                 } else {
                     let isSoft404 = code === 200 && cType.includes('text/html');
 
@@ -1572,7 +1837,6 @@ Example:
                                 const jsonBody = await req.json();
                                 status = 'ok';
                                 message = 'Valid JSON found';
-                                totalScore += data.points;
                             } catch (err) {
                                 message = 'Invalid JSON content';
                             }
@@ -1580,7 +1844,6 @@ Example:
                             if (!cType.includes('text/html')) {
                                 status = 'ok';
                                 message = 'Readable format found';
-                                totalScore += data.points;
                             } else {
                                 message = 'Received HTML (Soft 404)';
                             }
@@ -1600,14 +1863,18 @@ Example:
 
             return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
         }));
-        protoResults.push(...batchResults);
-    }
+        protoResults.push(...settled);
+    })();
 
-    return {
-        score: {
-            total: Math.min(totalScore, 100),
-            max: 100
-        },
+    // Surface an unreachable origin as such; everything else degrades silently
+    // into a "not found" result for the individual check.
+    await Promise.all([contentPhase, sitemapPhase, protoPhase]);
+    timings.durationMs = Date.now() - timings.startedAt;
+
+    const auditResult = {
+        target: base,
+        generatedAt: new Date().toISOString(),
+        durationMs: timings.durationMs,
         bots: {
             robotsFound,
             hasAISearch,
@@ -1680,10 +1947,7 @@ Example:
                     tooltip: `<strong>What it is:</strong> The <code>&lt;lastmod&gt;</code> property inside the sitemap XML.<br/><br/><strong>Why it's critical:</strong> Provides crawler hints to AI search engines about when content was updated, avoiding redundant crawling.<br/><br/><strong>Impact of missing it:</strong> Bots will repeatedly fetch unchanged pages or miss newly updated pages due to lack of signals.<br/><br/><strong>Implementation Example:</strong> <code>&lt;url&gt;&lt;loc&gt;...&lt;/loc&gt;&lt;lastmod&gt;2026-07-02&lt;/lastmod&gt;&lt;/url&gt;</code>`,
                     code: hasSitemapLastmod ? 'Found' : 'Missing'
                 }
-            ].sort((a, b) => {
-                const weights = { "Differentiated Policy": 100, "AI Search Allowed": 90, "AI Agent Allowed": 80, "AI Training Blocked": 70, "robots.txt": 60, "sitemap.xml": 50, "Sitemap Lastmod": 40 };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            ].sort(byImportance)
         },
         content: {
             supportsMarkdown,
@@ -2029,31 +2293,103 @@ Examples of specific types:
                     tooltip: `<strong>What it is:</strong> Using language that signals expertise, conviction, and evidence (e.g., "according to", "demonstrates").<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines are tuned to favor authoritative and persuasive content, especially when citing sources for factual answers.<br/><br/><strong>Impact of missing it:</strong> The AI might overlook the content as a definitive source compared to competitors using stronger credibility signals.<br/><br/><strong>Implementation Example:</strong> Instead of "We think this might help," use "Our research demonstrates that this solution improves outcomes."`,
                     code: hasAuthoritativeVoice ? 'Found' : 'Missing'
                 }
-            ].sort((a, b) => {
-                const weights = {
-                    "Semantic JSON-LD": 100, "Content Neg. (MD)": 95, "Fluency Optimization": 92, "WebMCP Integration": 90, "Authoritative Voice": 88, "AI Fallback (No-JS)": 85,
-                    "Semantic HTML": 80, "Heading Hierarchy": 75, "Scannable Formats": 70, "Content-Signal": 65,
-                    "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45, "Clean URLs": 42,
-                    "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
-                    "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
-                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5,
-                    "HTML Title Tag": 10, "HTML Lang Attribute": 10, "Image Alt Text": 10, "RSS/Atom Feed": 5, "Organization Schema": 50
-                };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            ].sort(byImportance)
         },
         protocols: {
-            results: protoResults.sort((a, b) => {
-                const weights = {
-                    "MCP Server": 100, "AGENTS.md": 98, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
-                    "Agent Skills": 80, "A2A Agent Card": 75, "OAuth Protected Resource": 72, "x402 Payment Standard": 70,
-                    "agents.json": 68, "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55,
-                    "OAuth Discovery": 50, "Universal Commerce": 45, "security.txt": 40
-                };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            results: protoResults.sort(byImportance)
         }
     };
+
+    // Annotate every check with its weight and category, then derive the score
+    // from that single list so the API, the score and the UI can never drift.
+    const allChecks = [
+        ...auditResult.bots.results,
+        ...auditResult.content.results,
+        ...auditResult.protocols.results
+    ];
+    for (const check of allChecks) {
+        const meta = getCheckMeta(check.name);
+        check.weight = meta.weight;
+        check.category = meta.category;
+        if (meta.advisory) check.advisory = true;
+    }
+
+    auditResult.score = scoreAudit(allChecks);
+    auditResult.priorities = topPriorities(allChecks);
+    return auditResult;
+}
+
+/** Orders checks by how much they matter, then alphabetically for stability. */
+function byImportance(a, b) {
+    const byWeight = getCheckMeta(b.name).weight - getCheckMeta(a.name).weight;
+    if (byWeight !== 0) return byWeight;
+    return a.name.localeCompare(b.name);
+}
+
+/**
+ * Renders an audit as Markdown. The site tells other people's sites to support
+ * content negotiation for agents, so its own API does the same: an agent can
+ * ask for `Accept: text/markdown` (or `?format=md`) and get a report it can
+ * read without a JSON parser.
+ */
+export function renderAuditMarkdown(result) {
+    const lines = [];
+    const icon = (status) => status === 'ok' ? '✅' : (status === 'warn' ? '⚠️' : '❌');
+
+    lines.push(`# AI Readiness Audit — ${result.target}`);
+    lines.push('');
+    lines.push(`> **${result.score.total}/100** (grade ${result.score.grade}) · scanned ${result.generatedAt}`);
+    lines.push('');
+
+    const categories = Object.entries(result.score.categories || {}).sort((a, b) => a[1].total - b[1].total);
+    if (categories.length) {
+        lines.push('## Scores by category');
+        lines.push('');
+        lines.push('| Category | Score |');
+        lines.push('| --- | --- |');
+        for (const [name, bucket] of categories) {
+            lines.push(`| ${name} | ${bucket.total}% |`);
+        }
+        lines.push('');
+    }
+
+    if (result.priorities?.length) {
+        lines.push('## Fix these first');
+        lines.push('');
+        for (const item of result.priorities) {
+            lines.push(`### ${icon(item.status)} ${item.name} (weight ${item.weight}, ${item.category})`);
+            lines.push('');
+            lines.push(item.message);
+            if (item.prompt) {
+                lines.push('');
+                lines.push('```text');
+                lines.push(item.prompt);
+                lines.push('```');
+            }
+            if (item.spec) lines.push(`Spec: ${item.spec}`);
+            lines.push('');
+        }
+    }
+
+    const groups = [
+        ['Discoverability & bots', result.bots?.results],
+        ['Content & structure', result.content?.results],
+        ['Agent protocols', result.protocols?.results]
+    ];
+    for (const [title, checks] of groups) {
+        if (!checks?.length) continue;
+        lines.push(`## ${title}`);
+        lines.push('');
+        lines.push('| Check | Result | Detail |');
+        lines.push('| --- | --- | --- |');
+        for (const check of checks) {
+            const detail = String(check.message || '').replace(/\|/g, '\\|');
+            lines.push(`| ${check.name} | ${icon(check.status)} ${check.code || ''} | ${detail} |`);
+        }
+        lines.push('');
+    }
+
+    return lines.join('\n');
 }
 
 function generateOgImageSvg(domain, passed, warn, fail, score) {
