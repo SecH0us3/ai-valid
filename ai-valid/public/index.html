@@ -118,6 +118,31 @@
                 </div>
             </div>
 
+            <!-- Overall score, category breakdown and the shortlist of fixes -->
+            <div class="score-panel glass-panel">
+                <div class="score-gauge-wrap">
+                    <svg class="score-gauge" viewBox="0 0 120 120" role="img" aria-labelledby="score-gauge-label">
+                        <title id="score-gauge-label">Overall AI readiness score</title>
+                        <circle class="gauge-track" cx="60" cy="60" r="52"></circle>
+                        <circle class="gauge-fill" id="gauge-fill" cx="60" cy="60" r="52"></circle>
+                    </svg>
+                    <div class="score-readout">
+                        <span class="score-value" id="score-value">0</span>
+                        <span class="score-grade" id="score-grade">–</span>
+                    </div>
+                </div>
+                <div class="score-breakdown">
+                    <h3 class="score-heading">Readiness by category</h3>
+                    <div class="category-bars" id="category-bars"></div>
+                </div>
+            </div>
+
+            <div class="priorities-panel glass-panel" id="priorities-panel" hidden>
+                <h3 class="metric-title">🎯 Fix these first</h3>
+                <p class="priorities-hint">Ranked by how much each one moves your score.</p>
+                <ol class="priorities-list" id="priorities-list"></ol>
+            </div>
+
             <div class="metrics-grid">
                 <!-- Check 1: Passed -->
                 <div class="metric-card glass-panel">

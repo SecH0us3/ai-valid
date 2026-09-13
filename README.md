@@ -6,12 +6,47 @@
 
 ## 🌟 Key Features
 
+- **Weighted readiness score**: A percentage of the weight actually available, with a letter grade and a per-category breakdown — not a raw count of passing checks.
+- **Prioritised fixes**: A ranked shortlist of the failures that move the score most, each with a ready-to-use remediation prompt carrying your domain and the specific finding.
 - **Semantic Protocol Discovery**: Automatically scans for `.well-known` manifests including MCP (Model Context Protocol), A2A Agent Cards, API Catalogs (RFC 9727), and AI Plugins.
 - **Bot Accessibility Audit**: Validates `robots.txt` and explicit AI directives for `OAI-SearchBot`, `GPTBot`, and others.
-- **Content Optimization**: Checks for Content Negotiation (Markdown support) and legal usage signals via `Content-Signal` headers.
+- **Content Optimization**: Checks server-side rendering, structured data, content negotiation (Markdown support) and legal usage signals via `Content-Signal` headers.
+- **MCP server**: The auditor is itself callable as a tool from any MCP client.
 - **Actionable Dashboard**: Results are categorized into **Passed**, **Warnings**, & **Not found**, providing a clear implementation roadmap.
-- **Dynamic UX**: Fast, parallel network scanning with a terminal-inspired reconnaissance interface.
 - **Deep Linking**: Share audit results easily via persistent URL hashes.
+
+## 📊 How the score works
+
+Every check carries a weight reflecting how much it actually matters — from **10** (table
+stakes; a site that misses these is unreadable to agents) down to **1** (niche protocols that
+only apply to some sites). The score is the percentage of *available* weight earned, so a
+missing `<title>` costs far more than a missing commerce manifest.
+
+Checks that report a **policy choice** rather than a defect — whether to block AI training,
+whether to declare a TDM reservation — are marked `advisory` and left out of the score
+entirely. Choosing to welcome AI training is a legitimate decision, and the audit reports it
+without penalising it either way.
+
+A resource that exists but sits behind authentication earns partial credit rather than nothing.
+
+## 🔌 Using it as an API or MCP tool
+
+```bash
+# JSON
+curl "https://ai-valid.secmy.app/api/audit?targetUrl=https://example.com"
+
+# Markdown report
+curl -H 'Accept: text/markdown' "https://ai-valid.secmy.app/api/audit?targetUrl=https://example.com"
+
+# As an MCP tool
+curl -X POST https://ai-valid.secmy.app/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+The OpenAPI description lives at [`/openapi.json`](https://ai-valid.secmy.app/openapi.json),
+and the MCP server card at
+[`/.well-known/mcp/server-card.json`](https://ai-valid.secmy.app/.well-known/mcp/server-card.json).
 
 ## 🛠️ Technology Stack
 
@@ -36,6 +71,11 @@ npm install
 ### Local Development
 ```bash
 npx wrangler dev
+```
+
+### Tests
+```bash
+npm test
 ```
 
 ### Deployment

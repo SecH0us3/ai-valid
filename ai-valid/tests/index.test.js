@@ -365,15 +365,19 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
     it('should detect Fluency Optimization, Authoritative Voice, and Clean URLs metrics', async () => {
         // Constructing HTML that:
         // 1. Has an internal link without query parameters to trigger Clean URLs (hasInternalLinks = true, hasDirtyUrls = false).
-        // 2. Has an authoritative phrase ("research shows") to trigger Authoritative Voice.
+        // 2. Carries an identified author plus an outbound source, which is what
+        //    Authoritative Voice now requires.
         // 3. Has sufficient readable text to pass the Flesch Reading Ease check for Fluency Optimization (words > 50, valid score).
         const readableSentences = "This is a simple sentence to test readability. ".repeat(15);
 
         const html = `
             <html>
+                <head><meta name="author" content="Jane Roe"></head>
                 <body>
                     <p>According to our data, the research shows that this approach is effective.</p>
                     <a href="https://example.com/about-us">About Us</a>
+                    <a href="https://www.who.int/data">WHO source</a>
+                    <p>Adoption rose 42% year over year.</p>
                     <p>${readableSentences}</p>
                 </body>
             </html>
@@ -398,6 +402,29 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         expect(cleanUrlsResult).toBeDefined();
         expect(cleanUrlsResult.status).toBe('ok');
         expect(cleanUrlsResult.code).toBe('Found');
+    });
+
+    it('should not treat authority buzzwords alone as an Authoritative Voice', async () => {
+        // The previous implementation matched a bag of phrases, so a page could
+        // claim authority simply by containing the word "study" - no author, no
+        // sources, nothing to corroborate the claim.
+        const readableSentences = "This is a simple sentence to test readability. ".repeat(15);
+        const html = `
+            <html>
+                <body>
+                    <p>Research shows that experts agree this study demonstrates our analysis is proven.</p>
+                    <a href="https://example.com/about-us">About Us</a>
+                    <p>${readableSentences}</p>
+                </body>
+            </html>
+        `;
+        const data = await runAuditTest(html);
+
+        expect(data.content.hasFluency).toBe(true);
+        expect(data.content.hasAuthoritativeVoice).toBe(false);
+
+        const authVoiceResult = data.content.results.find(r => r.name === 'Authoritative Voice');
+        expect(authVoiceResult.status).toBe('warn');
     });
 
     it('should detect missing Fluency Optimization, Authoritative Voice, and Dirty URLs', async () => {
@@ -433,9 +460,11 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
         const readableCyrillicSentences = "Это простой пример предложения для проверки читаемости текста на русском языке. ".repeat(15);
         const html = `
             <html>
+                <head><meta name="author" content="Иван Петров"></head>
                 <body>
                     <p>Согласно исследованию экспертов, данная методология доказала высокую эффективность.</p>
                     <a href="https://example.com/about">О нас</a>
+                    <a href="https://www.rbc.ru/research">Источник</a>
                     <p>${readableCyrillicSentences}</p>
                 </body>
             </html>

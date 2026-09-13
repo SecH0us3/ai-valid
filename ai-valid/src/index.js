@@ -16,6 +16,72 @@ import agentsJson from "../public/.well-known/agents.json";
 
 const FETCH_TIMEOUT = 5000;
 
+// Maximum number of outbound sub-requests kept in flight at once. Cloudflare
+// allows 6 simultaneous connections per Worker invocation; anything above that
+// is queued by the runtime anyway, so we queue it ourselves and keep the
+// ordering predictable.
+const MAX_CONCURRENCY = 6;
+
+// Resolving a hostname through DNS-over-HTTPS costs two sub-requests (A + AAAA).
+// A single audit touches ~25 URLs on the same host, so without memoisation the
+// SSRF guard alone burns 50 sub-requests and blows the per-invocation limit.
+// Positive results are held only briefly: caching "this host is safe" for long
+// would widen the DNS-rebinding window the guard exists to close. Negative
+// results are safe to hold longer.
+const DNS_CACHE_TTL_SAFE = 60 * 1000;
+const DNS_CACHE_TTL_UNSAFE = 5 * 60 * 1000;
+const DNS_CACHE_MAX = 500;
+const dnsSafetyCache = new Map();
+
+function getCachedHostSafety(hostname) {
+    const hit = dnsSafetyCache.get(hostname);
+    if (!hit) return undefined;
+    if (hit.expires < Date.now()) {
+        dnsSafetyCache.delete(hostname);
+        return undefined;
+    }
+    return hit.safe;
+}
+
+function setCachedHostSafety(hostname, safe) {
+    if (dnsSafetyCache.size >= DNS_CACHE_MAX) {
+        const oldest = dnsSafetyCache.keys().next().value;
+        if (oldest !== undefined) dnsSafetyCache.delete(oldest);
+    }
+    const ttl = safe ? DNS_CACHE_TTL_SAFE : DNS_CACHE_TTL_UNSAFE;
+    dnsSafetyCache.set(hostname, { safe, expires: Date.now() + ttl });
+}
+
+/**
+ * Runs tasks with a bounded number of them in flight at any one time.
+ * Returns a function that queues a task and resolves with its result.
+ */
+export function createLimiter(limit) {
+    let active = 0;
+    const queue = [];
+
+    const drain = () => {
+        if (active >= limit || queue.length === 0) return;
+        const task = queue.shift();
+        active++;
+        Promise.resolve()
+            .then(task.fn)
+            .then(task.resolve, task.reject)
+            .finally(() => {
+                active--;
+                drain();
+            });
+    };
+
+    return (fn) => new Promise((resolve, reject) => {
+        queue.push({ fn, resolve, reject });
+        drain();
+    });
+}
+
+/** Thrown when the target origin cannot be reached at all. */
+class UnreachableTargetError extends Error {}
+
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
@@ -190,29 +256,24 @@ const STATIC_ROUTES = {
             }
         });
     },
-    "/.well-known/mcp/server-card.json": () => {
+    "/.well-known/mcp/server-card.json": (request) => {
+        const origin = new URL(request.url).origin;
+        // The card is generated from the same tool definitions the live /mcp
+        // endpoint serves, so the two cannot describe different servers.
         const serverCard = {
             "serverInfo": {
-                "name": "ai-valid-mcp",
+                "name": "ai-valid",
+                "title": "AI-Valid Readiness Auditor",
                 "version": "1.0.0"
             },
+            "protocolVersion": MCP_PROTOCOL_VERSION,
             "description": "AI-Readiness Audit Platform MCP Server",
-            "tools": [
-                {
-                    "name": "audit_website",
-                    "description": "Perform an AI readiness audit for a given URL",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "targetUrl": {
-                                "type": "string",
-                                "description": "The URL to audit"
-                            }
-                        },
-                        "required": ["targetUrl"]
-                    }
-                }
-            ]
+            "url": `${origin}/mcp`,
+            "endpoints": {
+                "http": `${origin}/mcp`
+            },
+            "capabilities": { "tools": { "listChanged": false } },
+            "tools": MCP_TOOLS
         };
         return new Response(JSON.stringify(serverCard, null, 2), {
             headers: {
@@ -352,6 +413,918 @@ const STATIC_ROUTES = {
         });
     }
 };
+
+
+/**
+ * Single source of truth for how much each check counts and where it belongs.
+ *
+ * `weight` drives the score, the ordering of the result lists and the
+ * "fix this next" ranking in the UI. Before this table those three things
+ * lived in four separate hard-coded maps that had already drifted apart.
+ *
+ * Tiers:
+ *   10 - table stakes; a site that misses these is invisible or unreadable to agents
+ *    6 - strong signal, applicable to essentially every site
+ *    3 - advanced or emerging protocol
+ *    1 - niche; only meaningful for a subset of sites, so it barely moves the score
+ *
+ * `advisory: true` marks a check that reports a *policy choice* rather than a
+ * defect. Blocking AI training is a legitimate business decision in either
+ * direction, so those checks are reported but left out of the score entirely.
+ */
+export const CHECK_CATALOG = {
+    // --- Discoverability & bot policy ---
+    "robots.txt":                  { weight: 10, category: "Discoverability" },
+    "sitemap.xml":                 { weight: 10, category: "Discoverability" },
+    "AI Search Allowed":           { weight: 10, category: "Discoverability" },
+    "AI Agent Allowed":            { weight: 6,  category: "Discoverability" },
+    "Sitemap Lastmod":             { weight: 3,  category: "Discoverability" },
+    "AI Training Blocked":         { weight: 0,  category: "Policy", advisory: true },
+    "Differentiated Policy":       { weight: 0,  category: "Policy", advisory: true },
+    "NoAI Meta Tag":               { weight: 0,  category: "Policy", advisory: true },
+    "TDM Reservation":             { weight: 0,  category: "Policy", advisory: true },
+    "ai.txt":                      { weight: 0,  category: "Policy", advisory: true },
+    "Content-Signal":              { weight: 3,  category: "Policy" },
+    "Content-Use Parameter":       { weight: 1,  category: "Policy" },
+
+    // --- Content structure & readability ---
+    "HTML Title Tag":              { weight: 10, category: "Content" },
+    "Meta Description":            { weight: 6,  category: "Content" },
+    "HTML Lang Attribute":         { weight: 6,  category: "Content" },
+    "Semantic HTML":               { weight: 6,  category: "Content" },
+    "Heading Hierarchy":           { weight: 6,  category: "Content" },
+    "Canonical URL":               { weight: 6,  category: "Content" },
+    "Scannable Formats":           { weight: 3,  category: "Content" },
+    "Internal Architecture":       { weight: 3,  category: "Content" },
+    "Image Alt Text":              { weight: 3,  category: "Content" },
+    "ARIA Accessibility":          { weight: 3,  category: "Content" },
+    "Viewport Meta Tag":           { weight: 3,  category: "Content" },
+    "Clean URLs":                  { weight: 1,  category: "Content" },
+    "Content Depth":               { weight: 6,  category: "Content" },
+    "Server-Rendered Content":     { weight: 10, category: "Content" },
+
+    // --- Machine readability & freshness ---
+    "Semantic JSON-LD":            { weight: 10, category: "Structured Data" },
+    "Organization Schema":         { weight: 3,  category: "Structured Data" },
+    "FAQ Schema":                  { weight: 3,  category: "Structured Data" },
+    "Breadcrumb Schema":           { weight: 3,  category: "Structured Data" },
+    "Site Search Schema":          { weight: 1,  category: "Structured Data" },
+    "Authorship (E-E-A-T)":        { weight: 6,  category: "Trust" },
+    "Content Freshness":           { weight: 6,  category: "Trust" },
+    "External Citations":          { weight: 3,  category: "Trust" },
+    "Quotation Addition":          { weight: 1,  category: "Trust" },
+    "Statistics Addition":         { weight: 1,  category: "Trust" },
+    "Fluency Optimization":        { weight: 3,  category: "Trust" },
+    "Authoritative Voice":         { weight: 1,  category: "Trust" },
+
+    // --- Delivery & caching ---
+    "Content Neg. (MD)":           { weight: 6,  category: "Delivery" },
+    "Freshness Headers":           { weight: 6,  category: "Delivery" },
+    "Conditional Requests (304)":  { weight: 3,  category: "Delivery" },
+    "X-Robots-Tag Header":         { weight: 3,  category: "Delivery" },
+    "HTTPS & HSTS":                { weight: 6,  category: "Delivery" },
+    "RSS/Atom Feed":               { weight: 3,  category: "Delivery" },
+    "AI Fallback (No-JS)":         { weight: 1,  category: "Delivery" },
+
+    // --- Agent protocols ---
+    "LLMs.txt":                    { weight: 10, category: "Agent Protocols" },
+    "AGENTS.md":                   { weight: 6,  category: "Agent Protocols" },
+    "MCP Server":                  { weight: 6,  category: "Agent Protocols" },
+    "LLMs-Full.txt":               { weight: 3,  category: "Agent Protocols" },
+    "agents.json":                 { weight: 3,  category: "Agent Protocols" },
+    "A2A Agent Card":              { weight: 3,  category: "Agent Protocols" },
+    "Agent Skills":                { weight: 3,  category: "Agent Protocols" },
+    "API Catalog":                 { weight: 3,  category: "Agent Protocols" },
+    "AI Plugin":                   { weight: 1,  category: "Agent Protocols" },
+    "WebMCP Integration":          { weight: 1,  category: "Agent Protocols" },
+    "OAuth Discovery":             { weight: 1,  category: "Agent Protocols" },
+    "OAuth Protected Resource":    { weight: 1,  category: "Agent Protocols" },
+    "security.txt":                { weight: 1,  category: "Agent Protocols" },
+    "Universal Commerce":          { weight: 1,  category: "Commerce" },
+    "x402 Payment Standard":       { weight: 1,  category: "Commerce" }
+};
+
+const DEFAULT_CHECK_META = { weight: 3, category: "Other" };
+
+export function getCheckMeta(name) {
+    return CHECK_CATALOG[name] || DEFAULT_CHECK_META;
+}
+
+// Partial credit: a resource that exists but is gated behind auth, or a manifest
+// that is present but incomplete, is worth more than nothing and less than a
+// clean pass.
+const PARTIAL_CREDIT_CODES = new Set(["Protected", "OAuth Protected", "Partial", "Manifest"]);
+
+function creditFor(check) {
+    if (check.status === 'ok') return 1;
+    if (check.status === 'warn') return PARTIAL_CREDIT_CODES.has(check.code) ? 0.5 : 0;
+    return 0;
+}
+
+export function gradeFor(percent) {
+    if (percent >= 90) return 'A+';
+    if (percent >= 80) return 'A';
+    if (percent >= 70) return 'B';
+    if (percent >= 60) return 'C';
+    if (percent >= 45) return 'D';
+    if (percent >= 25) return 'E';
+    return 'F';
+}
+
+/**
+ * Derives the score from the checks themselves rather than from points sprinkled
+ * through the audit. Previously the running total could reach ~300 against a
+ * hard cap of 100, so any site clearing a third of the checks reported "100%".
+ */
+export function scoreAudit(checks) {
+    const categories = {};
+    let earned = 0;
+    let possible = 0;
+
+    for (const check of checks) {
+        const meta = getCheckMeta(check.name);
+        if (meta.advisory || !meta.weight) continue;
+
+        const credit = creditFor(check);
+        earned += meta.weight * credit;
+        possible += meta.weight;
+
+        const bucket = categories[meta.category] || (categories[meta.category] = { earned: 0, possible: 0, total: 0 });
+        bucket.earned += meta.weight * credit;
+        bucket.possible += meta.weight;
+    }
+
+    for (const bucket of Object.values(categories)) {
+        bucket.total = bucket.possible > 0 ? Math.round((bucket.earned / bucket.possible) * 100) : 0;
+        bucket.earned = Math.round(bucket.earned * 10) / 10;
+    }
+
+    const total = possible > 0 ? Math.round((earned / possible) * 100) : 0;
+    return {
+        total,
+        max: 100,
+        grade: gradeFor(total),
+        earnedPoints: Math.round(earned * 10) / 10,
+        possiblePoints: possible,
+        categories
+    };
+}
+
+/**
+ * The highest-weight failures, so the UI (and the API consumer) can lead with
+ * the handful of changes that actually move the number.
+ */
+export function topPriorities(checks, take = 5) {
+    return checks
+        .filter(c => c.status !== 'ok' && !getCheckMeta(c.name).advisory && getCheckMeta(c.name).weight > 0)
+        .sort((a, b) => {
+            const byWeight = getCheckMeta(b.name).weight - getCheckMeta(a.name).weight;
+            if (byWeight !== 0) return byWeight;
+            // A hard miss is more actionable than a warning of the same weight.
+            if (a.status !== b.status) return a.status === 'err' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        })
+        .slice(0, take)
+        .map(c => ({
+            name: c.name,
+            status: c.status,
+            weight: getCheckMeta(c.name).weight,
+            category: getCheckMeta(c.name).category,
+            message: c.message,
+            prompt: c.prompt,
+            spec: c.spec
+        }));
+}
+
+
+/**
+ * Rough syllable count for the Flesch reading-ease estimate.
+ *
+ * The previous implementation matched runs of up to two vowels anywhere in the
+ * text, which counts "queue" as two syllables and "ouija" as one, and treats a
+ * trailing silent "e" as a syllable of its own. This walks words instead and
+ * applies the usual English adjustments; Cyrillic syllables map 1:1 to vowels.
+ */
+export function countSyllables(text, isCyrillic = false) {
+    if (isCyrillic) {
+        return (text.match(/[аеёиоуыэюя]/gi) || []).length || 1;
+    }
+    let total = 0;
+    const words = text.match(/[a-zàáâãäåèéêëìíîïòóôõöùúûüýÿ']+/gi) || [];
+    for (const word of words) {
+        const groups = word.match(/[aeiouyàáâãäåèéêëìíîïòóôõöùúûüýÿ]+/gi) || [];
+        let count = groups.length;
+        // Silent terminal "e" ("make", "one"), but never reduce below one.
+        if (count > 1 && /e$/i.test(word) && !/[aeiouy]e$/i.test(word)) count--;
+        total += Math.max(1, count);
+    }
+    return total || 1;
+}
+
+/**
+ * Remediation prompts.
+ *
+ * The original prompts were single sentences ("Create an llms.txt file...").
+ * Pasted into an assistant they produced generic, placeholder-filled output
+ * that the user then had to rewrite, because they carried none of what the
+ * audit already knew: which site was scanned, what specifically failed, what
+ * the file has to contain to pass, and how to check the result.
+ *
+ * Each entry supplies the parts; buildPrompt assembles them with the audited
+ * origin and the actual finding, so the same check produces a different, more
+ * specific prompt for "missing" than for "present but malformed".
+ */
+const PROMPT_LIBRARY = {
+    "robots.txt": {
+        goal: "Publish a robots.txt that states an explicit, deliberate policy for AI crawlers.",
+        requirements: [
+            "Keep the existing rules for conventional search crawlers intact — do not tighten them as a side effect.",
+            "Add a separate group for each AI user-agent you want to address rather than relying on the `*` group; several AI crawlers ignore `*` when a named group exists.",
+            "Decide the three cases independently: AI search citation (OAI-SearchBot, PerplexityBot, YouBot), live agent fetching on a user's behalf (ChatGPT-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
+            "Add a `Sitemap:` line with the absolute URL of the sitemap."
+        ],
+        deliverable: "The complete robots.txt content, to be served at /robots.txt as text/plain.",
+        acceptance: [
+            "`curl -s ORIGIN/robots.txt` returns text/plain, not an HTML page.",
+            "Every group has at least one Allow or Disallow line.",
+            "Tell me which of the three policy decisions above each group implements, so I can confirm the result matches my intent."
+        ]
+    },
+    "sitemap.xml": {
+        goal: "Publish a valid XML sitemap and point robots.txt at it.",
+        requirements: [
+            "List canonical URLs only — no redirects, no parameterised duplicates, no noindex pages.",
+            "Give every <url> a <lastmod> with a real modification date in W3C datetime format.",
+            "Split into a sitemap index if there are more than 50,000 URLs or the file exceeds 50MB uncompressed.",
+            "Reference it from robots.txt with an absolute `Sitemap:` URL."
+        ],
+        deliverable: "The sitemap XML (or the generator code that produces it) plus the robots.txt line referencing it.",
+        acceptance: [
+            "The document validates against the sitemaps.org 0.9 schema.",
+            "`curl -s ORIGIN/sitemap.xml | head` returns XML with an application/xml content type."
+        ]
+    },
+    "Sitemap Lastmod": {
+        goal: "Populate <lastmod> in the sitemap with real modification dates.",
+        requirements: [
+            "Derive each date from the content's actual last edit, not from the build or deploy time — a sitemap where every date changes on every deploy is treated as noise and ignored.",
+            "Use W3C datetime format (YYYY-MM-DD or a full ISO 8601 timestamp).",
+            "Omit <lastmod> entirely for pages whose modification date you cannot determine, rather than emitting a placeholder."
+        ],
+        deliverable: "The change to the sitemap generation so <lastmod> reflects content modification time.",
+        acceptance: ["Two consecutive deploys with no content change produce identical <lastmod> values."]
+    },
+    "AI Search Allowed": {
+        goal: "Allow the AI search crawlers that can cite this site in generated answers.",
+        requirements: [
+            "Add explicit `Allow: /` groups for OAI-SearchBot, PerplexityBot and YouBot.",
+            "These are retrieval crawlers for citation, distinct from the training crawlers — allowing them does not permit model training.",
+            "Do not add these to a shared `*` group; name each agent in its own group."
+        ],
+        deliverable: "The robots.txt groups to add, and where they go relative to the existing rules.",
+        acceptance: ["Each of the three agents has a group whose rules permit the paths you want cited."]
+    },
+    "AI Agent Allowed": {
+        goal: "Allow user-directed agent fetches, which are requests a person actually asked for.",
+        requirements: [
+            "Add an `Allow: /` group for ChatGPT-User (and Perplexity-User if you also want Perplexity's on-demand fetches).",
+            "These agents fetch a page because a user asked about it in a conversation; blocking them blocks your own visitors' agents, not a scraper.",
+            "Keep any training-crawler policy unchanged — this decision is independent of it."
+        ],
+        deliverable: "The robots.txt groups to add.",
+        acceptance: ["A request with the ChatGPT-User user-agent is permitted by the resulting rules."]
+    },
+    "AI Training Blocked": {
+        goal: "Make the model-training policy explicit, in whichever direction you intend.",
+        requirements: [
+            "Decide first whether you want your content used for model training. Both answers are legitimate; this check reports the choice, it does not score it.",
+            "To opt out: add `Disallow: /` groups for GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot and meta-externalagent, and consider a TDM reservation at /.well-known/tdmrep.json for EU CDSM Article 4 coverage.",
+            "To opt in: leave those agents permitted and say so explicitly with `Allow: /` groups rather than relying on silence.",
+            "Either way, keep the AI search and user-agent groups separate so opting out of training does not also remove you from AI search results."
+        ],
+        deliverable: "The robots.txt groups implementing the decision, and a one-line note of which direction was chosen.",
+        acceptance: ["No training-crawler policy is left implicit; every named agent has an explicit rule."]
+    },
+    "Differentiated Policy": {
+        goal: "State separate policies for AI search, user-directed agents and model training.",
+        requirements: [
+            "Treat the three as three decisions, not one. The common intent — be citable in AI search, serve users' agents, decline training — requires all three groups to differ.",
+            "Group 1 (cite me): OAI-SearchBot, PerplexityBot, YouBot.",
+            "Group 2 (serve my users' agents): ChatGPT-User, Perplexity-User.",
+            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot."
+        ],
+        deliverable: "The full robots.txt with the three groups distinguished.",
+        acceptance: ["The three groups do not all carry identical rules."]
+    },
+    "Content-Signal": {
+        goal: "Declare machine-readable usage terms with a Content-Signal directive.",
+        requirements: [
+            "Emit either a `Content-Signal:` line in robots.txt or a `Content-Signal:` HTTP response header.",
+            "Use the defined keys — `search`, `ai-input`, `ai-train` — each set to `yes` or `no`.",
+            "Keep it consistent with the robots.txt rules; a Content-Signal that contradicts the crawler groups is worse than none."
+        ],
+        deliverable: "The exact Content-Signal line or header value, plus where to configure it.",
+        acceptance: ["`curl -sI ORIGIN` or ORIGIN/robots.txt shows the directive, and its values match the robots.txt groups."]
+    },
+    "Content-Use Parameter": {
+        goal: "Add a `use=` parameter to the Content-Signal directive.",
+        requirements: [
+            "Append `use=` with one of `reference`, `immediate` or `full` to the existing Content-Signal value.",
+            "`reference` permits citation with attribution; `immediate` permits use in a live answer; `full` permits unrestricted use. Pick the one that matches your licensing terms."
+        ],
+        deliverable: "The updated Content-Signal value.",
+        acceptance: ["The directive parses as comma-separated key=value pairs and includes a valid `use` key."]
+    },
+    "HTML Title Tag": {
+        goal: "Give every page a unique, descriptive <title>.",
+        requirements: [
+            "One <title> per page, in the <head>, 50-60 characters.",
+            "Lead with what the page is about, not with the site name.",
+            "No two pages share a title; templated titles must interpolate the page's own subject."
+        ],
+        deliverable: "The title tag (or the template change that generates it).",
+        acceptance: ["Every page returns a distinct title, and it is present in the raw HTML before JavaScript runs."]
+    },
+    "Meta Description": {
+        goal: "Add a meta description summarising each page.",
+        requirements: [
+            "A <meta name=\"description\"> of 140-160 characters describing what the page actually contains.",
+            "Write it as a standalone sentence a model could quote, not as a keyword list.",
+            "Add a matching og:description so social and agent previews agree."
+        ],
+        deliverable: "The meta tags (or the template change that generates them).",
+        acceptance: ["The description is unique per page and present in the server-returned HTML."]
+    },
+    "HTML Lang Attribute": {
+        goal: "Declare the document language on the <html> element.",
+        requirements: [
+            "Add a `lang` attribute with a BCP 47 tag (`en`, `en-GB`, `ru`) to <html>.",
+            "Mark any passage in a different language with its own `lang` attribute on the containing element.",
+            "If the site is multilingual, add `hreflang` alternates linking the language variants to each other."
+        ],
+        deliverable: "The html tag change, plus any hreflang link tags.",
+        acceptance: ["The attribute is a valid BCP 47 tag and matches the language the page is actually written in."]
+    },
+    "Semantic HTML": {
+        goal: "Wrap the primary content in semantic landmark elements.",
+        requirements: [
+            "Put the page's main content inside <main>, and each self-contained piece inside <article>.",
+            "Use <nav>, <header>, <footer> and <aside> for the surrounding chrome so extractors can tell content from navigation.",
+            "Replace generic <div> wrappers that exist only for layout where a landmark element would carry meaning."
+        ],
+        deliverable: "The markup changes to the page template.",
+        acceptance: ["The page has exactly one <main>, and the article text sits inside it rather than beside it."]
+    },
+    "Heading Hierarchy": {
+        goal: "Give the page a correct heading outline.",
+        requirements: [
+            "Exactly one <h1>, stating the page's subject.",
+            "<h2> for each major section, <h3> for subsections; never skip a level to get a particular font size.",
+            "Headings must describe the section that follows — retrieval systems chunk on heading boundaries, so a vague heading produces a vague chunk."
+        ],
+        deliverable: "The corrected heading structure.",
+        acceptance: ["The outline reads as a coherent table of contents when the headings are extracted in order."]
+    },
+    "Canonical URL": {
+        goal: "Declare a canonical URL for every page.",
+        requirements: [
+            "Add <link rel=\"canonical\"> to the <head> with the absolute, preferred URL.",
+            "Make it self-referential on the canonical page itself, and point variants (tracking parameters, trailing-slash forms, alternate hosts) at it.",
+            "The canonical URL must return 200 — never point at a redirect or a 404."
+        ],
+        deliverable: "The canonical link tag, or the template logic that generates it.",
+        acceptance: ["Fetching the canonical URL returns 200 and its own canonical points at itself."]
+    },
+    "Server-Rendered Content": {
+        goal: "Serve the page's text in the initial HTML response, without requiring JavaScript.",
+        requirements: [
+            "Identify which content currently only appears after client-side hydration.",
+            "Move it into the server response via server-side rendering, static generation or prerendering — whichever fits the existing framework; say which one you are using and why.",
+            "Keep interactive behaviour client-side; only the readable content needs to be in the initial payload.",
+            "Do not add a separate prerendered copy served only to bots — that is cloaking, and it breaks when the two copies drift."
+        ],
+        deliverable: "The rendering change, described concretely against this project's framework.",
+        acceptance: [
+            "`curl -s ORIGIN | wc -w` returns a word count close to what a browser displays.",
+            "Disabling JavaScript in a browser still shows the page's main content."
+        ]
+    },
+    "Content Depth": {
+        goal: "Give the page enough substantive text to be retrievable.",
+        requirements: [
+            "Aim for 300+ words of real content — prose that answers the questions a reader arrives with.",
+            "Do not pad with boilerplate, keyword repetition or duplicated navigation; that lowers retrieval quality rather than raising it.",
+            "If the substance genuinely lives in a video, PDF or diagram, add a text transcript or summary alongside it."
+        ],
+        deliverable: "A concrete outline of what content to add to this specific page, and why each part earns its place.",
+        acceptance: ["The added text answers a question a user could plausibly ask a model about this page."]
+    },
+    "Scannable Formats": {
+        goal: "Structure the content into lists and tables where the material is naturally enumerable.",
+        requirements: [
+            "Convert enumerations buried in prose into <ul>/<ol>, and comparisons into <table> with real <th> headers.",
+            "Use <dl> for term/definition pairs.",
+            "Do not convert flowing argument into bullets — only material that is genuinely a list."
+        ],
+        deliverable: "The markup changes.",
+        acceptance: ["Tables have header cells and a <caption>; lists use list markup rather than styled <div>s."]
+    },
+    "Internal Architecture": {
+        goal: "Link related pages together with descriptive anchor text.",
+        requirements: [
+            "Add contextual links from this page to the related pages on the site.",
+            "Write anchor text that describes the destination — never \"click here\" or a bare URL.",
+            "Make sure every page is reachable from the homepage in three clicks or fewer."
+        ],
+        deliverable: "The specific links to add and the anchor text for each.",
+        acceptance: ["No orphan pages remain in the sitemap, and no anchor text is generic."]
+    },
+    "Clean URLs": {
+        goal: "Use semantic URL paths instead of query-string parameters for content.",
+        requirements: [
+            "Move content identity into the path (/guides/ai-readiness), keeping query strings for filtering and pagination only.",
+            "Preserve the existing URLs with 301 redirects — do not break inbound links or existing citations.",
+            "Update the sitemap and internal links to the new form."
+        ],
+        deliverable: "The routing change plus the redirect map from old URLs to new.",
+        acceptance: ["Every old URL 301s to exactly one new URL, with no redirect chains."]
+    },
+    "Image Alt Text": {
+        goal: "Describe every meaningful image with alt text.",
+        requirements: [
+            "Give each informative image an `alt` that conveys what it shows, not what it is named.",
+            "Give purely decorative images `alt=\"\"` so they are explicitly skipped rather than silently missing.",
+            "For charts and diagrams, put the actual finding in the alt text or in an adjacent caption.",
+            "Do not prefix with \"image of\" — that is already implied by the element."
+        ],
+        deliverable: "The alt attributes, written per image.",
+        acceptance: ["Every <img> has an alt attribute; the non-empty ones read as useful sentences out of context."]
+    },
+    "ARIA Accessibility": {
+        goal: "Label the interactive and landmark regions of the page.",
+        requirements: [
+            "Prefer native semantic elements; add ARIA only where no native element carries the meaning.",
+            "Give icon-only controls an `aria-label`, and each landmark region an accessible name where several of the same type exist.",
+            "Never put a `role` on an element that already implies it (`<nav role=\"navigation\">` is redundant)."
+        ],
+        deliverable: "The attribute changes.",
+        acceptance: ["Every interactive control has an accessible name, and no ARIA role contradicts its element."]
+    },
+    "Viewport Meta Tag": {
+        goal: "Declare a responsive viewport.",
+        requirements: [
+            "Add <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"> to the <head>.",
+            "Do not set `user-scalable=no` or a `maximum-scale` below 5 — both break zoom for users who need it."
+        ],
+        deliverable: "The meta tag.",
+        acceptance: ["The tag is present and permits zooming."]
+    },
+    "Semantic JSON-LD": {
+        goal: "Add schema.org structured data in JSON-LD.",
+        requirements: [
+            "Choose the type that actually matches the page — Article, Product, FAQPage, HowTo, Event, Organization — rather than defaulting to WebPage.",
+            "Populate every property the type marks as required, and only properties that are true of this page.",
+            "Embed it as <script type=\"application/ld+json\"> in the server-rendered HTML, not injected by client-side JavaScript.",
+            "Use a single @graph if the page needs several linked entities."
+        ],
+        deliverable: "The complete JSON-LD block for this page.",
+        acceptance: [
+            "The JSON parses, and every value in it is factually true of the page — structured data that overstates the page is treated as spam.",
+            "It validates at https://validator.schema.org/."
+        ]
+    },
+    "Organization Schema": {
+        goal: "Publish Organization structured data identifying who runs the site.",
+        requirements: [
+            "Include `name`, `url`, `logo`, and `sameAs` links to the organisation's authoritative profiles.",
+            "Add `contactPoint` if there is a public support or press contact.",
+            "Place it on the homepage (or in a site-wide @graph) rather than repeating a full copy on every page."
+        ],
+        deliverable: "The Organization JSON-LD block.",
+        acceptance: ["The sameAs URLs all resolve and genuinely belong to the organisation."]
+    },
+    "FAQ Schema": {
+        goal: "Mark up genuine question-and-answer content as FAQPage.",
+        requirements: [
+            "Only mark up Q&A that is actually visible on the page — hidden or invented FAQ markup is a spam signal.",
+            "Each `Question` needs a `name` and an `acceptedAnswer` whose `text` answers it completely enough to stand alone.",
+            "Write answers as self-contained paragraphs; they may be quoted without the surrounding page."
+        ],
+        deliverable: "The FAQPage JSON-LD block.",
+        acceptance: ["Every question and answer in the markup appears verbatim in the page's visible text."]
+    },
+    "Breadcrumb Schema": {
+        goal: "Publish BreadcrumbList structured data for the page's position in the hierarchy.",
+        requirements: [
+            "Emit an ordered `itemListElement` array of `ListItem` entries, each with `position`, `name` and `item`.",
+            "Start at the site root and end at the current page.",
+            "Mirror the breadcrumb trail the page actually displays."
+        ],
+        deliverable: "The BreadcrumbList JSON-LD block.",
+        acceptance: ["Positions are sequential from 1, and every `item` URL resolves."]
+    },
+    "Site Search Schema": {
+        goal: "Publish a WebSite SearchAction so agents can query the site directly.",
+        requirements: [
+            "Add a `WebSite` node with `potentialAction` of type `SearchAction`.",
+            "Set `target` to a URL template containing `{search_term_string}`, and `query-input` to `required name=search_term_string`.",
+            "The template must point at a working search endpoint that returns results server-rendered."
+        ],
+        deliverable: "The WebSite/SearchAction JSON-LD block.",
+        acceptance: ["Substituting a real term into the template returns a results page with content in the HTML."]
+    },
+    "Authorship (E-E-A-T)": {
+        goal: "Attribute content to an identifiable author.",
+        requirements: [
+            "Add an `author` property to the page's JSON-LD, as a `Person` or `Organization` with a `name` and a `url` to a real profile or author page.",
+            "Add a visible byline in the markup as well — structured data alone with no visible attribution reads as manufactured.",
+            "For a Person, link `sameAs` to profiles that establish the relevant expertise."
+        ],
+        deliverable: "The author markup, structured and visible.",
+        acceptance: ["The author URL resolves to a page about that author, and the byline is visible to a reader."]
+    },
+    "Content Freshness": {
+        goal: "Publish explicit publication and modification dates.",
+        requirements: [
+            "Add `datePublished` and `dateModified` to the page's JSON-LD in ISO 8601 form.",
+            "Show a visible date in the markup using <time datetime=\"...\">.",
+            "Only update `dateModified` when the content substantively changes — bumping it on every deploy destroys the signal's value."
+        ],
+        deliverable: "The date markup, structured and visible.",
+        acceptance: ["The structured dates match the visible ones, and dateModified is not newer than the last real edit."]
+    },
+    "External Citations": {
+        goal: "Cite the external sources the content relies on.",
+        requirements: [
+            "Link to the primary source for each factual claim, statistic or quotation — the original study or dataset, not an article about it.",
+            "Use descriptive anchor text naming the source.",
+            "Do not add links that the content does not actually draw on."
+        ],
+        deliverable: "The citations to add, mapped to the claims they support.",
+        acceptance: ["Every statistic and quotation on the page has a resolvable source link."]
+    },
+    "Quotation Addition": {
+        goal: "Mark quoted material as quotations.",
+        requirements: [
+            "Wrap block quotations in <blockquote> and inline ones in <q>.",
+            "Add a `cite` attribute with the source URL, and attribute the speaker in visible text.",
+            "Only mark up material that is genuinely quoted from elsewhere."
+        ],
+        deliverable: "The quotation markup.",
+        acceptance: ["Each blockquote has an attributed source."]
+    },
+    "Statistics Addition": {
+        goal: "Support the page's claims with concrete figures.",
+        requirements: [
+            "Replace vague quantifiers (\"many\", \"significantly\") with actual numbers where you have them.",
+            "Give every figure a unit, a time period and a source.",
+            "Do not invent figures — if a number is not available, say so rather than estimating."
+        ],
+        deliverable: "The specific figures to add and where each comes from.",
+        acceptance: ["Every number on the page is traceable to a cited source."]
+    },
+    "Fluency Optimization": {
+        goal: "Bring the prose into a readable band without flattening it.",
+        requirements: [
+            "Target a Flesch Reading Ease of 45-95 for English (30-90 for Russian, whose scale runs lower).",
+            "Shorten sentences that carry more than one idea; prefer the active voice.",
+            "Expand jargon on first use rather than deleting it — precision matters more than the score.",
+            "Do not chase the metric by chopping every sentence to five words; that reads worse and retrieves no better."
+        ],
+        deliverable: "The rewritten passages, with the reasoning for each substantive change.",
+        acceptance: ["The meaning is unchanged and no technical term has been lost."]
+    },
+    "Authoritative Voice": {
+        goal: "Make the page's authority verifiable rather than asserted.",
+        requirements: [
+            "This is not about inserting words like \"research shows\" — such phrasing without backing is exactly what the check is designed to reject.",
+            "Name the author and link to their credentials.",
+            "Cite primary sources for the claims, and quote them where the exact wording matters.",
+            "Give concrete figures with their provenance."
+        ],
+        deliverable: "The specific attributions, citations and figures to add to this page.",
+        acceptance: ["A skeptical reader could check every substantive claim on the page by following a link."]
+    },
+    "Content Neg. (MD)": {
+        goal: "Serve a Markdown representation of pages to clients that ask for it.",
+        requirements: [
+            "When a request carries `Accept: text/markdown`, return the page's content as Markdown with `Content-Type: text/markdown; charset=utf-8`.",
+            "Send `Vary: Accept` on every response so caches do not mix the two representations.",
+            "The Markdown must carry the same content as the HTML — same headings, same body, same links — not a summary.",
+            "Optionally also expose the Markdown at a stable `.md` URL for clients that do not negotiate."
+        ],
+        deliverable: "The server or middleware change implementing the negotiation.",
+        acceptance: [
+            "`curl -H 'Accept: text/markdown' ORIGIN` returns Markdown, and a plain `curl ORIGIN` still returns HTML.",
+            "Both responses carry `Vary: Accept`."
+        ]
+    },
+    "Freshness Headers": {
+        goal: "Send validators so clients can revalidate cheaply.",
+        requirements: [
+            "Send `ETag` and/or `Last-Modified` on content responses.",
+            "The ETag must change when and only when the content changes.",
+            "Pair them with a `Cache-Control` policy that permits revalidation."
+        ],
+        deliverable: "The header configuration.",
+        acceptance: ["`curl -sI ORIGIN` shows ETag or Last-Modified, and the value is stable across identical content."]
+    },
+    "Conditional Requests (304)": {
+        goal: "Answer conditional requests with 304 Not Modified.",
+        requirements: [
+            "Handle `If-None-Match` against your ETag and `If-Modified-Since` against Last-Modified.",
+            "Return 304 with no body when the content is unchanged.",
+            "Make sure the CDN or reverse proxy in front of the app forwards the conditional headers rather than stripping them."
+        ],
+        deliverable: "The server-side handling, and any proxy configuration needed.",
+        acceptance: ["`curl -sI -H 'If-None-Match: \"<etag>\"' ORIGIN` returns 304 with an empty body."]
+    },
+    "X-Robots-Tag Header": {
+        goal: "Remove restrictive X-Robots-Tag directives from production responses.",
+        requirements: [
+            "Find where the header is set — application, framework, CDN or reverse proxy — and identify why.",
+            "Remove `noindex`, `nosnippet` or `noai` from responses that should be publicly indexable.",
+            "Keep restrictions only on paths that genuinely should not be indexed, and verify staging configuration is not leaking into production."
+        ],
+        deliverable: "The configuration change and the layer it belongs to.",
+        acceptance: ["`curl -sI ORIGIN | grep -i x-robots-tag` returns nothing restrictive for public pages."]
+    },
+    "HTTPS & HSTS": {
+        goal: "Serve the site over HTTPS and enforce it with HSTS.",
+        requirements: [
+            "Redirect all HTTP traffic to HTTPS with a 301.",
+            "Send `Strict-Transport-Security: max-age=31536000; includeSubDomains`.",
+            "Confirm every subdomain has a valid certificate before adding `includeSubDomains` — it will break any that does not.",
+            "Only consider `preload` once the policy has run without problems for some time; preload removal is slow."
+        ],
+        deliverable: "The redirect and header configuration.",
+        acceptance: ["`curl -sI ORIGIN` shows the HSTS header, and an http:// request 301s to https://."]
+    },
+    "RSS/Atom Feed": {
+        goal: "Publish a feed and advertise it from the HTML.",
+        requirements: [
+            "Publish an RSS 2.0 or Atom feed of the site's updating content.",
+            "Include full content in the feed rather than a truncated teaser.",
+            "Link it from the <head>: <link rel=\"alternate\" type=\"application/rss+xml\" href=\"...\">."
+        ],
+        deliverable: "The feed and the link tag.",
+        acceptance: ["The feed validates, and the alternate link is present in the server-rendered HTML."]
+    },
+    "AI Fallback (No-JS)": {
+        goal: "Give non-JavaScript clients a usable path to the content.",
+        requirements: [
+            "Provide a <noscript> block pointing at the machine-readable entry points (llms.txt, the sitemap, a Markdown or API representation).",
+            "This is a fallback, not a substitute for server-rendering the main content."
+        ],
+        deliverable: "The noscript block.",
+        acceptance: ["With JavaScript disabled, the page offers a working route to the content."]
+    },
+    "NoAI Meta Tag": {
+        goal: "Decide whether to declare a NoAI preference, and state it explicitly either way.",
+        requirements: [
+            "This is a policy choice, not a defect — the audit reports it without scoring it.",
+            "To opt out: add <meta name=\"robots\" content=\"noai, noimageai\"> and keep it consistent with robots.txt and any TDM reservation.",
+            "To opt in: leave it absent deliberately, and make sure nothing else on the site contradicts that."
+        ],
+        deliverable: "The meta tag if opting out, or a note confirming the deliberate absence.",
+        acceptance: ["The NoAI stance, robots.txt and any TDM declaration all say the same thing."]
+    },
+    "WebMCP Integration": {
+        goal: "Expose in-page tools to agents via WebMCP.",
+        requirements: [
+            "Register the page's real capabilities as tools — search, filter, add-to-cart — not a demonstration tool.",
+            "Give each tool a description precise enough that a model can tell when it applies, and a typed input schema.",
+            "Keep every tool idempotent and side-effect-free unless the user has explicitly confirmed the action."
+        ],
+        deliverable: "The WebMCP registration code and the tool definitions.",
+        acceptance: ["Each tool's description names its preconditions, and destructive actions require confirmation."]
+    },
+    "LLMs.txt": {
+        goal: "Publish an llms.txt navigation manifest at the site root.",
+        requirements: [
+            "Follow the llmstxt.org structure exactly: an H1 with the project name, a blockquote summarising it in one or two sentences, then H2 sections containing Markdown link lists.",
+            "Each link needs a short description after a colon explaining what the reader will find there.",
+            "Link to raw Markdown or plain-text documentation where it exists, not to JavaScript-heavy pages.",
+            "Put genuinely optional material under an `## Optional` section so agents with a limited budget can skip it."
+        ],
+        deliverable: "The complete llms.txt content, served at /llms.txt as text/plain or text/markdown.",
+        acceptance: [
+            "`curl -s ORIGIN/llms.txt` returns Markdown, not HTML — a soft 404 that returns the site's HTML shell is the most common failure here.",
+            "The file has exactly one H1, a blockquote, and at least one Markdown link list.",
+            "Every linked URL resolves."
+        ]
+    },
+    "LLMs-Full.txt": {
+        goal: "Publish the full documentation as a single Markdown file.",
+        requirements: [
+            "Concatenate the primary documentation in a sensible reading order under H2 section headings.",
+            "Include the actual content — API references, guides, code samples — not a table of contents.",
+            "Generate it from the same source as the human documentation so the two cannot drift.",
+            "Keep it as plain Markdown with no site chrome."
+        ],
+        deliverable: "The generated /llms-full.txt, plus the build step that keeps it current.",
+        acceptance: ["The file starts with an H1, contains H2 sections, and is regenerated by the docs build."]
+    },
+    "AGENTS.md": {
+        goal: "Publish an AGENTS.md operating manual for autonomous agents.",
+        requirements: [
+            "Start with an H1 and a blockquote summarising what this site or project is.",
+            "Cover: what the project does, how to run and test it, the conventions an agent must follow, and what it must not do.",
+            "Be specific — exact commands, exact paths. Generic advice is worse than nothing because it displaces the model's own reasonable defaults.",
+            "Serve it at /AGENTS.md (and optionally /.well-known/agents.md) as text/markdown."
+        ],
+        deliverable: "The complete AGENTS.md content.",
+        acceptance: [
+            "`curl -s ORIGIN/AGENTS.md` returns Markdown with the correct content type, not the site's HTML shell.",
+            "Every command in it runs successfully as written."
+        ]
+    },
+    "agents.json": {
+        goal: "Publish an agents.json capability manifest.",
+        requirements: [
+            "Include `name`, `version`, `description`, and a `capabilities` array.",
+            "Describe each capability with its endpoint, HTTP method and parameter schema.",
+            "Only declare capabilities that actually exist and work.",
+            "Serve it at /.well-known/agents.json as application/json."
+        ],
+        deliverable: "The complete agents.json.",
+        acceptance: ["The file is valid JSON, and every declared endpoint responds as described."]
+    },
+    "MCP Server": {
+        goal: "Expose the site's capabilities through a Model Context Protocol server.",
+        requirements: [
+            "Implement an MCP endpoint speaking JSON-RPC 2.0 over streamable HTTP at /mcp, handling `initialize`, `tools/list` and `tools/call`.",
+            "Expose tools that map to real operations, each with a JSON Schema for its input and a description precise enough for a model to choose it correctly.",
+            "Validate and authorise every call server-side — a tool definition is not an access control.",
+            "Optionally publish a discovery manifest at /.well-known/mcp/server-card.json, and RFC 9728 metadata at /.well-known/oauth-protected-resource/mcp if the endpoint requires auth."
+        ],
+        deliverable: "The MCP server implementation and its tool definitions.",
+        acceptance: [
+            "A `tools/list` JSON-RPC POST to /mcp returns the tool array.",
+            "Each tool's inputSchema validates the arguments its handler actually requires."
+        ]
+    },
+    "A2A Agent Card": {
+        goal: "Publish an A2A agent card so other agents can negotiate with this one.",
+        requirements: [
+            "Follow the A2A specification's card schema: identity, capabilities/skills, endpoint URLs and authentication requirements.",
+            "Declare the authentication scheme accurately, including the OAuth endpoints if applicable.",
+            "Serve it at /.well-known/agent-card.json as application/json."
+        ],
+        deliverable: "The complete agent-card.json.",
+        acceptance: ["The card validates against the A2A schema and every declared endpoint resolves."]
+    },
+    "Agent Skills": {
+        goal: "Publish an Agent Skills index mapping endpoints to task-level skills.",
+        requirements: [
+            "Describe each skill by the task it accomplishes, not by the REST route it wraps.",
+            "Give each skill a name, a description, its endpoint and its method.",
+            "Serve the index at /.well-known/agent-skills/index.json."
+        ],
+        deliverable: "The complete skills index JSON.",
+        acceptance: ["Each skill description would let a model decide, unaided, whether the skill applies to a given request."]
+    },
+    "API Catalog": {
+        goal: "Publish an RFC 9727 API catalog pointing at the OpenAPI description.",
+        requirements: [
+            "Serve a linkset at /.well-known/api-catalog per RFC 9727, with `service-desc` links to the OpenAPI documents.",
+            "Give every OpenAPI operation an `operationId` and a `description` — that is what makes the API usable as a set of tools.",
+            "Describe every parameter and document the response schemas.",
+            "Serve it as application/linkset+json."
+        ],
+        deliverable: "The api-catalog linkset plus the OpenAPI annotations it points to.",
+        acceptance: ["Every operation in the referenced OpenAPI document has both an operationId and a description."]
+    },
+    "AI Plugin": {
+        goal: "Publish an ai-plugin.json manifest.",
+        requirements: [
+            "Include `name_for_human`, `name_for_model`, `description_for_human`, `description_for_model`, the auth configuration and a link to the OpenAPI spec.",
+            "Write `description_for_model` as an instruction telling the model when to use the API and when not to — this is the field that determines whether it gets called correctly.",
+            "Serve it at /.well-known/ai-plugin.json as application/json."
+        ],
+        deliverable: "The complete ai-plugin.json.",
+        acceptance: ["`description_for_model` states the API's preconditions and limits, not just its features."]
+    },
+    "OAuth Discovery": {
+        goal: "Publish RFC 8414 OAuth 2.0 authorization server metadata.",
+        requirements: [
+            "Serve the metadata document at /.well-known/oauth-authorization-server.",
+            "Include `issuer`, `authorization_endpoint`, `token_endpoint`, `scopes_supported`, `response_types_supported` and `code_challenge_methods_supported`.",
+            "Support PKCE and list `S256` — agent clients are public clients and cannot hold a secret.",
+            "The `issuer` value must exactly match the URL the document is served from."
+        ],
+        deliverable: "The metadata document and any server configuration it requires.",
+        acceptance: ["Every declared endpoint resolves and the issuer matches the document's own origin."]
+    },
+    "OAuth Protected Resource": {
+        goal: "Publish RFC 9728 protected resource metadata.",
+        requirements: [
+            "Serve the metadata at /.well-known/oauth-protected-resource (and /.well-known/oauth-protected-resource/mcp for an MCP endpoint).",
+            "Include `resource`, `authorization_servers`, `bearer_methods_supported` and `scopes_supported`.",
+            "Have the protected endpoint answer unauthenticated requests with 401 and a `WWW-Authenticate` header naming the resource_metadata URL."
+        ],
+        deliverable: "The metadata document plus the WWW-Authenticate response.",
+        acceptance: ["An unauthenticated request returns 401 with a WWW-Authenticate header pointing at the metadata."]
+    },
+    "Universal Commerce": {
+        goal: "Publish a UCP configuration for agent-driven commerce.",
+        requirements: [
+            "Only add this if the site actually sells something — it is scored as niche precisely because it does not apply to most sites.",
+            "Point /.well-known/ucp at the product catalogue, pricing and checkout endpoints.",
+            "Keep prices and availability live; a stale catalogue is worse than none because agents will act on it."
+        ],
+        deliverable: "The UCP configuration.",
+        acceptance: ["The declared endpoints return current pricing and stock."]
+    },
+    "x402 Payment Standard": {
+        goal: "Publish x402 payment discovery metadata.",
+        requirements: [
+            "Only add this if you intend to accept programmatic payments.",
+            "Declare the priced endpoints, the amount, the asset, the network as a CAIP-2 identifier, and the receiving address.",
+            "Ask me for the receiving wallet address rather than inserting a placeholder — a zero address here means real payments are lost.",
+            "Have the priced endpoints return HTTP 402 with the payment requirements when payment is absent."
+        ],
+        deliverable: "The x402.json plus the 402 response handling.",
+        acceptance: ["The payTo address is one I confirmed, and an unpaid request to a priced endpoint returns 402."]
+    },
+    "security.txt": {
+        goal: "Publish an RFC 9116 security.txt.",
+        requirements: [
+            "Include `Contact` (a monitored address or reporting form) and `Expires` (an ISO 8601 timestamp less than a year out).",
+            "Optionally add `Policy`, `Preferred-Languages` and `Encryption`.",
+            "Ask me for the contact address instead of inventing one — an unmonitored address here means vulnerability reports go nowhere.",
+            "Serve it at /.well-known/security.txt as text/plain, and set a reminder to refresh `Expires` before it lapses."
+        ],
+        deliverable: "The security.txt content.",
+        acceptance: ["The Contact value is an address I confirmed is monitored, and Expires is in the future."]
+    },
+    "TDM Reservation": {
+        goal: "Declare a TDM reservation if you intend to reserve text-and-data-mining rights.",
+        requirements: [
+            "This is a policy choice; the audit reports it without scoring it.",
+            "To reserve rights: publish /.well-known/tdmrep.json with `tdm-reservation: 1` and a `tdm-policy` URL, and publish the policy document at that URL.",
+            "Keep it consistent with robots.txt — a TDM reservation alongside an open GPTBot rule sends two contradictory signals.",
+            "This addresses EU CDSM Directive Article 4; it is not a substitute for legal advice."
+        ],
+        deliverable: "The tdmrep.json and the policy document it references.",
+        acceptance: ["The tdm-policy URL resolves, and the declaration agrees with robots.txt."]
+    },
+    "ai.txt": {
+        goal: "Publish an ai.txt declaring data-mining permissions, if that matches your policy.",
+        requirements: [
+            "This is a policy choice; the audit reports it without scoring it.",
+            "Follow the Spawning ai.txt format, with explicit User-Agent and Disallow/Allow directives.",
+            "Keep it consistent with robots.txt and any TDM reservation."
+        ],
+        deliverable: "The ai.txt content, served at /ai.txt as text/plain.",
+        acceptance: ["The directives agree with robots.txt rather than contradicting it."]
+    }
+};
+
+const PROMPT_TAIL = "Follow the linked specification exactly; do not invent fields it does not define. " +
+    "If any required value depends on my setup — a contact address, a wallet, an endpoint, a real date — " +
+    "ask me for it rather than filling in a placeholder. " +
+    "Show me the complete file or code change, tell me the exact path it belongs at, " +
+    "and list anything you were unsure about.";
+
+/**
+ * Assembles a remediation prompt for one check, carrying the audited origin and
+ * the specific finding so the assistant is not left to guess either.
+ */
+export function buildPrompt(check, origin) {
+    const entry = PROMPT_LIBRARY[check.name];
+    if (!entry) return check.prompt;
+
+    const subst = (text) => String(text).replace(/ORIGIN/g, origin);
+    const parts = [];
+
+    parts.push(`Goal: ${subst(entry.goal)}`);
+    parts.push('');
+    parts.push(check.status === 'ok'
+        ? `Context: I run ${origin}. An AI-readiness audit reports this as already in place ("${check.message}"). Review what is there against the requirements below and tell me what, if anything, would improve it — do not rewrite it wholesale if it is already correct.`
+        : `Context: I run ${origin}. An AI-readiness audit flagged this: "${check.message}".`);
+    parts.push('');
+    parts.push('Requirements:');
+    for (const req of entry.requirements) parts.push(`- ${subst(req)}`);
+
+    if (entry.deliverable) {
+        parts.push('');
+        parts.push(`Deliverable: ${subst(entry.deliverable)}`);
+    }
+    if (entry.acceptance?.length) {
+        parts.push('');
+        parts.push('Done when:');
+        for (const item of entry.acceptance) parts.push(`- ${subst(item)}`);
+    }
+    if (check.spec) {
+        parts.push('');
+        parts.push(`Specification: ${check.spec}`);
+    }
+    parts.push('');
+    parts.push(PROMPT_TAIL);
+
+    return parts.join('\n');
+}
 
 
 export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
@@ -494,6 +1467,10 @@ async function isSafeUrl(targetUrl) {
 
         // Only do DNS resolution for non-IP hostnames
         if (!/^[0-9\.]+$/.test(hostname) && !hostname.includes(':')) {
+            // An audit hits the same host ~25 times; resolve it once per isolate.
+            const cached = getCachedHostSafety(hostname);
+            if (cached !== undefined) return cached;
+
             // Use Cloudflare DoH to resolve the IP to prevent DNS rebinding or resolving to internal IPs
             const resolveDns = async (type) => {
                 try {
@@ -519,15 +1496,289 @@ async function isSafeUrl(targetUrl) {
             };
 
             const [aSafe, aaaaSafe] = await Promise.all([resolveDns('A'), resolveDns('AAAA')]);
-            if (!aSafe || !aaaaSafe) {
-                return false;
-            }
+            const safe = aSafe && aaaaSafe;
+            setCachedHostSafety(hostname, safe);
+            return safe;
         }
         return true;
     } catch {
         return false;
     }
 }
+
+// --- Abuse control -----------------------------------------------------------
+//
+// One /api/audit call fans out to ~25 outbound requests against a caller-chosen
+// origin, with no cost to the caller. Unthrottled, that is a usable traffic
+// amplifier pointed at third parties.
+//
+// This is an in-isolate bucket, so it is per-edge-location rather than global —
+// a determined caller spread across colos gets a higher effective ceiling. It is
+// a floor, not a guarantee; a global limit needs the Workers rate-limiting
+// binding or a Durable Object. The limit is set well above what a person
+// clicking "Run scan" will ever reach.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_MAX_CLIENTS = 10000;
+const rateLimitBuckets = new Map();
+
+export function checkRateLimit(clientKey, now = Date.now()) {
+    if (!clientKey) return { allowed: true, remaining: RATE_LIMIT_MAX, retryAfter: 0 };
+
+    const bucket = rateLimitBuckets.get(clientKey);
+    if (!bucket || bucket.resetAt <= now) {
+        if (rateLimitBuckets.size >= RATE_LIMIT_MAX_CLIENTS) {
+            // Drop whatever expired; failing that, drop the oldest entry so the
+            // map cannot grow without bound under a spray of unique clients.
+            for (const [key, value] of rateLimitBuckets) {
+                if (value.resetAt <= now) rateLimitBuckets.delete(key);
+            }
+            if (rateLimitBuckets.size >= RATE_LIMIT_MAX_CLIENTS) {
+                const oldest = rateLimitBuckets.keys().next().value;
+                if (oldest !== undefined) rateLimitBuckets.delete(oldest);
+            }
+        }
+        rateLimitBuckets.set(clientKey, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return { allowed: true, remaining: RATE_LIMIT_MAX - 1, retryAfter: 0 };
+    }
+
+    if (bucket.count >= RATE_LIMIT_MAX) {
+        return { allowed: false, remaining: 0, retryAfter: Math.ceil((bucket.resetAt - now) / 1000) };
+    }
+
+    bucket.count++;
+    return { allowed: true, remaining: RATE_LIMIT_MAX - bucket.count, retryAfter: 0 };
+}
+
+function clientKeyFor(request) {
+    return request.headers.get("CF-Connecting-IP") ||
+           request.headers.get("X-Forwarded-For")?.split(",")[0].trim() ||
+           null;
+}
+
+// --- Model Context Protocol endpoint -----------------------------------------
+//
+// The site publishes an MCP server card at /.well-known/mcp/server-card.json and
+// RFC 9728 metadata pointing at /mcp, but /mcp itself did not exist: an agent
+// following the card got a 404, and the tool failed its own MCP check.
+//
+// This is the streamable-HTTP transport: JSON-RPC 2.0 over POST.
+
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+const MCP_TOOLS = [
+    {
+        name: "audit_website",
+        title: "Audit a website's AI readiness",
+        description: "Runs a full AI-readiness and Generative Engine Optimization audit against a public website. " +
+            "Checks crawler policy, content structure, structured data, delivery headers and agent protocols " +
+            "(llms.txt, AGENTS.md, MCP, A2A, API catalogs), and returns a weighted score with per-category " +
+            "breakdown and a ranked list of the highest-impact fixes. " +
+            "Use it when asked whether a site is ready for AI agents, why a site is not cited by AI search, " +
+            "or what to change to improve it. Only works against publicly reachable http(s) origins.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                targetUrl: {
+                    type: "string",
+                    description: "Absolute http(s) URL of the site to audit, e.g. https://example.com. Only the origin is used."
+                },
+                format: {
+                    type: "string",
+                    enum: ["summary", "full"],
+                    description: "'summary' (default) returns the score, categories and top fixes. 'full' returns every check."
+                }
+            },
+            required: ["targetUrl"],
+            additionalProperties: false
+        }
+    }
+];
+
+function jsonRpcResponse(id, result) {
+    return { jsonrpc: "2.0", id, result };
+}
+
+function jsonRpcError(id, code, message, data) {
+    const error = { code, message };
+    if (data !== undefined) error.data = data;
+    return { jsonrpc: "2.0", id: id ?? null, error };
+}
+
+const MCP_HEADERS = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    ...corsHeaders
+};
+
+/**
+ * Renders an audit as the text an agent actually wants back: the score, the
+ * weak categories, and what to do about them — not 60 raw check objects.
+ */
+function summariseAuditForAgent(result, full) {
+    const lines = [];
+    lines.push(`AI readiness for ${result.target}: ${result.score.total}/100 (grade ${result.score.grade}).`);
+    lines.push('');
+    lines.push('By category:');
+    for (const [name, bucket] of Object.entries(result.score.categories).sort((a, b) => a[1].total - b[1].total)) {
+        lines.push(`  ${name}: ${bucket.total}%`);
+    }
+    if (result.priorities.length) {
+        lines.push('');
+        lines.push('Highest-impact fixes:');
+        for (const item of result.priorities) {
+            lines.push(`  [+${item.weight}] ${item.name} — ${item.message}`);
+        }
+    }
+    if (full) {
+        lines.push('');
+        lines.push('All checks:');
+        const groups = [['Discoverability & bots', result.bots.results], ['Content', result.content.results], ['Protocols', result.protocols.results]];
+        for (const [title, checks] of groups) {
+            lines.push(`  ${title}:`);
+            for (const check of checks) {
+                const mark = check.status === 'ok' ? 'PASS' : (check.status === 'warn' ? 'WARN' : 'FAIL');
+                lines.push(`    ${mark} ${check.name} — ${check.message}`);
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
+async function handleMcpRequest(request, url, env, ctx) {
+    // The streamable-HTTP transport uses POST. A GET would open a server-sent
+    // event stream, which this server has no need for.
+    if (request.method !== "POST") {
+        return new Response(JSON.stringify(jsonRpcError(null, -32600, "This MCP endpoint accepts POST with a JSON-RPC 2.0 body")), {
+            status: 405,
+            headers: { ...MCP_HEADERS, "Allow": "POST, OPTIONS" }
+        });
+    }
+
+    let body;
+    try {
+        body = await request.json();
+    } catch {
+        return new Response(JSON.stringify(jsonRpcError(null, -32700, "Parse error")), { status: 400, headers: MCP_HEADERS });
+    }
+
+    // Batches are legal JSON-RPC; handle each message and drop the notifications.
+    const messages = Array.isArray(body) ? body : [body];
+    const responses = [];
+    const clientKey = clientKeyFor(request);
+    for (const message of messages) {
+        // Only tools/call does real work; the rate check is taken per call so a
+        // batch cannot slip several audits through on one allowance.
+        const rateAllowed = message?.method !== 'tools/call' || checkRateLimit(clientKey).allowed;
+        const reply = await handleMcpMessage(message, url, env, ctx, rateAllowed);
+        if (reply) responses.push(reply);
+    }
+
+    // A payload of nothing but notifications gets 202 with no body.
+    if (responses.length === 0) {
+        return new Response(null, { status: 202, headers: corsHeaders });
+    }
+
+    const payload = Array.isArray(body) ? responses : responses[0];
+    return new Response(JSON.stringify(payload), { status: 200, headers: MCP_HEADERS });
+}
+
+async function handleMcpMessage(message, url, env, ctx, rateAllowed = true) {
+    if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+        return jsonRpcError(message?.id, -32600, "Invalid Request");
+    }
+
+    // A message with no id is a notification: acknowledge by staying silent.
+    const isNotification = message.id === undefined || message.id === null;
+    const id = message.id;
+
+    switch (message.method) {
+        case "initialize":
+            return isNotification ? null : jsonRpcResponse(id, {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: { listChanged: false } },
+                serverInfo: { name: "ai-valid", title: "AI-Valid Readiness Auditor", version: "1.0.0" },
+                instructions: "Call audit_website with the origin of a public website to get its AI-readiness score and the ranked fixes that would improve it."
+            });
+
+        case "ping":
+            return isNotification ? null : jsonRpcResponse(id, {});
+
+        case "tools/list":
+            return isNotification ? null : jsonRpcResponse(id, { tools: MCP_TOOLS });
+
+        case "tools/call": {
+            if (isNotification) return null;
+            const params = message.params || {};
+            if (params.name !== "audit_website") {
+                return jsonRpcError(id, -32602, `Unknown tool: ${params.name}`);
+            }
+            const args = params.arguments || {};
+            const targetUrl = args.targetUrl;
+            if (typeof targetUrl !== "string" || !targetUrl.trim()) {
+                return jsonRpcError(id, -32602, "targetUrl is required and must be a string");
+            }
+
+            if (!rateAllowed) {
+                return jsonRpcResponse(id, {
+                    content: [{ type: "text", text: "Rate limit exceeded. Please retry shortly." }],
+                    isError: true
+                });
+            }
+
+            const outcome = await runAuditForTarget(targetUrl, url.origin, env, ctx);
+            if (!outcome.ok) {
+                // A target the caller got wrong is a tool error, not a protocol
+                // error: the model should see it and can correct the argument.
+                return jsonRpcResponse(id, {
+                    content: [{ type: "text", text: `Audit failed: ${outcome.error}` }],
+                    isError: true
+                });
+            }
+
+            return jsonRpcResponse(id, {
+                content: [{ type: "text", text: summariseAuditForAgent(outcome.result, args.format === "full") }],
+                structuredContent: {
+                    target: outcome.result.target,
+                    score: outcome.result.score,
+                    priorities: outcome.result.priorities
+                },
+                isError: false
+            });
+        }
+
+        default:
+            return isNotification ? null : jsonRpcError(id, -32601, `Method not found: ${message.method}`);
+    }
+}
+
+/**
+ * Validates a target and runs the audit. Shared by the HTTP API and the MCP
+ * tool so the SSRF guard cannot be bypassed through either entry point.
+ */
+async function runAuditForTarget(targetUrl, requestOrigin, env, ctx) {
+    let parsed;
+    try {
+        parsed = new URL(targetUrl);
+    } catch {
+        return { ok: false, status: 400, error: "Invalid URL" };
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { ok: false, status: 400, error: "Invalid URL" };
+    }
+    if (!await isSafeUrl(targetUrl)) {
+        return { ok: false, status: 403, error: "Access to internal or restricted network resources is not allowed" };
+    }
+    try {
+        return { ok: true, result: await performAudit(targetUrl, requestOrigin, env, ctx) };
+    } catch (e) {
+        if (e instanceof UnreachableTargetError) {
+            return { ok: false, status: 400, error: "Domain does not exist or is unreachable" };
+        }
+        throw e;
+    }
+}
+
 
 export async function handleRequest(request, env, ctx) {
         if (request.method === "OPTIONS") {
@@ -553,39 +1804,76 @@ export async function handleRequest(request, env, ctx) {
                     });
                 }
 
-                // SSRF Protection
-                const safeUrl = await isSafeUrl(targetUrl);
-                if (!safeUrl) {
-                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
-                        status: 403,
-                        headers: { "Content-Type": "application/json", ...corsHeaders }
-                    });
-                }
-
-                // Domain existence check
-                try {
-                    const parsedUrl = new URL(targetUrl);
-                    await internalFetch(parsedUrl.origin, { method: 'HEAD' }, parsedUrl.origin, url.origin, env, ctx);
-                } catch {
-                    return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), { 
-                        status: 400,
-                        headers: { "Content-Type": "application/json", ...corsHeaders }
+                const rate = checkRateLimit(clientKeyFor(request));
+                if (!rate.allowed) {
+                    return new Response(JSON.stringify({ error: "Rate limit exceeded. Please retry shortly." }), {
+                        status: 429,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Retry-After": String(rate.retryAfter),
+                            "RateLimit-Limit": String(RATE_LIMIT_MAX),
+                            "RateLimit-Remaining": "0",
+                            ...corsHeaders
+                        }
                     });
                 }
 
                 const bypassCache = url.searchParams.get("bypassCache") === "true" || 
                                      request.headers.get("Cache-Control")?.includes("no-cache") ||
                                      request.headers.get("Pragma")?.includes("no-cache");
-                const result = await performAudit(targetUrl, url.origin, env, ctx);
-                return new Response(JSON.stringify(result), {
+
+                const wantsMarkdown = (request.headers.get("Accept") || "").includes("text/markdown") ||
+                                      url.searchParams.get("format") === "md";
+
+                // A full audit is ~25 outbound requests. Serving a repeat scan of the
+                // same origin from the edge cache turns a multi-second scan into a
+                // single round trip.
+                const cacheKey = new Request(`${url.origin}/api/audit?targetUrl=${encodeURIComponent(new URL(targetUrl).origin)}&format=${wantsMarkdown ? 'md' : 'json'}`, { method: 'GET' });
+                const edgeCache = typeof caches !== 'undefined' && caches.default ? caches.default : null;
+
+                if (edgeCache && !bypassCache) {
+                    try {
+                        const cached = await edgeCache.match(cacheKey);
+                        if (cached) {
+                            const hit = new Response(cached.body, cached);
+                            hit.headers.set("X-Audit-Cache", "HIT");
+                            return hit;
+                        }
+                    } catch { /* cache unavailable, fall through to a live audit */ }
+                }
+
+                // Shared with the MCP tool, so the SSRF guard and the
+                // reachability handling cannot diverge between the two entry points.
+                const outcome = await runAuditForTarget(targetUrl, url.origin, env, ctx);
+                if (!outcome.ok) {
+                    return new Response(JSON.stringify({ error: outcome.error }), {
+                        status: outcome.status,
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
+                    });
+                }
+                const result = outcome.result;
+
+                const body = wantsMarkdown ? renderAuditMarkdown(result) : JSON.stringify(result);
+                const response = new Response(body, {
                     headers: { 
-                        "Content-Type": "application/json",
+                        "Content-Type": wantsMarkdown ? "text/markdown; charset=utf-8" : "application/json",
                         "Cache-Control": bypassCache 
                             ? "no-store, no-cache, must-revalidate" 
                             : "public, max-age=3600, stale-while-revalidate=86400",
+                        "Vary": "Accept",
+                        "X-Audit-Cache": "MISS",
                         ...corsHeaders
                     }
                 });
+
+                if (edgeCache && !bypassCache) {
+                    const storable = response.clone();
+                    if (ctx && typeof ctx.waitUntil === 'function') {
+                        ctx.waitUntil(edgeCache.put(cacheKey, storable).catch(() => {}));
+                    }
+                }
+
+                return response;
 
             } catch(e) {
                 console.error('Audit API Error:', e);
@@ -603,10 +1891,12 @@ export async function handleRequest(request, env, ctx) {
             const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
             const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
             const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
-            const total = passed + warn + fail;
-            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
-            
-            const shareImageUrl = `${url.origin}/api/og-image?domain=${encodeURIComponent(domain)}&passed=${passed}&warn=${warn}&fail=${fail}`;
+            // Prefer the weighted score the audit actually reported. The old
+            // passed/(passed+warn+fail) fallback is a different number, so a
+            // shared card could disagree with the dashboard it came from.
+            const score = readScoreParam(url, passed, warn, fail);
+
+            const shareImageUrl = `${url.origin}/api/og-image?domain=${encodeURIComponent(domain)}&passed=${passed}&warn=${warn}&fail=${fail}&score=${score}`;
             
             const html = `<!DOCTYPE html>
 <html>
@@ -615,12 +1905,15 @@ export async function handleRequest(request, env, ctx) {
     <title>AI Readiness Audit for ${domain}</title>
     <meta property="og:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
     <meta property="og:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}. Check your site's AI accessibility.">
+    <meta property="og:image" content="${url.origin}/og-image.png">
+    <meta property="og:image:type" content="image/png">
     <meta property="og:image" content="${shareImageUrl}">
     <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:alt" content="AI readiness scorecard for ${domain}">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
     <meta name="twitter:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}.">
-    <meta name="twitter:image" content="${shareImageUrl}">
+    <meta name="twitter:image" content="${url.origin}/og-image.png">
     <script>window.location.href = "/#" + encodeURIComponent("${domain}");</script>
 </head>
 <body>Redirecting...</body>
@@ -634,9 +1927,8 @@ export async function handleRequest(request, env, ctx) {
             const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
             const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
             const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
-            const total = passed + warn + fail;
-            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
-            
+            const score = readScoreParam(url, passed, warn, fail);
+
             const svg = generateOgImageSvg(domain, passed, warn, fail, score);
             return new Response(svg, {
                 headers: {
@@ -647,19 +1939,36 @@ export async function handleRequest(request, env, ctx) {
             });
         }
 
+        if (url.pathname === "/mcp") {
+            return await handleMcpRequest(request, url, env, ctx);
+        }
+
         return new Response("Not Found", { status: 404, headers: corsHeaders });
 }
 
 async function performAudit(baseUrl, requestOrigin, env, ctx) {
     const headersStandard = { 'User-Agent': 'Mozilla/5.0 (compatible; AI-Valid/1.0)' };
+    // Two different questions need two different Accept headers.
+    //
+    // Asking for `text/markdown` and then parsing the reply as HTML punished
+    // every site that implements the content negotiation this tool recommends:
+    // a correct server returns Markdown, and the structural checks — title,
+    // lang, headings, JSON-LD, alt text — then all reported "missing". The
+    // markdown probe is now its own request, and the structural analysis runs
+    // against the HTML representation.
     const headersAgent = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/markdown' };
+    const headersHtml = { 'User-Agent': 'OAI-SearchBot', 'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' };
     
     // Ensure baseUrl doesn't end with slash securely
     const base = new URL(baseUrl).origin;
 
-    let totalScore = 0;
+    // Every outbound request goes through the same bounded queue so that the
+    // three audit phases can be kicked off together without opening more
+    // connections than the runtime will actually service in parallel.
+    const limit = createLimiter(MAX_CONCURRENCY);
+    const iFetch = async (url, options = {}) => await limit(() => internalFetch(url, options, base, requestOrigin, env, ctx));
 
-    const iFetch = async (url, options = {}) => await internalFetch(url, options, base, requestOrigin, env, ctx);
+    const timings = { startedAt: Date.now() };
 
     // 1. Discoverability & Bots
     let robotsFound = false;
@@ -672,11 +1981,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let robotsText = "";
     let robotsContentSignal = "";
 
+    // --- Phase 1: robots.txt (and, once parsed, the sitemap it points at) ---
+    const robotsPhase = (async () => {
     try {
         const r_robots = await iFetch(`${base}/robots.txt`, { headers: headersStandard, cf: { cacheEverything: false } });
         if (r_robots.status === 200) {
             robotsFound = true;
-            totalScore += 5;
             robotsText = await safeReadText(r_robots);
             
             const rules = {};
@@ -740,13 +2050,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
-            if (hasAISearch) totalScore += 10;
-            if (hasAIAgent) totalScore += 10;
-            if (hasAITrainingBlocked) totalScore += 10;
-            if (hasDifferentiatedPolicy) totalScore += 10;
         }
     } catch { /* silent fail */ }
+    })();
 
+    const sitemapPhase = robotsPhase.then(async () => {
     try {
         let sitemapUrl = `${base}/sitemap.xml`;
         if (robotsText) {
@@ -765,7 +2073,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             const r_sitemap = await iFetch(sitemapUrl, { headers: headersStandard, cf: { cacheEverything: false } });
             if (r_sitemap.status === 200) {
                 sitemapFound = true;
-                totalScore += 5;
                 
                 const sitemapText = await safeReadText(r_sitemap);
                 const lastmodMatch = sitemapText.substring(0, 100000).match(/<lastmod>\s*([^\s<]+)\s*<\/lastmod>/i);
@@ -773,17 +2080,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     const dateStr = lastmodMatch[1];
                     if (!isNaN(Date.parse(dateStr))) {
                         hasSitemapLastmod = true;
-                        totalScore += 5;
                     }
                 }
             }
         }
     } catch { /* silent fail for sitemap */ }
+    });
 
     // 2. Content Accessibility
     let supportsMarkdown = false;
     let hasContentSignal = false;
     let hasContentUse = false;
+    let hasVaryAccept = false;
     let hasFreshnessHeaders = false;
     let hasConditionalGET = false;
     let hasSchema = false;
@@ -814,15 +2122,68 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasImageAlt = false;
     let hasRss = false;
     let hasOrgSchema = false;
+    let fleschScore = null;
+    let hasBreadcrumbSchema = false;
+    let hasSiteSearchSchema = false;
+    let hasCanonical = false;
+    let hasHsts = false;
+    let isHttps = false;
+    let xRobotsTag = '';
+    let hasBlockingXRobots = false;
+    let imagesTotal = 0;
+    let imagesWithAlt = 0;
+    let wordCount = 0;
+    let scriptBytes = 0;
+    let hasServerRenderedContent = false;
     let currentScriptText = '';
 
+    // --- Phase 2a: does the origin serve Markdown to an agent that asks? ---
+    // Its own request, so the structural analysis below can ask for HTML.
+    const markdownPhase = (async () => {
+        try {
+            const r_md = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+            const mdType = (r_md.headers.get('content-type') || '').toLowerCase();
+            if (r_md.status === 200 && (mdType.includes('text/markdown') || mdType.includes('text/x-markdown'))) {
+                supportsMarkdown = true;
+                // The point of negotiation is that both representations stay
+                // cacheable; without Vary a shared cache will serve one to the
+                // audience for the other.
+                hasVaryAccept = (r_md.headers.get('vary') || '').toLowerCase().includes('accept');
+            }
+            if (r_md.body && typeof r_md.body.cancel === 'function') {
+                await r_md.body.cancel();
+            }
+        } catch { /* the HTML fetch decides reachability, not this probe */ }
+    })();
+
+    // --- Phase 2: the homepage itself (headers + streamed HTML analysis) ---
+    const contentPhase = (async () => {
+    let r_home;
     try {
-        const r_home = await iFetch(base, { headers: headersAgent, cf: { cacheEverything: false } });
+        r_home = await iFetch(base, { headers: headersHtml, cf: { cacheEverything: false } });
+    } catch {
+        // The origin answered nothing at all: there is no audit to report.
+        throw new UnreachableTargetError(base);
+    }
+    try {
+        timings.homeRespondedAt = Date.now();
+
+        // Transport-level signals available straight from the response headers.
+        isHttps = new URL(base).protocol === 'https:';
+        hasHsts = !!r_home.headers.get('strict-transport-security');
+        xRobotsTag = (r_home.headers.get('x-robots-tag') || '').toLowerCase();
+        hasBlockingXRobots = /\b(noindex|nosnippet|noai|noimageai)\b/.test(xRobotsTag);
+
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
+        // A server that hands Markdown to everyone regardless of Accept still
+        // negotiates correctly as far as an agent is concerned.
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
-            totalScore += 15;
         }
+
+        // Only the robots.txt fallback below needs the robots parse; the two
+        // fetches themselves already ran concurrently.
+        await robotsPhase;
 
         let contentSignalValue = '';
         if (r_home.headers.has('content-signal')) {
@@ -833,7 +2194,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         if (contentSignalValue) {
             hasContentSignal = true;
-            totalScore += 10;
 
             const params = {};
             contentSignalValue.split(',').forEach(part => {
@@ -843,7 +2203,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
             if (params['use'] && ['reference', 'immediate', 'full'].includes(params['use'])) {
                 hasContentUse = true;
-                totalScore += 5;
             }
         }
 
@@ -851,17 +2210,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         const lastModified = r_home.headers.get('last-modified');
         if (etag || lastModified) {
             hasFreshnessHeaders = true;
-            totalScore += 5;
 
             try {
-                const condHeaders = { ...headersAgent };
+                const condHeaders = { ...headersHtml };
                 if (etag) condHeaders['If-None-Match'] = etag;
                 if (lastModified) condHeaders['If-Modified-Since'] = lastModified;
 
                 const r_cond = await iFetch(base, { headers: condHeaders, cf: { cacheEverything: false } });
                 if (r_cond.status === 304) {
                     hasConditionalGET = true;
-                    totalScore += 10;
                 }
             } catch { /* silent fail */ }
         }
@@ -889,10 +2246,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('img', {
                 element(el) {
+                    imagesTotal++;
                     const alt = el.getAttribute('alt');
-                    if (alt && alt.trim()) {
-                        hasImageAlt = true;
-                    }
+                    // A decorative image legitimately carries alt="", so an
+                    // explicitly empty alt counts as described, not missing.
+                    if (alt !== null) imagesWithAlt++;
+                }
+            })
+            .on('link[rel~="canonical"]', {
+                element(el) {
+                    const href = (el.getAttribute('href') || '').trim();
+                    if (href) hasCanonical = true;
                 }
             })
             .on('link[rel="alternate"]', {
@@ -1004,6 +2368,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     }
                 },
                 text(chunk) {
+                    scriptBytes += chunk.text.length;
                     if (hasWebMCP) return;
                     if (currentScriptText.length < 500000) {
                         currentScriptText += chunk.text;
@@ -1059,28 +2424,37 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Evaluate new metrics
         hasCleanUrls = hasInternalLinks && !hasDirtyUrls;
 
+        // An <img> without an alt attribute is invisible to an agent. One
+        // described image out of two hundred used to be enough to pass.
+        hasImageAlt = imagesTotal === 0 || (imagesWithAlt / imagesTotal) >= 0.8;
+
         const sentences = lowerHtmlText.split(/[.!?]+(?=\s+|$)/).filter(s => s.trim().length > 0).length || 1;
         const words = lowerHtmlText.split(/\s+/).filter(w => w.length > 0).length || 1;
+        wordCount = lowerHtmlText.trim() ? words : 0;
         const isCyrillic = /[а-яё]/i.test(lowerHtmlText);
-        const syllables = (lowerHtmlText.match(/[aeiouyаеёиоуыэюяàáâãäåèéêëìíîïòóôõöùúûüýÿ]{1,2}/gi) || []).length || 1;
+
+        // A page that ships a large script bundle but almost no text is a
+        // client-rendered shell: crawlers that do not execute JavaScript see an
+        // empty document, which is the single most expensive AI-readiness bug.
+        hasServerRenderedContent = wordCount >= 100 || (wordCount >= 25 && scriptBytes < 5000);
+
         if (words > 50) {
             const asl = words / sentences;
-            const asw = syllables / words;
+            const asw = countSyllables(lowerHtmlText, isCyrillic) / words;
             const flesch = isCyrillic
                 ? 206.835 - 1.3 * asl - 60.1 * asw
                 : 206.835 - 1.015 * asl - 84.6 * asw;
-            if (flesch >= 30 && flesch <= 100) {
-                hasFluency = true;
-            }
+            fleschScore = Math.round(flesch);
+            // The bands differ by language on purpose. The Russian (Oborneva)
+            // coefficients weigh syllables far more heavily than the English
+            // ones, so the same prose scores ~15 points lower in Cyrillic; a
+            // single threshold across both would quietly fail readable Russian.
+            // The old 30-100 window passed essentially any prose in either.
+            hasFluency = isCyrillic
+                ? (flesch >= 30 && flesch <= 90)
+                : (flesch >= 45 && flesch <= 95);
         }
 
-        const authPhrases = [
-            'research shows', 'study', 'proven', 'according to', 'expert', 'analysis', 'demonstrates',
-            'исследование', 'исследования', 'согласно', 'доказано', 'эксперт', 'анализ'
-        ];
-        if (authPhrases.some(p => lowerHtmlText.includes(p))) {
-            hasAuthoritativeVoice = true;
-        }
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
@@ -1093,29 +2467,6 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 hasStatistics = true;
             }
         }
-
-        if (hasCleanUrls) totalScore += 5;
-        if (hasFluency) totalScore += 10;
-        if (hasAuthoritativeVoice) totalScore += 5;
-
-        if (hasNoAI) totalScore += 5;
-        if (hasViewport) totalScore += 5;
-        if (hasSemanticTags) totalScore += 5;
-        if (hasAgentFallback) totalScore += 10;
-        if (hasH1 && hasH2) totalScore += 5;
-        if (hasLists) totalScore += 5;
-        if (hasInternalLinks) totalScore += 5;
-        if (hasCitations) totalScore += 5;
-        if (hasQuotations) totalScore += 5;
-        if (hasStatistics) totalScore += 5;
-        if (hasWebMCP) totalScore += 10;
-        if (hasARIA) totalScore += 5;
-        if (hasMetaDesc) totalScore += 5;
-        if (hasTitle) totalScore += 5;
-        if (hasLang) totalScore += 5;
-        if (hasImageAlt) totalScore += 5;
-        if (hasRss) totalScore += 5;
-
         // Process JSON-LD blocks extracted by HTMLRewriter
         for (const block of jsonLdChunks) {
             try {
@@ -1132,6 +2483,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         }
                         if (typeList.includes('Organization')) {
                             hasOrgSchema = true;
+                        }
+                        if (typeList.includes('BreadcrumbList')) {
+                            hasBreadcrumbSchema = true;
+                        }
+                        if (typeList.includes('WebSite') && obj['potentialAction']) {
+                            const actions = Array.isArray(obj['potentialAction']) ? obj['potentialAction'] : [obj['potentialAction']];
+                            if (actions.some(a => a && /SearchAction/.test(String(a['@type'] || '')))) {
+                                hasSiteSearchSchema = true;
+                            }
                         }
                     }
                     if (obj['author']) {
@@ -1151,17 +2511,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             } catch { /* ignore parse error */ }
         }
+
+        // Depends on authorship from JSON-LD and on the statistics scan above,
+        // so it has to be decided once both are final.
+        hasAuthoritativeVoice = (hasAuthorship && (hasCitations || hasStatistics)) ||
+                                (hasCitations && hasQuotations && hasStatistics);
         
-        if (hasFaqSchema) totalScore += 5;
-        if (hasAuthorship) totalScore += 5;
-        if (hasFreshness) totalScore += 5;
 
-        if (hasSchema) {
-            totalScore += 10;
-        }
     } catch { /* silent fail */ }
+    })();
 
-    // 3. Protocol Discovery Detailed Tooltips
+    // --- Phase 3: protocol / manifest discovery ---
     const wellKnownFiles = [
         {
             name: 'A2A Agent Card', prompt: `Write a JSON file named agent-card.json that follows the A2A protocol specification. It should list my application's capabilities, endpoints, and OAuth 2.0 authorization rules. Please provide the file content and tell me to place it in /.well-known/agent-card.json.`, path: '/.well-known/agent-card.json', spec: 'https://a2a-protocol.org/latest/specification/', isJson: true, points: 5,
@@ -1187,9 +2547,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     const hasH1 = /^#\s+.+/m.test(text);
                     const hasInstructions = /agent|guideline|instruction|capabilit|overview|rule|task|endpoint|api/i.test(text);
                     if (hasH1 && hasInstructions) {
-                        return { status: 'ok', message: 'Valid AGENTS.md instructions found', code: 'Found', addScore: 5 };
+                        return { status: 'ok', message: 'Valid AGENTS.md instructions found', code: 'Found' };
                     }
-                    return { status: 'ok', message: 'AGENTS.md document found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'AGENTS.md document found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1207,7 +2567,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         if (json && typeof json === 'object') {
                             const capCount = Array.isArray(json.capabilities) ? json.capabilities.length : (Array.isArray(json.tools) ? json.tools.length : 0);
                             const detail = capCount > 0 ? `${capCount} capabilities declared` : 'Config found';
-                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found', addScore: 5 };
+                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found' };
                         }
                     } catch {}
                     return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
@@ -1257,12 +2617,12 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                                 }
                                 if (totalOps > 0) {
                                     const pct = Math.round((readyOps / totalOps) * 100);
-                                    return { status: 'ok', message: `RFC 9727 API Catalog (Tool-Ready: ${readyOps}/${totalOps} operations, ${pct}%)`, code: `${pct}% Ready`, addScore: 5 };
+                                    return { status: 'ok', message: `RFC 9727 API Catalog (Tool-Ready: ${readyOps}/${totalOps} operations, ${pct}%)`, code: `${pct}% Ready` };
                                 }
                             }
                         }
                     } catch {}
-                    return { status: 'ok', message: 'Valid API Catalog found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Valid API Catalog found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1321,15 +2681,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         }
 
                         if (liveProbeOk) {
-                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational', addScore: 5 };
+                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational' };
                         }
                         if (isOAuthProtected) {
-                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected', addScore: 5 };
+                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected' };
                         }
                         if (toolCount > 0) {
-                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active', addScore: 5 };
+                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active' };
                         }
-                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest', addScore: 5 };
+                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
                     } catch {}
                 }
 
@@ -1349,14 +2709,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
                         if (getStatus === 200 && !isGetSoft404) {
                             if (getCType.includes('text/event-stream')) {
-                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational' };
                             }
                             try {
                                 const jsonRes = await mcpGetReq.json();
                                 const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
                                 const isMcpJson = jsonRes && (jsonRes.jsonrpc === '2.0' || Array.isArray(jsonRes.tools) || jsonRes.capabilities || jsonRes.serverInfo);
                                 if (isMcpJson) {
-                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational', addScore: 5 };
+                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational' };
                                 }
                             } catch {}
                         }
@@ -1372,9 +2732,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             } catch {}
 
                             if (isOAuth) {
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected' };
                             }
-                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected', addScore: 5 };
+                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected' };
                         }
 
                         if (getStatus === 405) {
@@ -1388,11 +2748,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                             const postAuth = (mcpPostReq.headers.get('www-authenticate') || '').toLowerCase();
 
                             if (postStatus === 200 || postStatus === 204) {
-                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational' };
                             }
                             if ([401, 403].includes(postStatus)) {
                                 const isOAuth = postAuth.includes('bearer') || postAuth.includes('resource_metadata') || postAuth.includes('oauth');
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected', addScore: 5 };
+                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected' };
                             }
                         }
                     } catch {}
@@ -1476,11 +2836,11 @@ Example:
                     const hasLinkList = /^-\s+\[.+\]\(.+\)/m.test(text);
 
                     if (hasH1 && hasBlockquote && hasLinkList) {
-                        return { status: 'ok', message: 'Full llmstxt.org spec compliant (H1, Summary, Links)', code: 'Compliant', addScore: 5 };
+                        return { status: 'ok', message: 'Full llmstxt.org spec compliant (H1, Summary, Links)', code: 'Compliant' };
                     } else if (hasH1 || hasLinkList) {
-                        return { status: 'ok', message: 'Valid llms.txt found (partial structure: missing summary blockquote or link list)', code: 'Partial', addScore: 5 };
+                        return { status: 'ok', message: 'Valid llms.txt found (partial structure: missing summary blockquote or link list)', code: 'Partial' };
                     }
-                    return { status: 'ok', message: 'Readable llms.txt found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Readable llms.txt found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1499,9 +2859,9 @@ Example:
                     const hasH1 = /^#\s+.+/m.test(text);
                     const hasSections = /^##\s+.+/m.test(text);
                     if (hasH1 && hasSections) {
-                        return { status: 'ok', message: 'Structured full markdown documentation found', code: 'Compliant', addScore: 5 };
+                        return { status: 'ok', message: 'Structured full markdown documentation found', code: 'Compliant' };
                     }
-                    return { status: 'ok', message: 'Full documentation text found', code: 'Found', addScore: 5 };
+                    return { status: 'ok', message: 'Full documentation text found', code: 'Found' };
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -1540,12 +2900,12 @@ Example:
         }
     ];
 
-    // Fetch protocols in batches to avoid unbounded concurrency
+    // All manifest probes are queued at once; the shared limiter caps how many
+    // are actually in flight. Fixed-size batches used to stall every probe in a
+    // batch behind that batch's slowest host.
     const protoResults = [];
-    const batchSize = 4;
-    for (let i = 0; i < wellKnownFiles.length; i += batchSize) {
-        const batch = wellKnownFiles.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(async (data) => {
+    const protoPhase = (async () => {
+        const settled = await Promise.all(wellKnownFiles.map(async (data) => {
             const url = `${base}${data.path}`;
             let status = 'err';
             let message = '';
@@ -1560,9 +2920,6 @@ Example:
                     status = customResult.status || status;
                     message = customResult.message || message;
                     code = customResult.code || (status === 'ok' ? 'Found' : 'Missing');
-                    if (customResult.addScore) {
-                        totalScore += customResult.addScore;
-                    }
                 } else {
                     let isSoft404 = code === 200 && cType.includes('text/html');
 
@@ -1572,7 +2929,6 @@ Example:
                                 const jsonBody = await req.json();
                                 status = 'ok';
                                 message = 'Valid JSON found';
-                                totalScore += data.points;
                             } catch (err) {
                                 message = 'Invalid JSON content';
                             }
@@ -1580,7 +2936,6 @@ Example:
                             if (!cType.includes('text/html')) {
                                 status = 'ok';
                                 message = 'Readable format found';
-                                totalScore += data.points;
                             } else {
                                 message = 'Received HTML (Soft 404)';
                             }
@@ -1600,14 +2955,18 @@ Example:
 
             return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
         }));
-        protoResults.push(...batchResults);
-    }
+        protoResults.push(...settled);
+    })();
 
-    return {
-        score: {
-            total: Math.min(totalScore, 100),
-            max: 100
-        },
+    // Surface an unreachable origin as such; everything else degrades silently
+    // into a "not found" result for the individual check.
+    await Promise.all([contentPhase, markdownPhase, sitemapPhase, protoPhase]);
+    timings.durationMs = Date.now() - timings.startedAt;
+
+    const auditResult = {
+        target: base,
+        generatedAt: new Date().toISOString(),
+        durationMs: timings.durationMs,
         bots: {
             robotsFound,
             hasAISearch,
@@ -1680,13 +3039,11 @@ Example:
                     tooltip: `<strong>What it is:</strong> The <code>&lt;lastmod&gt;</code> property inside the sitemap XML.<br/><br/><strong>Why it's critical:</strong> Provides crawler hints to AI search engines about when content was updated, avoiding redundant crawling.<br/><br/><strong>Impact of missing it:</strong> Bots will repeatedly fetch unchanged pages or miss newly updated pages due to lack of signals.<br/><br/><strong>Implementation Example:</strong> <code>&lt;url&gt;&lt;loc&gt;...&lt;/loc&gt;&lt;lastmod&gt;2026-07-02&lt;/lastmod&gt;&lt;/url&gt;</code>`,
                     code: hasSitemapLastmod ? 'Found' : 'Missing'
                 }
-            ].sort((a, b) => {
-                const weights = { "Differentiated Policy": 100, "AI Search Allowed": 90, "AI Agent Allowed": 80, "AI Training Blocked": 70, "robots.txt": 60, "sitemap.xml": 50, "Sitemap Lastmod": 40 };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            ].sort(byImportance)
         },
         content: {
             supportsMarkdown,
+            hasVaryAccept,
             hasContentSignal,
             hasContentUse,
             hasFreshnessHeaders,
@@ -1718,15 +3075,31 @@ Example:
             hasFluency,
             hasAuthoritativeVoice,
             hasCleanUrls,
+            hasCanonical,
+            hasBreadcrumbSchema,
+            hasSiteSearchSchema,
+            hasServerRenderedContent,
+            hasHsts,
+            isHttps,
+            xRobotsTag,
+            hasBlockingXRobots,
+            wordCount,
+            fleschScore,
+            imagesTotal,
+            imagesWithAlt,
             results: [
                 {
                     name: "Content Neg. (MD)",
                     prompt: `Implement content negotiation in my server so that when a client sends an 'Accept: text/markdown' header, it returns the page content in clean Markdown instead of HTML.`,
                     status: supportsMarkdown ? 'ok' : 'err',
-                    message: supportsMarkdown ? "Server provides markdown" : "No markdown provided on-the-fly",
+                    message: supportsMarkdown
+                        ? (hasVaryAccept
+                            ? "Server provides markdown, with Vary: Accept"
+                            : "Server provides markdown, but the response is missing Vary: Accept — a shared cache may serve it to browsers")
+                        : "No markdown provided on-the-fly",
                     spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation",
                     tooltip: `<strong>What it is:</strong> Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.<br/><br/><strong>Why it's critical:</strong> LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.<br/><br/><strong>Impact of missing it:</strong> Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.<br/><br/><strong>Implementation Example:</strong> Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps.`,
-                    code: supportsMarkdown ? 'Supported' : 'Failed'
+                    code: supportsMarkdown ? (hasVaryAccept ? 'Supported' : 'No Vary') : 'Failed'
                 },
                 {
                     name: "Content-Signal",
@@ -2003,6 +3376,77 @@ Examples of specific types:
                     code: hasOrgSchema ? 'Found' : 'Missing'
                 },
                 {
+                    name: "Server-Rendered Content",
+                    prompt: `Serve this page’s text in the initial HTML response so crawlers that do not execute JavaScript can read it.`,
+                    status: hasServerRenderedContent ? 'ok' : 'err',
+                    message: hasServerRenderedContent
+                        ? `Readable text present without JavaScript (${wordCount} words)`
+                        : `Only ${wordCount} words of text in the HTML response — the page appears to render client-side`,
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/javascript/javascript-seo-basics",
+                    tooltip: `<strong>What it is:</strong> Whether the HTML your server returns already contains the page's text, or whether the text only appears after JavaScript runs in a browser.<br/><br/><strong>Why it's critical:</strong> Most AI crawlers — including GPTBot, ClaudeBot and PerplexityBot — do not execute JavaScript. They read the raw HTML response and nothing else.<br/><br/><strong>Impact of missing it:</strong> Your page is effectively blank to them. Every other optimisation on this list is wasted, because there is no content to optimise.<br/><br/><strong>Implementation Example:</strong> Use server-side rendering, static generation, or prerendering so the main content is in the initial HTML. Verify with <code>curl -s https://yoursite.com | grep -o '&lt;p&gt;'</code>.`,
+                    code: hasServerRenderedContent ? 'Found' : 'Client-Rendered'
+                },
+                {
+                    name: "Content Depth",
+                    prompt: `Add substantive on-page content so the page has enough text to be retrieved and cited.`,
+                    status: wordCount >= 300 ? 'ok' : 'warn',
+                    message: wordCount >= 300
+                        ? `Substantive page content (${wordCount} words)`
+                        : `Thin page content (${wordCount} words) — aim for 300+ words of substantive text`,
+                    spec: "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+                    tooltip: `<strong>What it is:</strong> The amount of substantive, non-boilerplate text on the page.<br/><br/><strong>Why it's critical:</strong> Retrieval systems chunk and embed page text. A page with too little text produces weak embeddings and rarely surfaces as a citation in a generated answer.<br/><br/><strong>Impact of missing it:</strong> Your page is indexed but almost never retrieved, because there is not enough signal for a model to match it against a question.<br/><br/><strong>Implementation Example:</strong> Answer the questions a reader actually arrives with, in prose, on the page itself — rather than deferring everything to a PDF, a video, or a JavaScript-loaded tab.`,
+                    code: wordCount >= 300 ? 'Found' : 'Thin'
+                },
+                {
+                    name: "Canonical URL",
+                    prompt: `Declare a canonical URL for every page so citations converge on one address.`,
+                    status: hasCanonical ? 'ok' : 'warn',
+                    message: hasCanonical ? "Canonical URL declared" : "No rel=canonical link found",
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls",
+                    tooltip: `<strong>What it is:</strong> A <code>&lt;link rel="canonical"&gt;</code> tag naming the preferred URL for the page.<br/><br/><strong>Why it's critical:</strong> Agents that cite your content need one stable address to link to. Without a canonical, the same page reached via tracking parameters, trailing slashes or alternate hosts looks like several competing documents.<br/><br/><strong>Impact of missing it:</strong> Citations fragment across URL variants, splitting whatever authority the page has earned, and an agent may cite a parameterised URL that later breaks.<br/><br/><strong>Implementation Example:</strong> <code>&lt;link rel="canonical" href="https://example.com/page"&gt;</code> in the <code>&lt;head&gt;</code>.`,
+                    code: hasCanonical ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTTPS & HSTS",
+                    prompt: `Serve the site over HTTPS and enforce it with a Strict-Transport-Security header.`,
+                    status: (isHttps && hasHsts) ? 'ok' : (isHttps ? 'warn' : 'err'),
+                    message: isHttps
+                        ? (hasHsts ? "Served over HTTPS with HSTS enabled" : "Served over HTTPS but no Strict-Transport-Security header")
+                        : "Not served over HTTPS",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security",
+                    tooltip: `<strong>What it is:</strong> Transport security for the origin: HTTPS plus a <code>Strict-Transport-Security</code> response header.<br/><br/><strong>Why it's critical:</strong> Agent runtimes and MCP clients increasingly refuse to fetch, or downrank, plaintext origins — and an agent acting on a user's behalf cannot safely send credentials to one.<br/><br/><strong>Impact of missing it:</strong> Automated clients may skip your site entirely, and any authenticated agent integration is off the table.<br/><br/><strong>Implementation Example:</strong> Redirect all HTTP traffic to HTTPS and send <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code>.`,
+                    code: isHttps ? (hasHsts ? 'Found' : 'No HSTS') : 'Insecure'
+                },
+                {
+                    name: "X-Robots-Tag Header",
+                    prompt: `Remove restrictive X-Robots-Tag directives from production responses.`,
+                    status: hasBlockingXRobots ? 'warn' : 'ok',
+                    message: hasBlockingXRobots
+                        ? `X-Robots-Tag restricts indexing: "${xRobotsTag}"`
+                        : (xRobotsTag ? `X-Robots-Tag present and permissive: "${xRobotsTag}"` : "No restrictive X-Robots-Tag header"),
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag",
+                    tooltip: `<strong>What it is:</strong> An HTTP response header that carries the same directives as the robots meta tag.<br/><br/><strong>Why it's critical:</strong> It overrides your HTML, and it is easy to set once at the CDN or framework level and then forget. A <code>noindex</code> left over from a staging configuration silently removes a live page from every index.<br/><br/><strong>Impact of missing it:</strong> Nothing — the absence of a restrictive header is the healthy state. A restrictive value, however, quietly undoes every other signal on this page.<br/><br/><strong>Implementation Example:</strong> Check with <code>curl -sI https://yoursite.com | grep -i x-robots-tag</code> and remove stray <code>noindex</code> / <code>nosnippet</code> directives from production.`,
+                    code: hasBlockingXRobots ? 'Restricted' : 'Clear'
+                },
+                {
+                    name: "Breadcrumb Schema",
+                    prompt: `Publish BreadcrumbList structured data describing where this page sits in the site hierarchy.`,
+                    status: hasBreadcrumbSchema ? 'ok' : 'warn',
+                    message: hasBreadcrumbSchema ? "BreadcrumbList markup found" : "No BreadcrumbList structured data",
+                    spec: "https://schema.org/BreadcrumbList",
+                    tooltip: `<strong>What it is:</strong> <code>BreadcrumbList</code> JSON-LD describing where this page sits in your site's hierarchy.<br/><br/><strong>Why it's critical:</strong> It tells a model how a page relates to its section and to the site as a whole, which is context a single page's text cannot convey on its own.<br/><br/><strong>Impact of missing it:</strong> Agents treat each page as an isolated document and lose the topical grouping that helps them decide which of your pages answers a question.<br/><br/><strong>Implementation Example:</strong> Emit a <code>BreadcrumbList</code> with an ordered <code>itemListElement</code> array, one <code>ListItem</code> per level, each with <code>position</code>, <code>name</code> and <code>item</code>.`,
+                    code: hasBreadcrumbSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Site Search Schema",
+                    prompt: `Publish a WebSite SearchAction so agents can query the site directly.`,
+                    status: hasSiteSearchSchema ? 'ok' : 'warn',
+                    message: hasSiteSearchSchema ? "WebSite SearchAction declared" : "No WebSite/SearchAction structured data",
+                    spec: "https://schema.org/SearchAction",
+                    tooltip: `<strong>What it is:</strong> A <code>WebSite</code> node with a <code>potentialAction</code> of type <code>SearchAction</code>, publishing your site's own search URL template.<br/><br/><strong>Why it's critical:</strong> It hands an agent a way to query your site directly instead of guessing URLs — the cheapest form of "tool" you can expose, with no API to build.<br/><br/><strong>Impact of missing it:</strong> Agents can only reach pages they already know about, so anything not linked from a crawled page stays invisible.<br/><br/><strong>Implementation Example:</strong> Declare a <code>SearchAction</code> whose <code>target</code> is a URL template such as <code>https://example.com/search?q={search_term_string}</code>, with <code>query-input</code> naming the required term.`,
+                    code: hasSiteSearchSchema ? 'Found' : 'Missing'
+                },
+                {
                     name: "Clean URLs",
                     prompt: `Ensure all internal links use clean URL architectures without complex query strings or parameters to improve AI extraction and trust.`,
                     status: hasCleanUrls ? 'ok' : 'warn',
@@ -2029,31 +3473,118 @@ Examples of specific types:
                     tooltip: `<strong>What it is:</strong> Using language that signals expertise, conviction, and evidence (e.g., "according to", "demonstrates").<br/><br/><strong>Why it's critical for GEO:</strong> Generative Engines are tuned to favor authoritative and persuasive content, especially when citing sources for factual answers.<br/><br/><strong>Impact of missing it:</strong> The AI might overlook the content as a definitive source compared to competitors using stronger credibility signals.<br/><br/><strong>Implementation Example:</strong> Instead of "We think this might help," use "Our research demonstrates that this solution improves outcomes."`,
                     code: hasAuthoritativeVoice ? 'Found' : 'Missing'
                 }
-            ].sort((a, b) => {
-                const weights = {
-                    "Semantic JSON-LD": 100, "Content Neg. (MD)": 95, "Fluency Optimization": 92, "WebMCP Integration": 90, "Authoritative Voice": 88, "AI Fallback (No-JS)": 85,
-                    "Semantic HTML": 80, "Heading Hierarchy": 75, "Scannable Formats": 70, "Content-Signal": 65,
-                    "Content-Use Parameter": 60, "NoAI Meta Tag": 55, "FAQ Schema": 50, "Authorship (E-E-A-T)": 45, "Clean URLs": 42,
-                    "Internal Architecture": 40, "Conditional Requests (304)": 35, "Freshness Headers": 30,
-                    "Content Freshness": 25, "Viewport Meta Tag": 20, "External Citations": 15,
-                    "Quotation Addition": 10, "Statistics Addition": 5, "ARIA Accessibility": 10, "Meta Description": 5,
-                    "HTML Title Tag": 10, "HTML Lang Attribute": 10, "Image Alt Text": 10, "RSS/Atom Feed": 5, "Organization Schema": 50
-                };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            ].sort(byImportance)
         },
         protocols: {
-            results: protoResults.sort((a, b) => {
-                const weights = {
-                    "MCP Server": 100, "AGENTS.md": 98, "LLMs.txt": 95, "LLMs-Full.txt": 90, "AI Plugin": 85,
-                    "Agent Skills": 80, "A2A Agent Card": 75, "OAuth Protected Resource": 72, "x402 Payment Standard": 70,
-                    "agents.json": 68, "TDM Reservation": 65, "ai.txt": 60, "API Catalog": 55,
-                    "OAuth Discovery": 50, "Universal Commerce": 45, "security.txt": 40
-                };
-                return (weights[b.name] || 0) - (weights[a.name] || 0);
-            })
+            results: protoResults.sort(byImportance)
         }
     };
+
+    // Annotate every check with its weight and category, then derive the score
+    // from that single list so the API, the score and the UI can never drift.
+    const allChecks = [
+        ...auditResult.bots.results,
+        ...auditResult.content.results,
+        ...auditResult.protocols.results
+    ];
+    for (const check of allChecks) {
+        const meta = getCheckMeta(check.name);
+        check.weight = meta.weight;
+        check.category = meta.category;
+        if (meta.advisory) check.advisory = true;
+        check.prompt = buildPrompt(check, base);
+    }
+
+    auditResult.score = scoreAudit(allChecks);
+    auditResult.priorities = topPriorities(allChecks);
+    return auditResult;
+}
+
+/** Orders checks by how much they matter, then alphabetically for stability. */
+function byImportance(a, b) {
+    const byWeight = getCheckMeta(b.name).weight - getCheckMeta(a.name).weight;
+    if (byWeight !== 0) return byWeight;
+    return a.name.localeCompare(b.name);
+}
+
+/**
+ * Renders an audit as Markdown. The site tells other people's sites to support
+ * content negotiation for agents, so its own API does the same: an agent can
+ * ask for `Accept: text/markdown` (or `?format=md`) and get a report it can
+ * read without a JSON parser.
+ */
+export function renderAuditMarkdown(result) {
+    const lines = [];
+    const icon = (status) => status === 'ok' ? '✅' : (status === 'warn' ? '⚠️' : '❌');
+
+    lines.push(`# AI Readiness Audit — ${result.target}`);
+    lines.push('');
+    lines.push(`> **${result.score.total}/100** (grade ${result.score.grade}) · scanned ${result.generatedAt}`);
+    lines.push('');
+
+    const categories = Object.entries(result.score.categories || {}).sort((a, b) => a[1].total - b[1].total);
+    if (categories.length) {
+        lines.push('## Scores by category');
+        lines.push('');
+        lines.push('| Category | Score |');
+        lines.push('| --- | --- |');
+        for (const [name, bucket] of categories) {
+            lines.push(`| ${name} | ${bucket.total}% |`);
+        }
+        lines.push('');
+    }
+
+    if (result.priorities?.length) {
+        lines.push('## Fix these first');
+        lines.push('');
+        for (const item of result.priorities) {
+            lines.push(`### ${icon(item.status)} ${item.name} (weight ${item.weight}, ${item.category})`);
+            lines.push('');
+            lines.push(item.message);
+            if (item.prompt) {
+                lines.push('');
+                lines.push('```text');
+                lines.push(item.prompt);
+                lines.push('```');
+            }
+            if (item.spec) lines.push(`Spec: ${item.spec}`);
+            lines.push('');
+        }
+    }
+
+    const groups = [
+        ['Discoverability & bots', result.bots?.results],
+        ['Content & structure', result.content?.results],
+        ['Agent protocols', result.protocols?.results]
+    ];
+    for (const [title, checks] of groups) {
+        if (!checks?.length) continue;
+        lines.push(`## ${title}`);
+        lines.push('');
+        lines.push('| Check | Result | Detail |');
+        lines.push('| --- | --- | --- |');
+        for (const check of checks) {
+            const detail = String(check.message || '').replace(/\|/g, '\\|');
+            lines.push(`| ${check.name} | ${icon(check.status)} ${check.code || ''} | ${detail} |`);
+        }
+        lines.push('');
+    }
+
+    return lines.join('\n');
+}
+
+/**
+ * Reads the weighted score from a share link, falling back to the pass ratio
+ * for links generated before the score was passed through explicitly.
+ */
+function readScoreParam(url, passed, warn, fail) {
+    const raw = url.searchParams.get("score");
+    if (raw !== null) {
+        const parsed = parseInt(raw, 10);
+        if (Number.isFinite(parsed)) return Math.max(0, Math.min(100, parsed));
+    }
+    const total = passed + warn + fail;
+    return total > 0 ? Math.round((passed / total) * 100) : 0;
 }
 
 function generateOgImageSvg(domain, passed, warn, fail, score) {

@@ -1,6 +1,26 @@
-# AI-Valid Docs
-> AI-Valid is a tool that performs an AI readiness audit on websites, validating protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.
+# AI-Valid
 
-- [Main Application](https://ai-valid.secmy.app/)
-- [API Reference](/api/audit)
-- [Repository](https://github.com/SecH0us3/ai-valid)
+> AI-Valid audits how readable and actionable a website is for AI agents, crawlers and generative search. It returns a weighted readiness score, a per-category breakdown, and a ranked list of the fixes that would improve it most.
+
+## Documentation
+
+- [Full documentation](https://ai-valid.secmy.app/llms-full.txt): Complete guide, API reference and scoring model in a single Markdown file.
+- [Agent operating manual](https://ai-valid.secmy.app/AGENTS.md): How autonomous agents should call the API and read the results.
+- [OpenAPI specification](https://ai-valid.secmy.app/openapi.json): Machine-readable schema for both endpoints.
+
+## API
+
+- [Audit endpoint](https://ai-valid.secmy.app/api/audit): `GET /api/audit?targetUrl=https://example.com`. Send `Accept: text/markdown` for a Markdown report.
+- [MCP server](https://ai-valid.secmy.app/mcp): Model Context Protocol endpoint, JSON-RPC 2.0 over POST. One tool: `audit_website`.
+- [MCP server card](https://ai-valid.secmy.app/.well-known/mcp/server-card.json): Discovery metadata for the MCP endpoint.
+- [API catalog](https://ai-valid.secmy.app/.well-known/api-catalog): RFC 9727 linkset pointing at the OpenAPI description.
+
+## Application
+
+- [Web interface](https://ai-valid.secmy.app/): Run an audit and see the score, category breakdown and prioritised fixes.
+- [Source repository](https://github.com/SecH0us3/ai-valid): Implementation, check catalog and tests.
+
+## Optional
+
+- [Agent card](https://ai-valid.secmy.app/.well-known/agent-card.json): A2A protocol descriptor.
+- [Security policy](https://ai-valid.secmy.app/.well-known/security.txt): Where to report vulnerabilities.

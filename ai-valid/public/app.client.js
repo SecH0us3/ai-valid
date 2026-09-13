@@ -207,83 +207,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Summary counters will be rendered below after categorizing checks
         
-        const importanceWeights = {
-            "Content Neg. (MD)": 15,
-            "A2A Agent Card": 10,
-            "Agent Skills": 10,
-            "MCP Server": 10,
-            "AI Plugin": 10,
-            "LLMs.txt": 10,
-            "LLMs-Full.txt": 10,
-            "x402 Payment Standard": 10,
-            "AI Fallback (No-JS)": 10,
-            "Content-Signal": 10,
-            "Semantic JSON-LD": 10,
-            "WebMCP Integration": 10,
-            "AGENTS.md": 10,
-            "agents.json": 10,
-            "OAuth Protected Resource": 10,
-            "Fluency Optimization": 10,
-            "Authoritative Voice": 10,
-            
-            "AI Search Allowed": 10,
-            "AI Agent Allowed": 10,
-            "AI Training Blocked": 10,
-            "Differentiated Policy": 10,
-            "Conditional Requests (304)": 10,
-
-            "HTML Title Tag": 10,
-            "HTML Lang Attribute": 10,
-            "Image Alt Text": 10,
-
-            "robots.txt": 5,
-            "AI Directives": 5,
-            "sitemap.xml": 5,
-            "FAQ Schema": 5,
-            "Organization Schema": 5,
-            "Authorship (E-E-A-T)": 5,
-            "Content Freshness": 5,
-            "External Citations": 5,
-            "Quotation Addition": 5,
-            "Statistics Addition": 5,
-            "Viewport Meta Tag": 5,
-            "NoAI Meta Tag": 5,
-            "Semantic HTML": 5,
-            "Heading Hierarchy": 5,
-            "Scannable Formats": 5,
-            "Clean URLs": 5,
-            "Internal Architecture": 5,
-            "API Catalog": 5,
-            "OAuth Discovery": 5,
-            "Universal Commerce": 5,
-            "TDM Reservation": 5,
-            "ai.txt": 5,
-            "Sitemap Lastmod": 5,
-            "Content-Use Parameter": 5,
-            "Freshness Headers": 5,
-            "ARIA Accessibility": 5,
-            "Meta Description": 5,
-            "RSS/Atom Feed": 5,
-            "security.txt": 5
-        };
-
-        // Flatten all checks into array and sort by importance descending, then alphabetically by name
+        // Weights come from the API, which derives them from the same table it
+        // scores with. They used to be duplicated here and had drifted out of
+        // sync with the backend.
         const allChecks = [
             ...(data?.bots?.results || []),
             ...(data?.content?.results || []),
             ...(data?.protocols?.results || [])
         ].sort((a, b) => {
-            const weightA = importanceWeights[a.name] || 0;
-            const weightB = importanceWeights[b.name] || 0;
-            if (weightB !== weightA) {
-                return weightB - weightA;
-            }
+            const weightDiff = (b.weight || 0) - (a.weight || 0);
+            if (weightDiff !== 0) return weightDiff;
             return a.name.localeCompare(b.name);
         });
 
         const passed = allChecks.filter(c => c.status === 'ok');
         const warnings = allChecks.filter(c => c.status === 'warn');
         const failed = allChecks.filter(c => c.status === 'err' || c.status === 'not found' || !['ok', 'warn'].includes(c.status));
+
+        renderScore(data.score);
+        renderPriorities(data.priorities || []);
 
         // Render Summary Counters
         animateCount('summary-passed', passed.length);
@@ -296,14 +238,110 @@ document.addEventListener('DOMContentLoaded', () => {
         renderGridList('failed-grid', 'status-failed', failed, failed.length > 0 ? 'bad' : 'good', `Not found: ${failed.length}`);
 
         // Update share context
-        const score = data.score ? data.score.total : 0;
         currentAuditContext = {
             domain: input.value,
             passedCount: passed.length,
             warnCount: warnings.length,
             failCount: failed.length,
-            score: score
+            score: data.score ? data.score.total : 0,
+            grade: data.score ? data.score.grade : ''
         };
+    }
+
+    /** Maps a percentage onto the three-step colour scale used across the UI. */
+    function gradeClass(percent) {
+        if (percent >= 70) return 'grade-good';
+        if (percent >= 40) return 'grade-mid';
+        return 'grade-bad';
+    }
+
+    function renderScore(score) {
+        if (!score) return;
+        const total = Math.max(0, Math.min(100, score.total || 0));
+
+        const gaugeFill = document.getElementById('gauge-fill');
+        if (gaugeFill) {
+            const circumference = 2 * Math.PI * 52;
+            gaugeFill.style.strokeDashoffset = String(circumference * (1 - total / 100));
+            gaugeFill.classList.remove('grade-good', 'grade-mid', 'grade-bad');
+            gaugeFill.classList.add(gradeClass(total));
+        }
+
+        animateCount('score-value', total);
+
+        const gradeEl = document.getElementById('score-grade');
+        if (gradeEl) gradeEl.textContent = score.grade ? `GRADE ${score.grade}` : '';
+
+        const bars = document.getElementById('category-bars');
+        if (!bars) return;
+        bars.textContent = '';
+
+        // Weakest categories first: that is where the remaining points are.
+        const entries = Object.entries(score.categories || {}).sort((a, b) => a[1].total - b[1].total);
+        const fragment = document.createDocumentFragment();
+        for (const [name, bucket] of entries) {
+            const row = document.createElement('div');
+            row.className = 'category-row';
+
+            const label = document.createElement('span');
+            label.className = 'category-name';
+            label.textContent = name;
+
+            const track = document.createElement('div');
+            track.className = 'category-track';
+            const meter = document.createElement('div');
+            meter.className = `category-meter ${gradeClass(bucket.total)}`;
+            meter.style.width = `${Math.max(0, Math.min(100, bucket.total))}%`;
+            track.appendChild(meter);
+
+            const value = document.createElement('span');
+            value.className = 'category-score';
+            value.textContent = `${bucket.total}%`;
+
+            row.append(label, track, value);
+            fragment.appendChild(row);
+        }
+        bars.appendChild(fragment);
+    }
+
+    function renderPriorities(priorities) {
+        const panel = document.getElementById('priorities-panel');
+        const list = document.getElementById('priorities-list');
+        if (!panel || !list) return;
+
+        list.textContent = '';
+        if (priorities.length === 0) {
+            panel.hidden = true;
+            return;
+        }
+        panel.hidden = false;
+
+        const fragment = document.createDocumentFragment();
+        for (const item of priorities) {
+            const li = document.createElement('li');
+            li.className = 'priority-item';
+
+            const head = document.createElement('div');
+            head.className = 'priority-head';
+
+            const name = document.createElement('span');
+            name.className = 'priority-name';
+            name.textContent = item.name;
+
+            const weight = document.createElement('span');
+            weight.className = 'priority-weight';
+            weight.textContent = `+${item.weight} pts`;
+
+            head.append(name, weight);
+
+            const msg = document.createElement('div');
+            msg.className = 'priority-msg';
+            msg.textContent = item.message || '';
+
+            li.append(head, msg);
+            fragment.appendChild(li);
+        }
+        list.appendChild(fragment);
     }
 
     function renderGridList(containerId, statusId, items, overallStatusClass, overallStatusText) {
@@ -346,6 +384,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
             protoName.appendChild(iconSpan);
             protoName.appendChild(document.createTextNode(` ${p.name}`));
+
+            if (p.advisory) {
+                const advisory = document.createElement('span');
+                advisory.className = 'proto-weight';
+                advisory.textContent = 'advisory';
+                advisory.title = 'A policy choice, not a defect — reported but not scored.';
+                protoName.appendChild(advisory);
+            } else if (p.weight) {
+                const weightTag = document.createElement('span');
+                weightTag.className = 'proto-weight';
+                weightTag.textContent = `${p.weight}pt`;
+                weightTag.title = `Worth ${p.weight} points toward the readiness score.`;
+                protoName.appendChild(weightTag);
+            }
 
             const protoBadge = document.createElement('span');
             protoBadge.className = 'proto-badge';
@@ -568,6 +620,22 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillText('ai-valid.secmy.app', startX, 560);
     }
 
+    /**
+     * Builds the /share link. The score is passed through explicitly: the share
+     * page used to recompute it as passed/(passed+warn+fail), which is a
+     * different number from the weighted score shown on the dashboard.
+     */
+    function shareUrl() {
+        const params = new URLSearchParams({
+            domain: currentAuditContext.domain,
+            passed: String(currentAuditContext.passedCount),
+            warn: String(currentAuditContext.warnCount),
+            fail: String(currentAuditContext.failCount),
+            score: String(currentAuditContext.score)
+        });
+        return `https://${window.location.host}/share?${params}`;
+    }
+
     // Share results interactive logic
     const shareBtn = document.getElementById('share-results-btn');
     const shareModal = document.getElementById('share-modal');
@@ -655,7 +723,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (btnTwitterShare) {
         btnTwitterShare.addEventListener('click', () => {
-            const url = `https://${window.location.host}/share?domain=${encodeURIComponent(currentAuditContext.domain)}&passed=${currentAuditContext.passedCount}&warn=${currentAuditContext.warnCount}&fail=${currentAuditContext.failCount}`;
+            const url = shareUrl();
             const tweetText = encodeURIComponent(`My website ${currentAuditContext.domain} is ${currentAuditContext.score}% AI-ready! Scan your site's AI accessibility at:`);
             const twitterUrl = `https://twitter.com/intent/tweet?text=${tweetText}&url=${encodeURIComponent(url)}&hashtags=AIReady,WebDev`;
             window.open(twitterUrl, '_blank');
@@ -664,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (btnLinkedInShare) {
         btnLinkedInShare.addEventListener('click', () => {
-            const url = `https://${window.location.host}/share?domain=${encodeURIComponent(currentAuditContext.domain)}&passed=${currentAuditContext.passedCount}&warn=${currentAuditContext.warnCount}&fail=${currentAuditContext.failCount}`;
+            const url = shareUrl();
             const linkedinUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`;
             window.open(linkedinUrl, '_blank');
         });
