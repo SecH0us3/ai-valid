@@ -602,6 +602,736 @@ export function topPriorities(checks, take = 5) {
 }
 
 
+/**
+ * Rough syllable count for the Flesch reading-ease estimate.
+ *
+ * The previous implementation matched runs of up to two vowels anywhere in the
+ * text, which counts "queue" as two syllables and "ouija" as one, and treats a
+ * trailing silent "e" as a syllable of its own. This walks words instead and
+ * applies the usual English adjustments; Cyrillic syllables map 1:1 to vowels.
+ */
+export function countSyllables(text, isCyrillic = false) {
+    if (isCyrillic) {
+        return (text.match(/[аеёиоуыэюя]/gi) || []).length || 1;
+    }
+    let total = 0;
+    const words = text.match(/[a-zàáâãäåèéêëìíîïòóôõöùúûüýÿ']+/gi) || [];
+    for (const word of words) {
+        const groups = word.match(/[aeiouyàáâãäåèéêëìíîïòóôõöùúûüýÿ]+/gi) || [];
+        let count = groups.length;
+        // Silent terminal "e" ("make", "one"), but never reduce below one.
+        if (count > 1 && /e$/i.test(word) && !/[aeiouy]e$/i.test(word)) count--;
+        total += Math.max(1, count);
+    }
+    return total || 1;
+}
+
+/**
+ * Remediation prompts.
+ *
+ * The original prompts were single sentences ("Create an llms.txt file...").
+ * Pasted into an assistant they produced generic, placeholder-filled output
+ * that the user then had to rewrite, because they carried none of what the
+ * audit already knew: which site was scanned, what specifically failed, what
+ * the file has to contain to pass, and how to check the result.
+ *
+ * Each entry supplies the parts; buildPrompt assembles them with the audited
+ * origin and the actual finding, so the same check produces a different, more
+ * specific prompt for "missing" than for "present but malformed".
+ */
+const PROMPT_LIBRARY = {
+    "robots.txt": {
+        goal: "Publish a robots.txt that states an explicit, deliberate policy for AI crawlers.",
+        requirements: [
+            "Keep the existing rules for conventional search crawlers intact — do not tighten them as a side effect.",
+            "Add a separate group for each AI user-agent you want to address rather than relying on the `*` group; several AI crawlers ignore `*` when a named group exists.",
+            "Decide the three cases independently: AI search citation (OAI-SearchBot, PerplexityBot, YouBot), live agent fetching on a user's behalf (ChatGPT-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
+            "Add a `Sitemap:` line with the absolute URL of the sitemap."
+        ],
+        deliverable: "The complete robots.txt content, to be served at /robots.txt as text/plain.",
+        acceptance: [
+            "`curl -s ORIGIN/robots.txt` returns text/plain, not an HTML page.",
+            "Every group has at least one Allow or Disallow line.",
+            "Tell me which of the three policy decisions above each group implements, so I can confirm the result matches my intent."
+        ]
+    },
+    "sitemap.xml": {
+        goal: "Publish a valid XML sitemap and point robots.txt at it.",
+        requirements: [
+            "List canonical URLs only — no redirects, no parameterised duplicates, no noindex pages.",
+            "Give every <url> a <lastmod> with a real modification date in W3C datetime format.",
+            "Split into a sitemap index if there are more than 50,000 URLs or the file exceeds 50MB uncompressed.",
+            "Reference it from robots.txt with an absolute `Sitemap:` URL."
+        ],
+        deliverable: "The sitemap XML (or the generator code that produces it) plus the robots.txt line referencing it.",
+        acceptance: [
+            "The document validates against the sitemaps.org 0.9 schema.",
+            "`curl -s ORIGIN/sitemap.xml | head` returns XML with an application/xml content type."
+        ]
+    },
+    "Sitemap Lastmod": {
+        goal: "Populate <lastmod> in the sitemap with real modification dates.",
+        requirements: [
+            "Derive each date from the content's actual last edit, not from the build or deploy time — a sitemap where every date changes on every deploy is treated as noise and ignored.",
+            "Use W3C datetime format (YYYY-MM-DD or a full ISO 8601 timestamp).",
+            "Omit <lastmod> entirely for pages whose modification date you cannot determine, rather than emitting a placeholder."
+        ],
+        deliverable: "The change to the sitemap generation so <lastmod> reflects content modification time.",
+        acceptance: ["Two consecutive deploys with no content change produce identical <lastmod> values."]
+    },
+    "AI Search Allowed": {
+        goal: "Allow the AI search crawlers that can cite this site in generated answers.",
+        requirements: [
+            "Add explicit `Allow: /` groups for OAI-SearchBot, PerplexityBot and YouBot.",
+            "These are retrieval crawlers for citation, distinct from the training crawlers — allowing them does not permit model training.",
+            "Do not add these to a shared `*` group; name each agent in its own group."
+        ],
+        deliverable: "The robots.txt groups to add, and where they go relative to the existing rules.",
+        acceptance: ["Each of the three agents has a group whose rules permit the paths you want cited."]
+    },
+    "AI Agent Allowed": {
+        goal: "Allow user-directed agent fetches, which are requests a person actually asked for.",
+        requirements: [
+            "Add an `Allow: /` group for ChatGPT-User (and Perplexity-User if you also want Perplexity's on-demand fetches).",
+            "These agents fetch a page because a user asked about it in a conversation; blocking them blocks your own visitors' agents, not a scraper.",
+            "Keep any training-crawler policy unchanged — this decision is independent of it."
+        ],
+        deliverable: "The robots.txt groups to add.",
+        acceptance: ["A request with the ChatGPT-User user-agent is permitted by the resulting rules."]
+    },
+    "AI Training Blocked": {
+        goal: "Make the model-training policy explicit, in whichever direction you intend.",
+        requirements: [
+            "Decide first whether you want your content used for model training. Both answers are legitimate; this check reports the choice, it does not score it.",
+            "To opt out: add `Disallow: /` groups for GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot and meta-externalagent, and consider a TDM reservation at /.well-known/tdmrep.json for EU CDSM Article 4 coverage.",
+            "To opt in: leave those agents permitted and say so explicitly with `Allow: /` groups rather than relying on silence.",
+            "Either way, keep the AI search and user-agent groups separate so opting out of training does not also remove you from AI search results."
+        ],
+        deliverable: "The robots.txt groups implementing the decision, and a one-line note of which direction was chosen.",
+        acceptance: ["No training-crawler policy is left implicit; every named agent has an explicit rule."]
+    },
+    "Differentiated Policy": {
+        goal: "State separate policies for AI search, user-directed agents and model training.",
+        requirements: [
+            "Treat the three as three decisions, not one. The common intent — be citable in AI search, serve users' agents, decline training — requires all three groups to differ.",
+            "Group 1 (cite me): OAI-SearchBot, PerplexityBot, YouBot.",
+            "Group 2 (serve my users' agents): ChatGPT-User, Perplexity-User.",
+            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot."
+        ],
+        deliverable: "The full robots.txt with the three groups distinguished.",
+        acceptance: ["The three groups do not all carry identical rules."]
+    },
+    "Content-Signal": {
+        goal: "Declare machine-readable usage terms with a Content-Signal directive.",
+        requirements: [
+            "Emit either a `Content-Signal:` line in robots.txt or a `Content-Signal:` HTTP response header.",
+            "Use the defined keys — `search`, `ai-input`, `ai-train` — each set to `yes` or `no`.",
+            "Keep it consistent with the robots.txt rules; a Content-Signal that contradicts the crawler groups is worse than none."
+        ],
+        deliverable: "The exact Content-Signal line or header value, plus where to configure it.",
+        acceptance: ["`curl -sI ORIGIN` or ORIGIN/robots.txt shows the directive, and its values match the robots.txt groups."]
+    },
+    "Content-Use Parameter": {
+        goal: "Add a `use=` parameter to the Content-Signal directive.",
+        requirements: [
+            "Append `use=` with one of `reference`, `immediate` or `full` to the existing Content-Signal value.",
+            "`reference` permits citation with attribution; `immediate` permits use in a live answer; `full` permits unrestricted use. Pick the one that matches your licensing terms."
+        ],
+        deliverable: "The updated Content-Signal value.",
+        acceptance: ["The directive parses as comma-separated key=value pairs and includes a valid `use` key."]
+    },
+    "HTML Title Tag": {
+        goal: "Give every page a unique, descriptive <title>.",
+        requirements: [
+            "One <title> per page, in the <head>, 50-60 characters.",
+            "Lead with what the page is about, not with the site name.",
+            "No two pages share a title; templated titles must interpolate the page's own subject."
+        ],
+        deliverable: "The title tag (or the template change that generates it).",
+        acceptance: ["Every page returns a distinct title, and it is present in the raw HTML before JavaScript runs."]
+    },
+    "Meta Description": {
+        goal: "Add a meta description summarising each page.",
+        requirements: [
+            "A <meta name=\"description\"> of 140-160 characters describing what the page actually contains.",
+            "Write it as a standalone sentence a model could quote, not as a keyword list.",
+            "Add a matching og:description so social and agent previews agree."
+        ],
+        deliverable: "The meta tags (or the template change that generates them).",
+        acceptance: ["The description is unique per page and present in the server-returned HTML."]
+    },
+    "HTML Lang Attribute": {
+        goal: "Declare the document language on the <html> element.",
+        requirements: [
+            "Add a `lang` attribute with a BCP 47 tag (`en`, `en-GB`, `ru`) to <html>.",
+            "Mark any passage in a different language with its own `lang` attribute on the containing element.",
+            "If the site is multilingual, add `hreflang` alternates linking the language variants to each other."
+        ],
+        deliverable: "The html tag change, plus any hreflang link tags.",
+        acceptance: ["The attribute is a valid BCP 47 tag and matches the language the page is actually written in."]
+    },
+    "Semantic HTML": {
+        goal: "Wrap the primary content in semantic landmark elements.",
+        requirements: [
+            "Put the page's main content inside <main>, and each self-contained piece inside <article>.",
+            "Use <nav>, <header>, <footer> and <aside> for the surrounding chrome so extractors can tell content from navigation.",
+            "Replace generic <div> wrappers that exist only for layout where a landmark element would carry meaning."
+        ],
+        deliverable: "The markup changes to the page template.",
+        acceptance: ["The page has exactly one <main>, and the article text sits inside it rather than beside it."]
+    },
+    "Heading Hierarchy": {
+        goal: "Give the page a correct heading outline.",
+        requirements: [
+            "Exactly one <h1>, stating the page's subject.",
+            "<h2> for each major section, <h3> for subsections; never skip a level to get a particular font size.",
+            "Headings must describe the section that follows — retrieval systems chunk on heading boundaries, so a vague heading produces a vague chunk."
+        ],
+        deliverable: "The corrected heading structure.",
+        acceptance: ["The outline reads as a coherent table of contents when the headings are extracted in order."]
+    },
+    "Canonical URL": {
+        goal: "Declare a canonical URL for every page.",
+        requirements: [
+            "Add <link rel=\"canonical\"> to the <head> with the absolute, preferred URL.",
+            "Make it self-referential on the canonical page itself, and point variants (tracking parameters, trailing-slash forms, alternate hosts) at it.",
+            "The canonical URL must return 200 — never point at a redirect or a 404."
+        ],
+        deliverable: "The canonical link tag, or the template logic that generates it.",
+        acceptance: ["Fetching the canonical URL returns 200 and its own canonical points at itself."]
+    },
+    "Server-Rendered Content": {
+        goal: "Serve the page's text in the initial HTML response, without requiring JavaScript.",
+        requirements: [
+            "Identify which content currently only appears after client-side hydration.",
+            "Move it into the server response via server-side rendering, static generation or prerendering — whichever fits the existing framework; say which one you are using and why.",
+            "Keep interactive behaviour client-side; only the readable content needs to be in the initial payload.",
+            "Do not add a separate prerendered copy served only to bots — that is cloaking, and it breaks when the two copies drift."
+        ],
+        deliverable: "The rendering change, described concretely against this project's framework.",
+        acceptance: [
+            "`curl -s ORIGIN | wc -w` returns a word count close to what a browser displays.",
+            "Disabling JavaScript in a browser still shows the page's main content."
+        ]
+    },
+    "Content Depth": {
+        goal: "Give the page enough substantive text to be retrievable.",
+        requirements: [
+            "Aim for 300+ words of real content — prose that answers the questions a reader arrives with.",
+            "Do not pad with boilerplate, keyword repetition or duplicated navigation; that lowers retrieval quality rather than raising it.",
+            "If the substance genuinely lives in a video, PDF or diagram, add a text transcript or summary alongside it."
+        ],
+        deliverable: "A concrete outline of what content to add to this specific page, and why each part earns its place.",
+        acceptance: ["The added text answers a question a user could plausibly ask a model about this page."]
+    },
+    "Scannable Formats": {
+        goal: "Structure the content into lists and tables where the material is naturally enumerable.",
+        requirements: [
+            "Convert enumerations buried in prose into <ul>/<ol>, and comparisons into <table> with real <th> headers.",
+            "Use <dl> for term/definition pairs.",
+            "Do not convert flowing argument into bullets — only material that is genuinely a list."
+        ],
+        deliverable: "The markup changes.",
+        acceptance: ["Tables have header cells and a <caption>; lists use list markup rather than styled <div>s."]
+    },
+    "Internal Architecture": {
+        goal: "Link related pages together with descriptive anchor text.",
+        requirements: [
+            "Add contextual links from this page to the related pages on the site.",
+            "Write anchor text that describes the destination — never \"click here\" or a bare URL.",
+            "Make sure every page is reachable from the homepage in three clicks or fewer."
+        ],
+        deliverable: "The specific links to add and the anchor text for each.",
+        acceptance: ["No orphan pages remain in the sitemap, and no anchor text is generic."]
+    },
+    "Clean URLs": {
+        goal: "Use semantic URL paths instead of query-string parameters for content.",
+        requirements: [
+            "Move content identity into the path (/guides/ai-readiness), keeping query strings for filtering and pagination only.",
+            "Preserve the existing URLs with 301 redirects — do not break inbound links or existing citations.",
+            "Update the sitemap and internal links to the new form."
+        ],
+        deliverable: "The routing change plus the redirect map from old URLs to new.",
+        acceptance: ["Every old URL 301s to exactly one new URL, with no redirect chains."]
+    },
+    "Image Alt Text": {
+        goal: "Describe every meaningful image with alt text.",
+        requirements: [
+            "Give each informative image an `alt` that conveys what it shows, not what it is named.",
+            "Give purely decorative images `alt=\"\"` so they are explicitly skipped rather than silently missing.",
+            "For charts and diagrams, put the actual finding in the alt text or in an adjacent caption.",
+            "Do not prefix with \"image of\" — that is already implied by the element."
+        ],
+        deliverable: "The alt attributes, written per image.",
+        acceptance: ["Every <img> has an alt attribute; the non-empty ones read as useful sentences out of context."]
+    },
+    "ARIA Accessibility": {
+        goal: "Label the interactive and landmark regions of the page.",
+        requirements: [
+            "Prefer native semantic elements; add ARIA only where no native element carries the meaning.",
+            "Give icon-only controls an `aria-label`, and each landmark region an accessible name where several of the same type exist.",
+            "Never put a `role` on an element that already implies it (`<nav role=\"navigation\">` is redundant)."
+        ],
+        deliverable: "The attribute changes.",
+        acceptance: ["Every interactive control has an accessible name, and no ARIA role contradicts its element."]
+    },
+    "Viewport Meta Tag": {
+        goal: "Declare a responsive viewport.",
+        requirements: [
+            "Add <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"> to the <head>.",
+            "Do not set `user-scalable=no` or a `maximum-scale` below 5 — both break zoom for users who need it."
+        ],
+        deliverable: "The meta tag.",
+        acceptance: ["The tag is present and permits zooming."]
+    },
+    "Semantic JSON-LD": {
+        goal: "Add schema.org structured data in JSON-LD.",
+        requirements: [
+            "Choose the type that actually matches the page — Article, Product, FAQPage, HowTo, Event, Organization — rather than defaulting to WebPage.",
+            "Populate every property the type marks as required, and only properties that are true of this page.",
+            "Embed it as <script type=\"application/ld+json\"> in the server-rendered HTML, not injected by client-side JavaScript.",
+            "Use a single @graph if the page needs several linked entities."
+        ],
+        deliverable: "The complete JSON-LD block for this page.",
+        acceptance: [
+            "The JSON parses, and every value in it is factually true of the page — structured data that overstates the page is treated as spam.",
+            "It validates at https://validator.schema.org/."
+        ]
+    },
+    "Organization Schema": {
+        goal: "Publish Organization structured data identifying who runs the site.",
+        requirements: [
+            "Include `name`, `url`, `logo`, and `sameAs` links to the organisation's authoritative profiles.",
+            "Add `contactPoint` if there is a public support or press contact.",
+            "Place it on the homepage (or in a site-wide @graph) rather than repeating a full copy on every page."
+        ],
+        deliverable: "The Organization JSON-LD block.",
+        acceptance: ["The sameAs URLs all resolve and genuinely belong to the organisation."]
+    },
+    "FAQ Schema": {
+        goal: "Mark up genuine question-and-answer content as FAQPage.",
+        requirements: [
+            "Only mark up Q&A that is actually visible on the page — hidden or invented FAQ markup is a spam signal.",
+            "Each `Question` needs a `name` and an `acceptedAnswer` whose `text` answers it completely enough to stand alone.",
+            "Write answers as self-contained paragraphs; they may be quoted without the surrounding page."
+        ],
+        deliverable: "The FAQPage JSON-LD block.",
+        acceptance: ["Every question and answer in the markup appears verbatim in the page's visible text."]
+    },
+    "Breadcrumb Schema": {
+        goal: "Publish BreadcrumbList structured data for the page's position in the hierarchy.",
+        requirements: [
+            "Emit an ordered `itemListElement` array of `ListItem` entries, each with `position`, `name` and `item`.",
+            "Start at the site root and end at the current page.",
+            "Mirror the breadcrumb trail the page actually displays."
+        ],
+        deliverable: "The BreadcrumbList JSON-LD block.",
+        acceptance: ["Positions are sequential from 1, and every `item` URL resolves."]
+    },
+    "Site Search Schema": {
+        goal: "Publish a WebSite SearchAction so agents can query the site directly.",
+        requirements: [
+            "Add a `WebSite` node with `potentialAction` of type `SearchAction`.",
+            "Set `target` to a URL template containing `{search_term_string}`, and `query-input` to `required name=search_term_string`.",
+            "The template must point at a working search endpoint that returns results server-rendered."
+        ],
+        deliverable: "The WebSite/SearchAction JSON-LD block.",
+        acceptance: ["Substituting a real term into the template returns a results page with content in the HTML."]
+    },
+    "Authorship (E-E-A-T)": {
+        goal: "Attribute content to an identifiable author.",
+        requirements: [
+            "Add an `author` property to the page's JSON-LD, as a `Person` or `Organization` with a `name` and a `url` to a real profile or author page.",
+            "Add a visible byline in the markup as well — structured data alone with no visible attribution reads as manufactured.",
+            "For a Person, link `sameAs` to profiles that establish the relevant expertise."
+        ],
+        deliverable: "The author markup, structured and visible.",
+        acceptance: ["The author URL resolves to a page about that author, and the byline is visible to a reader."]
+    },
+    "Content Freshness": {
+        goal: "Publish explicit publication and modification dates.",
+        requirements: [
+            "Add `datePublished` and `dateModified` to the page's JSON-LD in ISO 8601 form.",
+            "Show a visible date in the markup using <time datetime=\"...\">.",
+            "Only update `dateModified` when the content substantively changes — bumping it on every deploy destroys the signal's value."
+        ],
+        deliverable: "The date markup, structured and visible.",
+        acceptance: ["The structured dates match the visible ones, and dateModified is not newer than the last real edit."]
+    },
+    "External Citations": {
+        goal: "Cite the external sources the content relies on.",
+        requirements: [
+            "Link to the primary source for each factual claim, statistic or quotation — the original study or dataset, not an article about it.",
+            "Use descriptive anchor text naming the source.",
+            "Do not add links that the content does not actually draw on."
+        ],
+        deliverable: "The citations to add, mapped to the claims they support.",
+        acceptance: ["Every statistic and quotation on the page has a resolvable source link."]
+    },
+    "Quotation Addition": {
+        goal: "Mark quoted material as quotations.",
+        requirements: [
+            "Wrap block quotations in <blockquote> and inline ones in <q>.",
+            "Add a `cite` attribute with the source URL, and attribute the speaker in visible text.",
+            "Only mark up material that is genuinely quoted from elsewhere."
+        ],
+        deliverable: "The quotation markup.",
+        acceptance: ["Each blockquote has an attributed source."]
+    },
+    "Statistics Addition": {
+        goal: "Support the page's claims with concrete figures.",
+        requirements: [
+            "Replace vague quantifiers (\"many\", \"significantly\") with actual numbers where you have them.",
+            "Give every figure a unit, a time period and a source.",
+            "Do not invent figures — if a number is not available, say so rather than estimating."
+        ],
+        deliverable: "The specific figures to add and where each comes from.",
+        acceptance: ["Every number on the page is traceable to a cited source."]
+    },
+    "Fluency Optimization": {
+        goal: "Bring the prose into a readable band without flattening it.",
+        requirements: [
+            "Target a Flesch Reading Ease of 45-95 for English (30-90 for Russian, whose scale runs lower).",
+            "Shorten sentences that carry more than one idea; prefer the active voice.",
+            "Expand jargon on first use rather than deleting it — precision matters more than the score.",
+            "Do not chase the metric by chopping every sentence to five words; that reads worse and retrieves no better."
+        ],
+        deliverable: "The rewritten passages, with the reasoning for each substantive change.",
+        acceptance: ["The meaning is unchanged and no technical term has been lost."]
+    },
+    "Authoritative Voice": {
+        goal: "Make the page's authority verifiable rather than asserted.",
+        requirements: [
+            "This is not about inserting words like \"research shows\" — such phrasing without backing is exactly what the check is designed to reject.",
+            "Name the author and link to their credentials.",
+            "Cite primary sources for the claims, and quote them where the exact wording matters.",
+            "Give concrete figures with their provenance."
+        ],
+        deliverable: "The specific attributions, citations and figures to add to this page.",
+        acceptance: ["A skeptical reader could check every substantive claim on the page by following a link."]
+    },
+    "Content Neg. (MD)": {
+        goal: "Serve a Markdown representation of pages to clients that ask for it.",
+        requirements: [
+            "When a request carries `Accept: text/markdown`, return the page's content as Markdown with `Content-Type: text/markdown; charset=utf-8`.",
+            "Send `Vary: Accept` on every response so caches do not mix the two representations.",
+            "The Markdown must carry the same content as the HTML — same headings, same body, same links — not a summary.",
+            "Optionally also expose the Markdown at a stable `.md` URL for clients that do not negotiate."
+        ],
+        deliverable: "The server or middleware change implementing the negotiation.",
+        acceptance: [
+            "`curl -H 'Accept: text/markdown' ORIGIN` returns Markdown, and a plain `curl ORIGIN` still returns HTML.",
+            "Both responses carry `Vary: Accept`."
+        ]
+    },
+    "Freshness Headers": {
+        goal: "Send validators so clients can revalidate cheaply.",
+        requirements: [
+            "Send `ETag` and/or `Last-Modified` on content responses.",
+            "The ETag must change when and only when the content changes.",
+            "Pair them with a `Cache-Control` policy that permits revalidation."
+        ],
+        deliverable: "The header configuration.",
+        acceptance: ["`curl -sI ORIGIN` shows ETag or Last-Modified, and the value is stable across identical content."]
+    },
+    "Conditional Requests (304)": {
+        goal: "Answer conditional requests with 304 Not Modified.",
+        requirements: [
+            "Handle `If-None-Match` against your ETag and `If-Modified-Since` against Last-Modified.",
+            "Return 304 with no body when the content is unchanged.",
+            "Make sure the CDN or reverse proxy in front of the app forwards the conditional headers rather than stripping them."
+        ],
+        deliverable: "The server-side handling, and any proxy configuration needed.",
+        acceptance: ["`curl -sI -H 'If-None-Match: \"<etag>\"' ORIGIN` returns 304 with an empty body."]
+    },
+    "X-Robots-Tag Header": {
+        goal: "Remove restrictive X-Robots-Tag directives from production responses.",
+        requirements: [
+            "Find where the header is set — application, framework, CDN or reverse proxy — and identify why.",
+            "Remove `noindex`, `nosnippet` or `noai` from responses that should be publicly indexable.",
+            "Keep restrictions only on paths that genuinely should not be indexed, and verify staging configuration is not leaking into production."
+        ],
+        deliverable: "The configuration change and the layer it belongs to.",
+        acceptance: ["`curl -sI ORIGIN | grep -i x-robots-tag` returns nothing restrictive for public pages."]
+    },
+    "HTTPS & HSTS": {
+        goal: "Serve the site over HTTPS and enforce it with HSTS.",
+        requirements: [
+            "Redirect all HTTP traffic to HTTPS with a 301.",
+            "Send `Strict-Transport-Security: max-age=31536000; includeSubDomains`.",
+            "Confirm every subdomain has a valid certificate before adding `includeSubDomains` — it will break any that does not.",
+            "Only consider `preload` once the policy has run without problems for some time; preload removal is slow."
+        ],
+        deliverable: "The redirect and header configuration.",
+        acceptance: ["`curl -sI ORIGIN` shows the HSTS header, and an http:// request 301s to https://."]
+    },
+    "RSS/Atom Feed": {
+        goal: "Publish a feed and advertise it from the HTML.",
+        requirements: [
+            "Publish an RSS 2.0 or Atom feed of the site's updating content.",
+            "Include full content in the feed rather than a truncated teaser.",
+            "Link it from the <head>: <link rel=\"alternate\" type=\"application/rss+xml\" href=\"...\">."
+        ],
+        deliverable: "The feed and the link tag.",
+        acceptance: ["The feed validates, and the alternate link is present in the server-rendered HTML."]
+    },
+    "AI Fallback (No-JS)": {
+        goal: "Give non-JavaScript clients a usable path to the content.",
+        requirements: [
+            "Provide a <noscript> block pointing at the machine-readable entry points (llms.txt, the sitemap, a Markdown or API representation).",
+            "This is a fallback, not a substitute for server-rendering the main content."
+        ],
+        deliverable: "The noscript block.",
+        acceptance: ["With JavaScript disabled, the page offers a working route to the content."]
+    },
+    "NoAI Meta Tag": {
+        goal: "Decide whether to declare a NoAI preference, and state it explicitly either way.",
+        requirements: [
+            "This is a policy choice, not a defect — the audit reports it without scoring it.",
+            "To opt out: add <meta name=\"robots\" content=\"noai, noimageai\"> and keep it consistent with robots.txt and any TDM reservation.",
+            "To opt in: leave it absent deliberately, and make sure nothing else on the site contradicts that."
+        ],
+        deliverable: "The meta tag if opting out, or a note confirming the deliberate absence.",
+        acceptance: ["The NoAI stance, robots.txt and any TDM declaration all say the same thing."]
+    },
+    "WebMCP Integration": {
+        goal: "Expose in-page tools to agents via WebMCP.",
+        requirements: [
+            "Register the page's real capabilities as tools — search, filter, add-to-cart — not a demonstration tool.",
+            "Give each tool a description precise enough that a model can tell when it applies, and a typed input schema.",
+            "Keep every tool idempotent and side-effect-free unless the user has explicitly confirmed the action."
+        ],
+        deliverable: "The WebMCP registration code and the tool definitions.",
+        acceptance: ["Each tool's description names its preconditions, and destructive actions require confirmation."]
+    },
+    "LLMs.txt": {
+        goal: "Publish an llms.txt navigation manifest at the site root.",
+        requirements: [
+            "Follow the llmstxt.org structure exactly: an H1 with the project name, a blockquote summarising it in one or two sentences, then H2 sections containing Markdown link lists.",
+            "Each link needs a short description after a colon explaining what the reader will find there.",
+            "Link to raw Markdown or plain-text documentation where it exists, not to JavaScript-heavy pages.",
+            "Put genuinely optional material under an `## Optional` section so agents with a limited budget can skip it."
+        ],
+        deliverable: "The complete llms.txt content, served at /llms.txt as text/plain or text/markdown.",
+        acceptance: [
+            "`curl -s ORIGIN/llms.txt` returns Markdown, not HTML — a soft 404 that returns the site's HTML shell is the most common failure here.",
+            "The file has exactly one H1, a blockquote, and at least one Markdown link list.",
+            "Every linked URL resolves."
+        ]
+    },
+    "LLMs-Full.txt": {
+        goal: "Publish the full documentation as a single Markdown file.",
+        requirements: [
+            "Concatenate the primary documentation in a sensible reading order under H2 section headings.",
+            "Include the actual content — API references, guides, code samples — not a table of contents.",
+            "Generate it from the same source as the human documentation so the two cannot drift.",
+            "Keep it as plain Markdown with no site chrome."
+        ],
+        deliverable: "The generated /llms-full.txt, plus the build step that keeps it current.",
+        acceptance: ["The file starts with an H1, contains H2 sections, and is regenerated by the docs build."]
+    },
+    "AGENTS.md": {
+        goal: "Publish an AGENTS.md operating manual for autonomous agents.",
+        requirements: [
+            "Start with an H1 and a blockquote summarising what this site or project is.",
+            "Cover: what the project does, how to run and test it, the conventions an agent must follow, and what it must not do.",
+            "Be specific — exact commands, exact paths. Generic advice is worse than nothing because it displaces the model's own reasonable defaults.",
+            "Serve it at /AGENTS.md (and optionally /.well-known/agents.md) as text/markdown."
+        ],
+        deliverable: "The complete AGENTS.md content.",
+        acceptance: [
+            "`curl -s ORIGIN/AGENTS.md` returns Markdown with the correct content type, not the site's HTML shell.",
+            "Every command in it runs successfully as written."
+        ]
+    },
+    "agents.json": {
+        goal: "Publish an agents.json capability manifest.",
+        requirements: [
+            "Include `name`, `version`, `description`, and a `capabilities` array.",
+            "Describe each capability with its endpoint, HTTP method and parameter schema.",
+            "Only declare capabilities that actually exist and work.",
+            "Serve it at /.well-known/agents.json as application/json."
+        ],
+        deliverable: "The complete agents.json.",
+        acceptance: ["The file is valid JSON, and every declared endpoint responds as described."]
+    },
+    "MCP Server": {
+        goal: "Expose the site's capabilities through a Model Context Protocol server.",
+        requirements: [
+            "Implement an MCP endpoint speaking JSON-RPC 2.0 over streamable HTTP at /mcp, handling `initialize`, `tools/list` and `tools/call`.",
+            "Expose tools that map to real operations, each with a JSON Schema for its input and a description precise enough for a model to choose it correctly.",
+            "Validate and authorise every call server-side — a tool definition is not an access control.",
+            "Optionally publish a discovery manifest at /.well-known/mcp/server-card.json, and RFC 9728 metadata at /.well-known/oauth-protected-resource/mcp if the endpoint requires auth."
+        ],
+        deliverable: "The MCP server implementation and its tool definitions.",
+        acceptance: [
+            "A `tools/list` JSON-RPC POST to /mcp returns the tool array.",
+            "Each tool's inputSchema validates the arguments its handler actually requires."
+        ]
+    },
+    "A2A Agent Card": {
+        goal: "Publish an A2A agent card so other agents can negotiate with this one.",
+        requirements: [
+            "Follow the A2A specification's card schema: identity, capabilities/skills, endpoint URLs and authentication requirements.",
+            "Declare the authentication scheme accurately, including the OAuth endpoints if applicable.",
+            "Serve it at /.well-known/agent-card.json as application/json."
+        ],
+        deliverable: "The complete agent-card.json.",
+        acceptance: ["The card validates against the A2A schema and every declared endpoint resolves."]
+    },
+    "Agent Skills": {
+        goal: "Publish an Agent Skills index mapping endpoints to task-level skills.",
+        requirements: [
+            "Describe each skill by the task it accomplishes, not by the REST route it wraps.",
+            "Give each skill a name, a description, its endpoint and its method.",
+            "Serve the index at /.well-known/agent-skills/index.json."
+        ],
+        deliverable: "The complete skills index JSON.",
+        acceptance: ["Each skill description would let a model decide, unaided, whether the skill applies to a given request."]
+    },
+    "API Catalog": {
+        goal: "Publish an RFC 9727 API catalog pointing at the OpenAPI description.",
+        requirements: [
+            "Serve a linkset at /.well-known/api-catalog per RFC 9727, with `service-desc` links to the OpenAPI documents.",
+            "Give every OpenAPI operation an `operationId` and a `description` — that is what makes the API usable as a set of tools.",
+            "Describe every parameter and document the response schemas.",
+            "Serve it as application/linkset+json."
+        ],
+        deliverable: "The api-catalog linkset plus the OpenAPI annotations it points to.",
+        acceptance: ["Every operation in the referenced OpenAPI document has both an operationId and a description."]
+    },
+    "AI Plugin": {
+        goal: "Publish an ai-plugin.json manifest.",
+        requirements: [
+            "Include `name_for_human`, `name_for_model`, `description_for_human`, `description_for_model`, the auth configuration and a link to the OpenAPI spec.",
+            "Write `description_for_model` as an instruction telling the model when to use the API and when not to — this is the field that determines whether it gets called correctly.",
+            "Serve it at /.well-known/ai-plugin.json as application/json."
+        ],
+        deliverable: "The complete ai-plugin.json.",
+        acceptance: ["`description_for_model` states the API's preconditions and limits, not just its features."]
+    },
+    "OAuth Discovery": {
+        goal: "Publish RFC 8414 OAuth 2.0 authorization server metadata.",
+        requirements: [
+            "Serve the metadata document at /.well-known/oauth-authorization-server.",
+            "Include `issuer`, `authorization_endpoint`, `token_endpoint`, `scopes_supported`, `response_types_supported` and `code_challenge_methods_supported`.",
+            "Support PKCE and list `S256` — agent clients are public clients and cannot hold a secret.",
+            "The `issuer` value must exactly match the URL the document is served from."
+        ],
+        deliverable: "The metadata document and any server configuration it requires.",
+        acceptance: ["Every declared endpoint resolves and the issuer matches the document's own origin."]
+    },
+    "OAuth Protected Resource": {
+        goal: "Publish RFC 9728 protected resource metadata.",
+        requirements: [
+            "Serve the metadata at /.well-known/oauth-protected-resource (and /.well-known/oauth-protected-resource/mcp for an MCP endpoint).",
+            "Include `resource`, `authorization_servers`, `bearer_methods_supported` and `scopes_supported`.",
+            "Have the protected endpoint answer unauthenticated requests with 401 and a `WWW-Authenticate` header naming the resource_metadata URL."
+        ],
+        deliverable: "The metadata document plus the WWW-Authenticate response.",
+        acceptance: ["An unauthenticated request returns 401 with a WWW-Authenticate header pointing at the metadata."]
+    },
+    "Universal Commerce": {
+        goal: "Publish a UCP configuration for agent-driven commerce.",
+        requirements: [
+            "Only add this if the site actually sells something — it is scored as niche precisely because it does not apply to most sites.",
+            "Point /.well-known/ucp at the product catalogue, pricing and checkout endpoints.",
+            "Keep prices and availability live; a stale catalogue is worse than none because agents will act on it."
+        ],
+        deliverable: "The UCP configuration.",
+        acceptance: ["The declared endpoints return current pricing and stock."]
+    },
+    "x402 Payment Standard": {
+        goal: "Publish x402 payment discovery metadata.",
+        requirements: [
+            "Only add this if you intend to accept programmatic payments.",
+            "Declare the priced endpoints, the amount, the asset, the network as a CAIP-2 identifier, and the receiving address.",
+            "Ask me for the receiving wallet address rather than inserting a placeholder — a zero address here means real payments are lost.",
+            "Have the priced endpoints return HTTP 402 with the payment requirements when payment is absent."
+        ],
+        deliverable: "The x402.json plus the 402 response handling.",
+        acceptance: ["The payTo address is one I confirmed, and an unpaid request to a priced endpoint returns 402."]
+    },
+    "security.txt": {
+        goal: "Publish an RFC 9116 security.txt.",
+        requirements: [
+            "Include `Contact` (a monitored address or reporting form) and `Expires` (an ISO 8601 timestamp less than a year out).",
+            "Optionally add `Policy`, `Preferred-Languages` and `Encryption`.",
+            "Ask me for the contact address instead of inventing one — an unmonitored address here means vulnerability reports go nowhere.",
+            "Serve it at /.well-known/security.txt as text/plain, and set a reminder to refresh `Expires` before it lapses."
+        ],
+        deliverable: "The security.txt content.",
+        acceptance: ["The Contact value is an address I confirmed is monitored, and Expires is in the future."]
+    },
+    "TDM Reservation": {
+        goal: "Declare a TDM reservation if you intend to reserve text-and-data-mining rights.",
+        requirements: [
+            "This is a policy choice; the audit reports it without scoring it.",
+            "To reserve rights: publish /.well-known/tdmrep.json with `tdm-reservation: 1` and a `tdm-policy` URL, and publish the policy document at that URL.",
+            "Keep it consistent with robots.txt — a TDM reservation alongside an open GPTBot rule sends two contradictory signals.",
+            "This addresses EU CDSM Directive Article 4; it is not a substitute for legal advice."
+        ],
+        deliverable: "The tdmrep.json and the policy document it references.",
+        acceptance: ["The tdm-policy URL resolves, and the declaration agrees with robots.txt."]
+    },
+    "ai.txt": {
+        goal: "Publish an ai.txt declaring data-mining permissions, if that matches your policy.",
+        requirements: [
+            "This is a policy choice; the audit reports it without scoring it.",
+            "Follow the Spawning ai.txt format, with explicit User-Agent and Disallow/Allow directives.",
+            "Keep it consistent with robots.txt and any TDM reservation."
+        ],
+        deliverable: "The ai.txt content, served at /ai.txt as text/plain.",
+        acceptance: ["The directives agree with robots.txt rather than contradicting it."]
+    }
+};
+
+const PROMPT_TAIL = "Follow the linked specification exactly; do not invent fields it does not define. " +
+    "If any required value depends on my setup — a contact address, a wallet, an endpoint, a real date — " +
+    "ask me for it rather than filling in a placeholder. " +
+    "Show me the complete file or code change, tell me the exact path it belongs at, " +
+    "and list anything you were unsure about.";
+
+/**
+ * Assembles a remediation prompt for one check, carrying the audited origin and
+ * the specific finding so the assistant is not left to guess either.
+ */
+export function buildPrompt(check, origin) {
+    const entry = PROMPT_LIBRARY[check.name];
+    if (!entry) return check.prompt;
+
+    const subst = (text) => String(text).replace(/ORIGIN/g, origin);
+    const parts = [];
+
+    parts.push(`Goal: ${subst(entry.goal)}`);
+    parts.push('');
+    parts.push(check.status === 'ok'
+        ? `Context: I run ${origin}. An AI-readiness audit reports this as already in place ("${check.message}"). Review what is there against the requirements below and tell me what, if anything, would improve it — do not rewrite it wholesale if it is already correct.`
+        : `Context: I run ${origin}. An AI-readiness audit flagged this: "${check.message}".`);
+    parts.push('');
+    parts.push('Requirements:');
+    for (const req of entry.requirements) parts.push(`- ${subst(req)}`);
+
+    if (entry.deliverable) {
+        parts.push('');
+        parts.push(`Deliverable: ${subst(entry.deliverable)}`);
+    }
+    if (entry.acceptance?.length) {
+        parts.push('');
+        parts.push('Done when:');
+        for (const item of entry.acceptance) parts.push(`- ${subst(item)}`);
+    }
+    if (check.spec) {
+        parts.push('');
+        parts.push(`Specification: ${check.spec}`);
+    }
+    parts.push('');
+    parts.push(PROMPT_TAIL);
+
+    return parts.join('\n');
+}
+
+
 export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
     if (!response.body || typeof response.body.getReader !== 'function') {
         return await response.text();
@@ -1102,6 +1832,19 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasImageAlt = false;
     let hasRss = false;
     let hasOrgSchema = false;
+    let fleschScore = null;
+    let hasBreadcrumbSchema = false;
+    let hasSiteSearchSchema = false;
+    let hasCanonical = false;
+    let hasHsts = false;
+    let isHttps = false;
+    let xRobotsTag = '';
+    let hasBlockingXRobots = false;
+    let imagesTotal = 0;
+    let imagesWithAlt = 0;
+    let wordCount = 0;
+    let scriptBytes = 0;
+    let hasServerRenderedContent = false;
     let currentScriptText = '';
 
     // --- Phase 2: the homepage itself (headers + streamed HTML analysis) ---
@@ -1115,6 +1858,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     }
     try {
         timings.homeRespondedAt = Date.now();
+
+        // Transport-level signals available straight from the response headers.
+        isHttps = new URL(base).protocol === 'https:';
+        hasHsts = !!r_home.headers.get('strict-transport-security');
+        xRobotsTag = (r_home.headers.get('x-robots-tag') || '').toLowerCase();
+        hasBlockingXRobots = /\b(noindex|nosnippet|noai|noimageai)\b/.test(xRobotsTag);
+
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         if (cType.includes('text/markdown')) {
             supportsMarkdown = true;
@@ -1185,10 +1935,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             })
             .on('img', {
                 element(el) {
+                    imagesTotal++;
                     const alt = el.getAttribute('alt');
-                    if (alt && alt.trim()) {
-                        hasImageAlt = true;
-                    }
+                    // A decorative image legitimately carries alt="", so an
+                    // explicitly empty alt counts as described, not missing.
+                    if (alt !== null) imagesWithAlt++;
+                }
+            })
+            .on('link[rel~="canonical"]', {
+                element(el) {
+                    const href = (el.getAttribute('href') || '').trim();
+                    if (href) hasCanonical = true;
                 }
             })
             .on('link[rel="alternate"]', {
@@ -1300,6 +2057,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     }
                 },
                 text(chunk) {
+                    scriptBytes += chunk.text.length;
                     if (hasWebMCP) return;
                     if (currentScriptText.length < 500000) {
                         currentScriptText += chunk.text;
@@ -1355,28 +2113,37 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Evaluate new metrics
         hasCleanUrls = hasInternalLinks && !hasDirtyUrls;
 
+        // An <img> without an alt attribute is invisible to an agent. One
+        // described image out of two hundred used to be enough to pass.
+        hasImageAlt = imagesTotal === 0 || (imagesWithAlt / imagesTotal) >= 0.8;
+
         const sentences = lowerHtmlText.split(/[.!?]+(?=\s+|$)/).filter(s => s.trim().length > 0).length || 1;
         const words = lowerHtmlText.split(/\s+/).filter(w => w.length > 0).length || 1;
+        wordCount = lowerHtmlText.trim() ? words : 0;
         const isCyrillic = /[а-яё]/i.test(lowerHtmlText);
-        const syllables = (lowerHtmlText.match(/[aeiouyаеёиоуыэюяàáâãäåèéêëìíîïòóôõöùúûüýÿ]{1,2}/gi) || []).length || 1;
+
+        // A page that ships a large script bundle but almost no text is a
+        // client-rendered shell: crawlers that do not execute JavaScript see an
+        // empty document, which is the single most expensive AI-readiness bug.
+        hasServerRenderedContent = wordCount >= 100 || (wordCount >= 25 && scriptBytes < 5000);
+
         if (words > 50) {
             const asl = words / sentences;
-            const asw = syllables / words;
+            const asw = countSyllables(lowerHtmlText, isCyrillic) / words;
             const flesch = isCyrillic
                 ? 206.835 - 1.3 * asl - 60.1 * asw
                 : 206.835 - 1.015 * asl - 84.6 * asw;
-            if (flesch >= 30 && flesch <= 100) {
-                hasFluency = true;
-            }
+            fleschScore = Math.round(flesch);
+            // The bands differ by language on purpose. The Russian (Oborneva)
+            // coefficients weigh syllables far more heavily than the English
+            // ones, so the same prose scores ~15 points lower in Cyrillic; a
+            // single threshold across both would quietly fail readable Russian.
+            // The old 30-100 window passed essentially any prose in either.
+            hasFluency = isCyrillic
+                ? (flesch >= 30 && flesch <= 90)
+                : (flesch >= 45 && flesch <= 95);
         }
 
-        const authPhrases = [
-            'research shows', 'study', 'proven', 'according to', 'expert', 'analysis', 'demonstrates',
-            'исследование', 'исследования', 'согласно', 'доказано', 'эксперт', 'анализ'
-        ];
-        if (authPhrases.some(p => lowerHtmlText.includes(p))) {
-            hasAuthoritativeVoice = true;
-        }
 
         // Also check the raw text for JS-based agent fallback (covers non-noscript patterns)
         if (!hasAgentFallback && lowerHtmlText.includes('javascript') && (lowerHtmlText.includes('llms.txt') || lowerHtmlText.includes('ai agent'))) {
@@ -1406,6 +2173,15 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                         if (typeList.includes('Organization')) {
                             hasOrgSchema = true;
                         }
+                        if (typeList.includes('BreadcrumbList')) {
+                            hasBreadcrumbSchema = true;
+                        }
+                        if (typeList.includes('WebSite') && obj['potentialAction']) {
+                            const actions = Array.isArray(obj['potentialAction']) ? obj['potentialAction'] : [obj['potentialAction']];
+                            if (actions.some(a => a && /SearchAction/.test(String(a['@type'] || '')))) {
+                                hasSiteSearchSchema = true;
+                            }
+                        }
                     }
                     if (obj['author']) {
                         hasAuthorship = true;
@@ -1424,6 +2200,11 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             } catch { /* ignore parse error */ }
         }
+
+        // Depends on authorship from JSON-LD and on the statistics scan above,
+        // so it has to be decided once both are final.
+        hasAuthoritativeVoice = (hasAuthorship && (hasCitations || hasStatistics)) ||
+                                (hasCitations && hasQuotations && hasStatistics);
         
 
     } catch { /* silent fail */ }
@@ -1982,6 +2763,18 @@ Example:
             hasFluency,
             hasAuthoritativeVoice,
             hasCleanUrls,
+            hasCanonical,
+            hasBreadcrumbSchema,
+            hasSiteSearchSchema,
+            hasServerRenderedContent,
+            hasHsts,
+            isHttps,
+            xRobotsTag,
+            hasBlockingXRobots,
+            wordCount,
+            fleschScore,
+            imagesTotal,
+            imagesWithAlt,
             results: [
                 {
                     name: "Content Neg. (MD)",
@@ -2267,6 +3060,77 @@ Examples of specific types:
                     code: hasOrgSchema ? 'Found' : 'Missing'
                 },
                 {
+                    name: "Server-Rendered Content",
+                    prompt: `Serve this page’s text in the initial HTML response so crawlers that do not execute JavaScript can read it.`,
+                    status: hasServerRenderedContent ? 'ok' : 'err',
+                    message: hasServerRenderedContent
+                        ? `Readable text present without JavaScript (${wordCount} words)`
+                        : `Only ${wordCount} words of text in the HTML response — the page appears to render client-side`,
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/javascript/javascript-seo-basics",
+                    tooltip: `<strong>What it is:</strong> Whether the HTML your server returns already contains the page's text, or whether the text only appears after JavaScript runs in a browser.<br/><br/><strong>Why it's critical:</strong> Most AI crawlers — including GPTBot, ClaudeBot and PerplexityBot — do not execute JavaScript. They read the raw HTML response and nothing else.<br/><br/><strong>Impact of missing it:</strong> Your page is effectively blank to them. Every other optimisation on this list is wasted, because there is no content to optimise.<br/><br/><strong>Implementation Example:</strong> Use server-side rendering, static generation, or prerendering so the main content is in the initial HTML. Verify with <code>curl -s https://yoursite.com | grep -o '&lt;p&gt;'</code>.`,
+                    code: hasServerRenderedContent ? 'Found' : 'Client-Rendered'
+                },
+                {
+                    name: "Content Depth",
+                    prompt: `Add substantive on-page content so the page has enough text to be retrieved and cited.`,
+                    status: wordCount >= 300 ? 'ok' : 'warn',
+                    message: wordCount >= 300
+                        ? `Substantive page content (${wordCount} words)`
+                        : `Thin page content (${wordCount} words) — aim for 300+ words of substantive text`,
+                    spec: "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+                    tooltip: `<strong>What it is:</strong> The amount of substantive, non-boilerplate text on the page.<br/><br/><strong>Why it's critical:</strong> Retrieval systems chunk and embed page text. A page with too little text produces weak embeddings and rarely surfaces as a citation in a generated answer.<br/><br/><strong>Impact of missing it:</strong> Your page is indexed but almost never retrieved, because there is not enough signal for a model to match it against a question.<br/><br/><strong>Implementation Example:</strong> Answer the questions a reader actually arrives with, in prose, on the page itself — rather than deferring everything to a PDF, a video, or a JavaScript-loaded tab.`,
+                    code: wordCount >= 300 ? 'Found' : 'Thin'
+                },
+                {
+                    name: "Canonical URL",
+                    prompt: `Declare a canonical URL for every page so citations converge on one address.`,
+                    status: hasCanonical ? 'ok' : 'warn',
+                    message: hasCanonical ? "Canonical URL declared" : "No rel=canonical link found",
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls",
+                    tooltip: `<strong>What it is:</strong> A <code>&lt;link rel="canonical"&gt;</code> tag naming the preferred URL for the page.<br/><br/><strong>Why it's critical:</strong> Agents that cite your content need one stable address to link to. Without a canonical, the same page reached via tracking parameters, trailing slashes or alternate hosts looks like several competing documents.<br/><br/><strong>Impact of missing it:</strong> Citations fragment across URL variants, splitting whatever authority the page has earned, and an agent may cite a parameterised URL that later breaks.<br/><br/><strong>Implementation Example:</strong> <code>&lt;link rel="canonical" href="https://example.com/page"&gt;</code> in the <code>&lt;head&gt;</code>.`,
+                    code: hasCanonical ? 'Found' : 'Missing'
+                },
+                {
+                    name: "HTTPS & HSTS",
+                    prompt: `Serve the site over HTTPS and enforce it with a Strict-Transport-Security header.`,
+                    status: (isHttps && hasHsts) ? 'ok' : (isHttps ? 'warn' : 'err'),
+                    message: isHttps
+                        ? (hasHsts ? "Served over HTTPS with HSTS enabled" : "Served over HTTPS but no Strict-Transport-Security header")
+                        : "Not served over HTTPS",
+                    spec: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security",
+                    tooltip: `<strong>What it is:</strong> Transport security for the origin: HTTPS plus a <code>Strict-Transport-Security</code> response header.<br/><br/><strong>Why it's critical:</strong> Agent runtimes and MCP clients increasingly refuse to fetch, or downrank, plaintext origins — and an agent acting on a user's behalf cannot safely send credentials to one.<br/><br/><strong>Impact of missing it:</strong> Automated clients may skip your site entirely, and any authenticated agent integration is off the table.<br/><br/><strong>Implementation Example:</strong> Redirect all HTTP traffic to HTTPS and send <code>Strict-Transport-Security: max-age=31536000; includeSubDomains</code>.`,
+                    code: isHttps ? (hasHsts ? 'Found' : 'No HSTS') : 'Insecure'
+                },
+                {
+                    name: "X-Robots-Tag Header",
+                    prompt: `Remove restrictive X-Robots-Tag directives from production responses.`,
+                    status: hasBlockingXRobots ? 'warn' : 'ok',
+                    message: hasBlockingXRobots
+                        ? `X-Robots-Tag restricts indexing: "${xRobotsTag}"`
+                        : (xRobotsTag ? `X-Robots-Tag present and permissive: "${xRobotsTag}"` : "No restrictive X-Robots-Tag header"),
+                    spec: "https://developers.google.com/search/docs/crawling-indexing/robots-meta-tag",
+                    tooltip: `<strong>What it is:</strong> An HTTP response header that carries the same directives as the robots meta tag.<br/><br/><strong>Why it's critical:</strong> It overrides your HTML, and it is easy to set once at the CDN or framework level and then forget. A <code>noindex</code> left over from a staging configuration silently removes a live page from every index.<br/><br/><strong>Impact of missing it:</strong> Nothing — the absence of a restrictive header is the healthy state. A restrictive value, however, quietly undoes every other signal on this page.<br/><br/><strong>Implementation Example:</strong> Check with <code>curl -sI https://yoursite.com | grep -i x-robots-tag</code> and remove stray <code>noindex</code> / <code>nosnippet</code> directives from production.`,
+                    code: hasBlockingXRobots ? 'Restricted' : 'Clear'
+                },
+                {
+                    name: "Breadcrumb Schema",
+                    prompt: `Publish BreadcrumbList structured data describing where this page sits in the site hierarchy.`,
+                    status: hasBreadcrumbSchema ? 'ok' : 'warn',
+                    message: hasBreadcrumbSchema ? "BreadcrumbList markup found" : "No BreadcrumbList structured data",
+                    spec: "https://schema.org/BreadcrumbList",
+                    tooltip: `<strong>What it is:</strong> <code>BreadcrumbList</code> JSON-LD describing where this page sits in your site's hierarchy.<br/><br/><strong>Why it's critical:</strong> It tells a model how a page relates to its section and to the site as a whole, which is context a single page's text cannot convey on its own.<br/><br/><strong>Impact of missing it:</strong> Agents treat each page as an isolated document and lose the topical grouping that helps them decide which of your pages answers a question.<br/><br/><strong>Implementation Example:</strong> Emit a <code>BreadcrumbList</code> with an ordered <code>itemListElement</code> array, one <code>ListItem</code> per level, each with <code>position</code>, <code>name</code> and <code>item</code>.`,
+                    code: hasBreadcrumbSchema ? 'Found' : 'Missing'
+                },
+                {
+                    name: "Site Search Schema",
+                    prompt: `Publish a WebSite SearchAction so agents can query the site directly.`,
+                    status: hasSiteSearchSchema ? 'ok' : 'warn',
+                    message: hasSiteSearchSchema ? "WebSite SearchAction declared" : "No WebSite/SearchAction structured data",
+                    spec: "https://schema.org/SearchAction",
+                    tooltip: `<strong>What it is:</strong> A <code>WebSite</code> node with a <code>potentialAction</code> of type <code>SearchAction</code>, publishing your site's own search URL template.<br/><br/><strong>Why it's critical:</strong> It hands an agent a way to query your site directly instead of guessing URLs — the cheapest form of "tool" you can expose, with no API to build.<br/><br/><strong>Impact of missing it:</strong> Agents can only reach pages they already know about, so anything not linked from a crawled page stays invisible.<br/><br/><strong>Implementation Example:</strong> Declare a <code>SearchAction</code> whose <code>target</code> is a URL template such as <code>https://example.com/search?q={search_term_string}</code>, with <code>query-input</code> naming the required term.`,
+                    code: hasSiteSearchSchema ? 'Found' : 'Missing'
+                },
+                {
                     name: "Clean URLs",
                     prompt: `Ensure all internal links use clean URL architectures without complex query strings or parameters to improve AI extraction and trust.`,
                     status: hasCleanUrls ? 'ok' : 'warn',
@@ -2312,6 +3176,7 @@ Examples of specific types:
         check.weight = meta.weight;
         check.category = meta.category;
         if (meta.advisory) check.advisory = true;
+        check.prompt = buildPrompt(check, base);
     }
 
     auditResult.score = scoreAudit(allChecks);
