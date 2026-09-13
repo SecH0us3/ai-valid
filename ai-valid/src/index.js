@@ -256,29 +256,24 @@ const STATIC_ROUTES = {
             }
         });
     },
-    "/.well-known/mcp/server-card.json": () => {
+    "/.well-known/mcp/server-card.json": (request) => {
+        const origin = new URL(request.url).origin;
+        // The card is generated from the same tool definitions the live /mcp
+        // endpoint serves, so the two cannot describe different servers.
         const serverCard = {
             "serverInfo": {
-                "name": "ai-valid-mcp",
+                "name": "ai-valid",
+                "title": "AI-Valid Readiness Auditor",
                 "version": "1.0.0"
             },
+            "protocolVersion": MCP_PROTOCOL_VERSION,
             "description": "AI-Readiness Audit Platform MCP Server",
-            "tools": [
-                {
-                    "name": "audit_website",
-                    "description": "Perform an AI readiness audit for a given URL",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "targetUrl": {
-                                "type": "string",
-                                "description": "The URL to audit"
-                            }
-                        },
-                        "required": ["targetUrl"]
-                    }
-                }
-            ]
+            "url": `${origin}/mcp`,
+            "endpoints": {
+                "http": `${origin}/mcp`
+            },
+            "capabilities": { "tools": { "listChanged": false } },
+            "tools": MCP_TOOLS
         };
         return new Response(JSON.stringify(serverCard, null, 2), {
             headers: {
@@ -1511,6 +1506,280 @@ async function isSafeUrl(targetUrl) {
     }
 }
 
+// --- Abuse control -----------------------------------------------------------
+//
+// One /api/audit call fans out to ~25 outbound requests against a caller-chosen
+// origin, with no cost to the caller. Unthrottled, that is a usable traffic
+// amplifier pointed at third parties.
+//
+// This is an in-isolate bucket, so it is per-edge-location rather than global —
+// a determined caller spread across colos gets a higher effective ceiling. It is
+// a floor, not a guarantee; a global limit needs the Workers rate-limiting
+// binding or a Durable Object. The limit is set well above what a person
+// clicking "Run scan" will ever reach.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_MAX_CLIENTS = 10000;
+const rateLimitBuckets = new Map();
+
+export function checkRateLimit(clientKey, now = Date.now()) {
+    if (!clientKey) return { allowed: true, remaining: RATE_LIMIT_MAX, retryAfter: 0 };
+
+    const bucket = rateLimitBuckets.get(clientKey);
+    if (!bucket || bucket.resetAt <= now) {
+        if (rateLimitBuckets.size >= RATE_LIMIT_MAX_CLIENTS) {
+            // Drop whatever expired; failing that, drop the oldest entry so the
+            // map cannot grow without bound under a spray of unique clients.
+            for (const [key, value] of rateLimitBuckets) {
+                if (value.resetAt <= now) rateLimitBuckets.delete(key);
+            }
+            if (rateLimitBuckets.size >= RATE_LIMIT_MAX_CLIENTS) {
+                const oldest = rateLimitBuckets.keys().next().value;
+                if (oldest !== undefined) rateLimitBuckets.delete(oldest);
+            }
+        }
+        rateLimitBuckets.set(clientKey, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return { allowed: true, remaining: RATE_LIMIT_MAX - 1, retryAfter: 0 };
+    }
+
+    if (bucket.count >= RATE_LIMIT_MAX) {
+        return { allowed: false, remaining: 0, retryAfter: Math.ceil((bucket.resetAt - now) / 1000) };
+    }
+
+    bucket.count++;
+    return { allowed: true, remaining: RATE_LIMIT_MAX - bucket.count, retryAfter: 0 };
+}
+
+function clientKeyFor(request) {
+    return request.headers.get("CF-Connecting-IP") ||
+           request.headers.get("X-Forwarded-For")?.split(",")[0].trim() ||
+           null;
+}
+
+// --- Model Context Protocol endpoint -----------------------------------------
+//
+// The site publishes an MCP server card at /.well-known/mcp/server-card.json and
+// RFC 9728 metadata pointing at /mcp, but /mcp itself did not exist: an agent
+// following the card got a 404, and the tool failed its own MCP check.
+//
+// This is the streamable-HTTP transport: JSON-RPC 2.0 over POST.
+
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+const MCP_TOOLS = [
+    {
+        name: "audit_website",
+        title: "Audit a website's AI readiness",
+        description: "Runs a full AI-readiness and Generative Engine Optimization audit against a public website. " +
+            "Checks crawler policy, content structure, structured data, delivery headers and agent protocols " +
+            "(llms.txt, AGENTS.md, MCP, A2A, API catalogs), and returns a weighted score with per-category " +
+            "breakdown and a ranked list of the highest-impact fixes. " +
+            "Use it when asked whether a site is ready for AI agents, why a site is not cited by AI search, " +
+            "or what to change to improve it. Only works against publicly reachable http(s) origins.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                targetUrl: {
+                    type: "string",
+                    description: "Absolute http(s) URL of the site to audit, e.g. https://example.com. Only the origin is used."
+                },
+                format: {
+                    type: "string",
+                    enum: ["summary", "full"],
+                    description: "'summary' (default) returns the score, categories and top fixes. 'full' returns every check."
+                }
+            },
+            required: ["targetUrl"],
+            additionalProperties: false
+        }
+    }
+];
+
+function jsonRpcResponse(id, result) {
+    return { jsonrpc: "2.0", id, result };
+}
+
+function jsonRpcError(id, code, message, data) {
+    const error = { code, message };
+    if (data !== undefined) error.data = data;
+    return { jsonrpc: "2.0", id: id ?? null, error };
+}
+
+const MCP_HEADERS = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    ...corsHeaders
+};
+
+/**
+ * Renders an audit as the text an agent actually wants back: the score, the
+ * weak categories, and what to do about them — not 60 raw check objects.
+ */
+function summariseAuditForAgent(result, full) {
+    const lines = [];
+    lines.push(`AI readiness for ${result.target}: ${result.score.total}/100 (grade ${result.score.grade}).`);
+    lines.push('');
+    lines.push('By category:');
+    for (const [name, bucket] of Object.entries(result.score.categories).sort((a, b) => a[1].total - b[1].total)) {
+        lines.push(`  ${name}: ${bucket.total}%`);
+    }
+    if (result.priorities.length) {
+        lines.push('');
+        lines.push('Highest-impact fixes:');
+        for (const item of result.priorities) {
+            lines.push(`  [+${item.weight}] ${item.name} — ${item.message}`);
+        }
+    }
+    if (full) {
+        lines.push('');
+        lines.push('All checks:');
+        const groups = [['Discoverability & bots', result.bots.results], ['Content', result.content.results], ['Protocols', result.protocols.results]];
+        for (const [title, checks] of groups) {
+            lines.push(`  ${title}:`);
+            for (const check of checks) {
+                const mark = check.status === 'ok' ? 'PASS' : (check.status === 'warn' ? 'WARN' : 'FAIL');
+                lines.push(`    ${mark} ${check.name} — ${check.message}`);
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
+async function handleMcpRequest(request, url, env, ctx) {
+    // The streamable-HTTP transport uses POST. A GET would open a server-sent
+    // event stream, which this server has no need for.
+    if (request.method !== "POST") {
+        return new Response(JSON.stringify(jsonRpcError(null, -32600, "This MCP endpoint accepts POST with a JSON-RPC 2.0 body")), {
+            status: 405,
+            headers: { ...MCP_HEADERS, "Allow": "POST, OPTIONS" }
+        });
+    }
+
+    let body;
+    try {
+        body = await request.json();
+    } catch {
+        return new Response(JSON.stringify(jsonRpcError(null, -32700, "Parse error")), { status: 400, headers: MCP_HEADERS });
+    }
+
+    // Batches are legal JSON-RPC; handle each message and drop the notifications.
+    const messages = Array.isArray(body) ? body : [body];
+    const responses = [];
+    const clientKey = clientKeyFor(request);
+    for (const message of messages) {
+        // Only tools/call does real work; the rate check is taken per call so a
+        // batch cannot slip several audits through on one allowance.
+        const rateAllowed = message?.method !== 'tools/call' || checkRateLimit(clientKey).allowed;
+        const reply = await handleMcpMessage(message, url, env, ctx, rateAllowed);
+        if (reply) responses.push(reply);
+    }
+
+    // A payload of nothing but notifications gets 202 with no body.
+    if (responses.length === 0) {
+        return new Response(null, { status: 202, headers: corsHeaders });
+    }
+
+    const payload = Array.isArray(body) ? responses : responses[0];
+    return new Response(JSON.stringify(payload), { status: 200, headers: MCP_HEADERS });
+}
+
+async function handleMcpMessage(message, url, env, ctx, rateAllowed = true) {
+    if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+        return jsonRpcError(message?.id, -32600, "Invalid Request");
+    }
+
+    // A message with no id is a notification: acknowledge by staying silent.
+    const isNotification = message.id === undefined || message.id === null;
+    const id = message.id;
+
+    switch (message.method) {
+        case "initialize":
+            return isNotification ? null : jsonRpcResponse(id, {
+                protocolVersion: MCP_PROTOCOL_VERSION,
+                capabilities: { tools: { listChanged: false } },
+                serverInfo: { name: "ai-valid", title: "AI-Valid Readiness Auditor", version: "1.0.0" },
+                instructions: "Call audit_website with the origin of a public website to get its AI-readiness score and the ranked fixes that would improve it."
+            });
+
+        case "ping":
+            return isNotification ? null : jsonRpcResponse(id, {});
+
+        case "tools/list":
+            return isNotification ? null : jsonRpcResponse(id, { tools: MCP_TOOLS });
+
+        case "tools/call": {
+            if (isNotification) return null;
+            const params = message.params || {};
+            if (params.name !== "audit_website") {
+                return jsonRpcError(id, -32602, `Unknown tool: ${params.name}`);
+            }
+            const args = params.arguments || {};
+            const targetUrl = args.targetUrl;
+            if (typeof targetUrl !== "string" || !targetUrl.trim()) {
+                return jsonRpcError(id, -32602, "targetUrl is required and must be a string");
+            }
+
+            if (!rateAllowed) {
+                return jsonRpcResponse(id, {
+                    content: [{ type: "text", text: "Rate limit exceeded. Please retry shortly." }],
+                    isError: true
+                });
+            }
+
+            const outcome = await runAuditForTarget(targetUrl, url.origin, env, ctx);
+            if (!outcome.ok) {
+                // A target the caller got wrong is a tool error, not a protocol
+                // error: the model should see it and can correct the argument.
+                return jsonRpcResponse(id, {
+                    content: [{ type: "text", text: `Audit failed: ${outcome.error}` }],
+                    isError: true
+                });
+            }
+
+            return jsonRpcResponse(id, {
+                content: [{ type: "text", text: summariseAuditForAgent(outcome.result, args.format === "full") }],
+                structuredContent: {
+                    target: outcome.result.target,
+                    score: outcome.result.score,
+                    priorities: outcome.result.priorities
+                },
+                isError: false
+            });
+        }
+
+        default:
+            return isNotification ? null : jsonRpcError(id, -32601, `Method not found: ${message.method}`);
+    }
+}
+
+/**
+ * Validates a target and runs the audit. Shared by the HTTP API and the MCP
+ * tool so the SSRF guard cannot be bypassed through either entry point.
+ */
+async function runAuditForTarget(targetUrl, requestOrigin, env, ctx) {
+    let parsed;
+    try {
+        parsed = new URL(targetUrl);
+    } catch {
+        return { ok: false, status: 400, error: "Invalid URL" };
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { ok: false, status: 400, error: "Invalid URL" };
+    }
+    if (!await isSafeUrl(targetUrl)) {
+        return { ok: false, status: 403, error: "Access to internal or restricted network resources is not allowed" };
+    }
+    try {
+        return { ok: true, result: await performAudit(targetUrl, requestOrigin, env, ctx) };
+    } catch (e) {
+        if (e instanceof UnreachableTargetError) {
+            return { ok: false, status: 400, error: "Domain does not exist or is unreachable" };
+        }
+        throw e;
+    }
+}
+
+
 export async function handleRequest(request, env, ctx) {
         if (request.method === "OPTIONS") {
             return new Response(null, { headers: corsHeaders });
@@ -1535,12 +1804,17 @@ export async function handleRequest(request, env, ctx) {
                     });
                 }
 
-                // SSRF Protection
-                const safeUrl = await isSafeUrl(targetUrl);
-                if (!safeUrl) {
-                    return new Response(JSON.stringify({ error: "Access to internal or restricted network resources is not allowed" }), { 
-                        status: 403,
-                        headers: { "Content-Type": "application/json", ...corsHeaders }
+                const rate = checkRateLimit(clientKeyFor(request));
+                if (!rate.allowed) {
+                    return new Response(JSON.stringify({ error: "Rate limit exceeded. Please retry shortly." }), {
+                        status: 429,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Retry-After": String(rate.retryAfter),
+                            "RateLimit-Limit": String(RATE_LIMIT_MAX),
+                            "RateLimit-Remaining": "0",
+                            ...corsHeaders
+                        }
                     });
                 }
 
@@ -1568,18 +1842,16 @@ export async function handleRequest(request, env, ctx) {
                     } catch { /* cache unavailable, fall through to a live audit */ }
                 }
 
-                let result;
-                try {
-                    result = await performAudit(targetUrl, url.origin, env, ctx);
-                } catch (auditError) {
-                    if (auditError instanceof UnreachableTargetError) {
-                        return new Response(JSON.stringify({ error: "Domain does not exist or is unreachable" }), {
-                            status: 400,
-                            headers: { "Content-Type": "application/json", ...corsHeaders }
-                        });
-                    }
-                    throw auditError;
+                // Shared with the MCP tool, so the SSRF guard and the
+                // reachability handling cannot diverge between the two entry points.
+                const outcome = await runAuditForTarget(targetUrl, url.origin, env, ctx);
+                if (!outcome.ok) {
+                    return new Response(JSON.stringify({ error: outcome.error }), {
+                        status: outcome.status,
+                        headers: { "Content-Type": "application/json", ...corsHeaders }
+                    });
                 }
+                const result = outcome.result;
 
                 const body = wantsMarkdown ? renderAuditMarkdown(result) : JSON.stringify(result);
                 const response = new Response(body, {
@@ -1665,6 +1937,10 @@ export async function handleRequest(request, env, ctx) {
                     ...corsHeaders
                 }
             });
+        }
+
+        if (url.pathname === "/mcp") {
+            return await handleMcpRequest(request, url, env, ctx);
         }
 
         return new Response("Not Found", { status: 404, headers: corsHeaders });

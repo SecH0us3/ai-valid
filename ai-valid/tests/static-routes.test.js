@@ -122,7 +122,10 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
         const body = await res.json();
-        expect(body.serverInfo.name).toBe('ai-valid-mcp');
+        // The card and the live /mcp endpoint report the same server identity.
+        expect(body.serverInfo.name).toBe('ai-valid');
+        expect(body.url).toBe('https://localhost/mcp');
+        expect(body.tools.map(t => t.name)).toContain('audit_website');
     });
 
     it('should serve JSON for /.well-known/agent-card.json', async () => {

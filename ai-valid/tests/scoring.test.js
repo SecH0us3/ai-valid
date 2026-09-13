@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scoreAudit, gradeFor, topPriorities, buildPrompt, countSyllables, createLimiter, CHECK_CATALOG, getCheckMeta, renderAuditMarkdown } from '../src/index.js';
+import { scoreAudit, gradeFor, topPriorities, buildPrompt, countSyllables, createLimiter, checkRateLimit, CHECK_CATALOG, getCheckMeta, renderAuditMarkdown } from '../src/index.js';
 
 describe('scoreAudit', () => {
     it('reports a percentage of the weight actually available', () => {
@@ -208,5 +208,44 @@ describe('renderAuditMarkdown', () => {
             bots: { results: [{ name: 'robots.txt', status: 'ok', code: 'Found', message: 'a | b' }] }
         });
         expect(md).toContain('a \\| b');
+    });
+});
+
+describe('checkRateLimit', () => {
+    it('allows a burst up to the limit, then refuses', () => {
+        const key = 'client-a';
+        const now = 1_000_000;
+        for (let i = 0; i < 20; i++) {
+            expect(checkRateLimit(key, now).allowed).toBe(true);
+        }
+        const blocked = checkRateLimit(key, now);
+        expect(blocked.allowed).toBe(false);
+        expect(blocked.retryAfter).toBeGreaterThan(0);
+    });
+
+    it('counts each client separately', () => {
+        const now = 2_000_000;
+        for (let i = 0; i < 20; i++) checkRateLimit('client-b', now);
+        expect(checkRateLimit('client-b', now).allowed).toBe(false);
+        expect(checkRateLimit('client-c', now).allowed).toBe(true);
+    });
+
+    it('reopens the bucket once the window has passed', () => {
+        const key = 'client-d';
+        const now = 3_000_000;
+        for (let i = 0; i < 20; i++) checkRateLimit(key, now);
+        expect(checkRateLimit(key, now).allowed).toBe(false);
+        expect(checkRateLimit(key, now + 60_001).allowed).toBe(true);
+    });
+
+    it('does not throttle requests with no identifiable client', () => {
+        for (let i = 0; i < 50; i++) {
+            expect(checkRateLimit(null, 4_000_000).allowed).toBe(true);
+        }
+    });
+
+    it('reports the remaining allowance', () => {
+        expect(checkRateLimit('client-e', 5_000_000).remaining).toBe(19);
+        expect(checkRateLimit('client-e', 5_000_000).remaining).toBe(18);
     });
 });
