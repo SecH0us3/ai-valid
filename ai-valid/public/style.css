@@ -765,6 +765,202 @@ body {
     }
 }
 
+/* ---------- Score panel ---------- */
+.score-panel {
+    display: flex;
+    align-items: center;
+    gap: 2.5rem;
+    padding: 1.75rem 2rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.score-gauge-wrap {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    flex-shrink: 0;
+}
+
+.score-gauge {
+    width: 140px;
+    height: 140px;
+    transform: rotate(-90deg);
+}
+
+.gauge-track {
+    fill: none;
+    stroke: var(--border-clean);
+    stroke-width: 9;
+}
+
+.gauge-fill {
+    fill: none;
+    stroke: var(--accent-blue);
+    stroke-width: 9;
+    stroke-linecap: round;
+    /* 2 * pi * r, r = 52 */
+    stroke-dasharray: 326.73;
+    stroke-dashoffset: 326.73;
+    transition: stroke-dashoffset 900ms ease-out, stroke 400ms ease-out;
+}
+
+.gauge-fill.grade-good { stroke: var(--status-success); }
+.gauge-fill.grade-mid  { stroke: var(--status-warning); }
+.gauge-fill.grade-bad  { stroke: var(--status-error); }
+
+.score-readout {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+}
+
+.score-value {
+    font-size: 2.4rem;
+    font-weight: 800;
+    line-height: 1;
+    color: var(--text-primary);
+}
+
+.score-value::after {
+    content: '%';
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.score-grade {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+}
+
+.score-breakdown {
+    flex: 1;
+    min-width: 260px;
+}
+
+.score-heading {
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin: 0 0 0.9rem;
+}
+
+.category-bars {
+    display: grid;
+    gap: 0.6rem;
+}
+
+.category-row {
+    display: grid;
+    grid-template-columns: minmax(7rem, 9rem) 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.category-name { color: var(--text-secondary); }
+
+.category-track {
+    height: 7px;
+    border-radius: 999px;
+    background: var(--border-clean);
+    overflow: hidden;
+}
+
+.category-meter {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent-blue);
+    transition: width 700ms ease-out;
+}
+
+.category-meter.grade-good { background: var(--status-success); }
+.category-meter.grade-mid  { background: var(--status-warning); }
+.category-meter.grade-bad  { background: var(--status-error); }
+
+.category-score {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    min-width: 2.8rem;
+    text-align: right;
+}
+
+/* ---------- Priorities ---------- */
+.priorities-panel {
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+}
+
+.priorities-hint {
+    margin: 0.25rem 0 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.priorities-list {
+    margin: 0;
+    padding-left: 1.25rem;
+    display: grid;
+    gap: 0.8rem;
+}
+
+.priority-item { color: var(--text-primary); }
+
+.priority-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.priority-name { font-weight: 600; }
+
+.priority-weight {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    background: var(--accent-blue-light);
+    color: var(--accent-blue);
+}
+
+.priority-msg {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.proto-weight {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-left: 0.4rem;
+}
+
+@media (max-width: 768px) {
+    .score-panel {
+        flex-direction: column;
+        gap: 1.5rem;
+        padding: 1.5rem 1rem;
+    }
+    .score-breakdown { width: 100%; min-width: 0; }
+    .category-row { grid-template-columns: minmax(5.5rem, 7rem) 1fr auto; }
+    .priorities-panel { padding: 1.25rem 1rem; }
+}
+
 @media (prefers-reduced-motion: reduce) {
     *:not(.radar):not(.radar-scan):not(.radar-pulse):not(.radar-pulse-2):not(.radar-blip), 
     ::before, ::after {

@@ -1619,10 +1619,12 @@ export async function handleRequest(request, env, ctx) {
             const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
             const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
             const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
-            const total = passed + warn + fail;
-            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
-            
-            const shareImageUrl = `${url.origin}/api/og-image?domain=${encodeURIComponent(domain)}&passed=${passed}&warn=${warn}&fail=${fail}`;
+            // Prefer the weighted score the audit actually reported. The old
+            // passed/(passed+warn+fail) fallback is a different number, so a
+            // shared card could disagree with the dashboard it came from.
+            const score = readScoreParam(url, passed, warn, fail);
+
+            const shareImageUrl = `${url.origin}/api/og-image?domain=${encodeURIComponent(domain)}&passed=${passed}&warn=${warn}&fail=${fail}&score=${score}`;
             
             const html = `<!DOCTYPE html>
 <html>
@@ -1631,12 +1633,15 @@ export async function handleRequest(request, env, ctx) {
     <title>AI Readiness Audit for ${domain}</title>
     <meta property="og:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
     <meta property="og:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}. Check your site's AI accessibility.">
+    <meta property="og:image" content="${url.origin}/og-image.png">
+    <meta property="og:image:type" content="image/png">
     <meta property="og:image" content="${shareImageUrl}">
     <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:alt" content="AI readiness scorecard for ${domain}">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="AI Readiness Audit: ${domain} is ${score}% AI-ready">
     <meta name="twitter:description" content="Passed: ${passed} | Warnings: ${warn} | Not found: ${fail}.">
-    <meta name="twitter:image" content="${shareImageUrl}">
+    <meta name="twitter:image" content="${url.origin}/og-image.png">
     <script>window.location.href = "/#" + encodeURIComponent("${domain}");</script>
 </head>
 <body>Redirecting...</body>
@@ -1650,9 +1655,8 @@ export async function handleRequest(request, env, ctx) {
             const passed = Math.max(0, parseInt(url.searchParams.get("passed") || "0", 10) || 0);
             const warn = Math.max(0, parseInt(url.searchParams.get("warn") || "0", 10) || 0);
             const fail = Math.max(0, parseInt(url.searchParams.get("fail") || "0", 10) || 0);
-            const total = passed + warn + fail;
-            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
-            
+            const score = readScoreParam(url, passed, warn, fail);
+
             const svg = generateOgImageSvg(domain, passed, warn, fail, score);
             return new Response(svg, {
                 headers: {
@@ -3255,6 +3259,20 @@ export function renderAuditMarkdown(result) {
     }
 
     return lines.join('\n');
+}
+
+/**
+ * Reads the weighted score from a share link, falling back to the pass ratio
+ * for links generated before the score was passed through explicitly.
+ */
+function readScoreParam(url, passed, warn, fail) {
+    const raw = url.searchParams.get("score");
+    if (raw !== null) {
+        const parsed = parseInt(raw, 10);
+        if (Number.isFinite(parsed)) return Math.max(0, Math.min(100, parsed));
+    }
+    const total = passed + warn + fail;
+    return total > 0 ? Math.round((passed / total) * 100) : 0;
 }
 
 function generateOgImageSvg(domain, passed, warn, fail, score) {
