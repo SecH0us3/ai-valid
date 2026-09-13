@@ -1,61 +1,175 @@
 {
-  "openapi": "3.0.0",
+  "openapi": "3.0.3",
   "info": {
     "title": "AI-Valid API",
-    "description": "API for analyzing site accessibility for intelligent agents and AI protocols.",
-    "version": "1.0.0"
+    "description": "Audits how readable and actionable a website is for AI agents, crawlers and generative search. Returns a weighted readiness score, a per-category breakdown, every individual check, and a ranked list of the highest-impact fixes.",
+    "version": "1.1.0",
+    "license": { "name": "MIT" }
   },
   "servers": [
-    {
-      "url": "/",
-      "description": "Relative server URL"
-    }
+    { "url": "/", "description": "Relative server URL" }
   ],
   "paths": {
     "/api/audit": {
       "get": {
-        "summary": "Perform an AI readiness audit on a given URL.",
+        "operationId": "auditWebsite",
+        "summary": "Audit a website's AI readiness.",
+        "description": "Runs ~25 probes against the target origin: crawler policy (robots.txt, sitemap), content structure and structured data, delivery headers, and agent protocol manifests (llms.txt, AGENTS.md, MCP, A2A, API catalogs). Only publicly reachable http(s) origins are accepted; requests resolving to private or internal addresses are refused. Send Accept: text/markdown, or format=md, for a human-readable report instead of JSON.",
         "parameters": [
           {
             "name": "targetUrl",
             "in": "query",
             "required": true,
-            "description": "The URL of the website to audit.",
-            "schema": {
-              "type": "string",
-              "format": "uri"
-            }
+            "description": "Absolute http(s) URL of the site to audit. Only the origin is used; paths are ignored.",
+            "schema": { "type": "string", "format": "uri", "example": "https://example.com" }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "Response representation. Defaults to JSON; 'md' returns a Markdown report. Equivalent to the Accept header.",
+            "schema": { "type": "string", "enum": ["json", "md"], "default": "json" }
+          },
+          {
+            "name": "bypassCache",
+            "in": "query",
+            "required": false,
+            "description": "Set to true to re-run the audit instead of serving a cached result for the same origin.",
+            "schema": { "type": "boolean", "default": false }
           }
         ],
         "responses": {
           "200": {
-            "description": "Audit results",
+            "description": "Audit results.",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "score": {
-                      "type": "object",
-                      "properties": {
-                        "total": { "type": "number" }
-                      }
-                    },
-                    "bots": { "type": "object" },
-                    "content": { "type": "object" },
-                    "protocols": { "type": "object" }
-                  }
-                }
+                "schema": { "$ref": "#/components/schemas/AuditResult" }
+              },
+              "text/markdown": {
+                "schema": { "type": "string", "description": "The same audit rendered as a Markdown report." }
               }
             }
           },
-          "400": {
-            "description": "Invalid URL"
-          },
-          "500": {
-            "description": "Server Error"
-          }
+          "400": { "description": "The targetUrl is missing, malformed, or the origin is unreachable." },
+          "403": { "description": "The target resolves to a private or otherwise restricted network address." },
+          "429": { "description": "Rate limit exceeded. Honour the Retry-After header." },
+          "500": { "description": "Server error." }
         }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "operationId": "mcpJsonRpc",
+        "summary": "Model Context Protocol endpoint (JSON-RPC 2.0 over streamable HTTP).",
+        "description": "Speaks MCP so agent runtimes can call the auditor as a tool. Supports initialize, ping, tools/list and tools/call; the single tool is audit_website. Prefer this over /api/audit when connecting from an MCP client.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/JsonRpcRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "JSON-RPC response.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "202": { "description": "Notification accepted; no response body." },
+          "400": { "description": "Malformed JSON-RPC payload." },
+          "405": { "description": "Method not allowed; this endpoint accepts POST." }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuditResult": {
+        "type": "object",
+        "description": "A completed audit.",
+        "properties": {
+          "target": { "type": "string", "format": "uri", "description": "The origin that was audited." },
+          "generatedAt": { "type": "string", "format": "date-time", "description": "When the audit ran." },
+          "durationMs": { "type": "integer", "description": "How long the audit took, in milliseconds." },
+          "score": { "$ref": "#/components/schemas/Score" },
+          "priorities": {
+            "type": "array",
+            "description": "The highest-weight failing checks, most impactful first.",
+            "items": { "$ref": "#/components/schemas/Priority" }
+          },
+          "bots": { "$ref": "#/components/schemas/CheckGroup" },
+          "content": { "$ref": "#/components/schemas/CheckGroup" },
+          "protocols": { "$ref": "#/components/schemas/CheckGroup" }
+        },
+        "required": ["target", "score", "priorities", "bots", "content", "protocols"]
+      },
+      "Score": {
+        "type": "object",
+        "description": "The weighted readiness score. Advisory policy checks are excluded from both numerator and denominator.",
+        "properties": {
+          "total": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage of available weight earned." },
+          "max": { "type": "integer", "description": "Always 100; total is already a percentage." },
+          "grade": { "type": "string", "description": "Letter grade for the total.", "enum": ["A+", "A", "B", "C", "D", "E", "F"] },
+          "earnedPoints": { "type": "number", "description": "Raw weight earned." },
+          "possiblePoints": { "type": "number", "description": "Raw weight available." },
+          "categories": {
+            "type": "object",
+            "description": "Per-category subscores, keyed by category name.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "total": { "type": "integer", "description": "Category score as a percentage." },
+                "earned": { "type": "number" },
+                "possible": { "type": "number" }
+              }
+            }
+          }
+        },
+        "required": ["total", "max", "grade", "categories"]
+      },
+      "Priority": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Which check failed." },
+          "status": { "type": "string", "enum": ["warn", "err"] },
+          "weight": { "type": "number", "description": "Points this check is worth." },
+          "category": { "type": "string" },
+          "message": { "type": "string", "description": "What was actually found." },
+          "prompt": { "type": "string", "description": "A ready-to-use remediation prompt, already carrying the audited origin and this finding." },
+          "spec": { "type": "string", "format": "uri", "description": "The governing specification." }
+        },
+        "required": ["name", "status", "weight", "message"]
+      },
+      "CheckGroup": {
+        "type": "object",
+        "description": "One section of the audit. Boolean summary fields vary by section; results is always present.",
+        "properties": {
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/Check" } }
+        },
+        "required": ["results"]
+      },
+      "Check": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Stable identifier for the check." },
+          "status": { "type": "string", "enum": ["ok", "warn", "err"], "description": "ok passes, warn is partial or gated, err is a miss." },
+          "code": { "type": "string", "description": "Short outcome label, e.g. Found, Missing, Soft 404, Protected." },
+          "message": { "type": "string", "description": "What was found, in words." },
+          "weight": { "type": "number", "description": "Points this check contributes to the score; 0 for advisory checks." },
+          "category": { "type": "string", "description": "Which category subscore this check belongs to." },
+          "advisory": { "type": "boolean", "description": "True when the check reports a policy choice rather than a defect, and is therefore excluded from the score." },
+          "prompt": { "type": "string", "description": "A ready-to-use remediation prompt for this finding." },
+          "spec": { "type": "string", "format": "uri" },
+          "tooltip": { "type": "string", "description": "Long-form explanation as HTML." }
+        },
+        "required": ["name", "status", "message", "weight", "category"]
+      },
+      "JsonRpcRequest": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": { "type": "string", "enum": ["2.0"] },
+          "id": { "description": "Omit for a notification.", "oneOf": [{ "type": "string" }, { "type": "integer" }] },
+          "method": { "type": "string", "enum": ["initialize", "ping", "tools/list", "tools/call"] },
+          "params": { "type": "object" }
+        },
+        "required": ["jsonrpc", "method"]
       }
     }
   }

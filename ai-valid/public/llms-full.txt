@@ -5,12 +5,28 @@
 **AI-Valid** is a professional, high-fidelity auditing tool designed to evaluate how "AI-ready" your website or platform is. As the web transitions from human-only consumption to autonomous agent interaction, AI-Valid helps developers and business owners ensure their data is accessible, correctly signaled, and compatible with modern AI standards.
 
 ## Key Features
+- **Weighted readiness score**: A percentage of the weight actually available, with a letter grade and a per-category breakdown, rather than a raw count of passing checks.
+- **Prioritised fixes**: A ranked shortlist of the failures that would move the score most, each with a ready-to-use remediation prompt.
 - **Semantic Protocol Discovery**: Automatically scans for `.well-known` manifests including MCP (Model Context Protocol), A2A Agent Cards, API Catalogs (RFC 9727), and AI Plugins.
 - **Bot Accessibility Audit**: Validates `robots.txt` and explicit AI directives for `OAI-SearchBot`, `GPTBot`, and others.
-- **Content Optimization**: Checks for Content Negotiation (Markdown support) and legal usage signals via `Content-Signal` headers.
+- **Content Optimization**: Checks for Content Negotiation (Markdown support), server-side rendering, structured data and legal usage signals via `Content-Signal` headers.
+- **MCP server**: The auditor itself is callable as a tool from any MCP client.
 - **Actionable Dashboard**: Results are categorized into **Passed**, **Warnings**, & **Not found**, providing a clear implementation roadmap.
-- **Dynamic UX**: Fast, parallel network scanning with a terminal-inspired reconnaissance interface.
 - **Deep Linking**: Share audit results easily via persistent URL hashes.
+
+## How the score works
+Every check carries a weight reflecting how much it actually matters, from 10 (table
+stakes — a site that misses these is invisible or unreadable to agents) down to 1 (niche
+protocols that only apply to some sites). The score is the percentage of available weight
+earned, so a niche miss barely moves the number while a missing title tag does.
+
+Checks that report a **policy choice** rather than a defect — whether to block AI training,
+whether to declare a TDM reservation — are marked `advisory` and excluded from the score
+entirely. Deciding to welcome AI training is a legitimate business decision, and the audit
+reports it without penalising it in either direction.
+
+A resource that exists but is gated behind authentication earns partial credit rather than
+nothing.
 
 ## Technology Stack
 - **Backend**: Cloudflare Workers (High-performance, global edge deployment).
@@ -44,15 +60,52 @@ npx wrangler deploy
 ## API Reference
 
 ### `GET /api/audit`
-Perform an AI readiness audit on a given URL.
+Perform an AI readiness audit on a given origin.
 
 **Query Parameters:**
-- `targetUrl`: The URL of the website to audit (e.g. `https://example.com`).
+- `targetUrl` (required): The URL of the website to audit (e.g. `https://example.com`). Only the origin is used.
+- `format`: `json` (default) or `md` for a Markdown report. Equivalent to the `Accept` header.
+- `bypassCache`: `true` to re-run the audit instead of serving a cached result.
+
+**Content negotiation:** send `Accept: text/markdown` to receive a Markdown report. Responses
+carry `Vary: Accept`.
 
 **Responses:**
-- `200 OK`: Audit results containing scores, bot accessibility, content optimization, and protocol discovery results.
-- `400 Bad Request`: Invalid URL.
-- `500 Internal Server Error`: Server Error.
+- `200 OK`: Audit results — see the response shape below.
+- `400 Bad Request`: Missing or malformed `targetUrl`, or the origin is unreachable.
+- `403 Forbidden`: The target resolves to a private or restricted network address.
+- `429 Too Many Requests`: Rate limit exceeded; honour `Retry-After`.
+- `500 Internal Server Error`: Server error.
+
+**Response shape:**
+- `score`: `{ total, max, grade, earnedPoints, possiblePoints, categories }`. `total` is a
+  percentage; `max` is always 100.
+- `priorities`: the highest-weight failing checks, most impactful first.
+- `bots`, `content`, `protocols`: each with a `results` array. Every check carries `name`,
+  `status` (`ok` / `warn` / `err`), `code`, `message`, `weight`, `category`, `prompt` and
+  `spec`; advisory checks additionally carry `advisory: true`.
+
+### `POST /mcp`
+Model Context Protocol endpoint, JSON-RPC 2.0 over streamable HTTP. Supports `initialize`,
+`ping`, `tools/list` and `tools/call`.
+
+```bash
+curl -X POST https://ai-valid.secmy.app/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"audit_website","arguments":{"targetUrl":"https://example.com"}}}'
+```
+
+The single tool `audit_website` takes `targetUrl` (required) and `format` (`summary` or
+`full`), and returns both a readable summary and `structuredContent` with the score and
+priorities. Discovery metadata is at `/.well-known/mcp/server-card.json`.
+
+## Development
+
+```bash
+npm install
+npm test        # 161 tests
+npx wrangler dev
+```
 
 ## Specifications Audited
 AI-Valid audits against several emerging and established standards:
