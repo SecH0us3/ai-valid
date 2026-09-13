@@ -177,3 +177,35 @@ describe('AI-Valid Worker - SSRF Protection', () => {
     });
 });
 
+
+describe('DNS memoisation safety', () => {
+    it('does not let one hostname\'s verdict leak to another', async () => {
+        const originalFetch = global.fetch;
+        let dohCalls = 0;
+        global.fetch = async (url) => {
+            const u = url.toString();
+            if (u.includes('cloudflare-dns.com')) {
+                dohCalls++;
+                // memo-safe.test resolves public; memo-evil.test resolves to loopback.
+                const isEvil = u.includes('memo-evil.test');
+                return new Response(JSON.stringify({
+                    Answer: [{ type: 1, data: isEvil ? '127.0.0.1' : '93.184.216.34' }]
+                }));
+            }
+            return new Response('<html><body>x</body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+        };
+        try {
+            const ok = await index.fetch(new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://memo-safe.test')), {}, {});
+            expect(ok.status).toBe(200);
+
+            const blocked = await index.fetch(new Request('https://localhost/api/audit?targetUrl=' + encodeURIComponent('https://memo-evil.test')), {}, {});
+            expect(blocked.status).toBe(403);
+
+            // The memo must have cut the per-subrequest DNS storm: one audit
+            // touches ~25 URLs but resolves the host only once (A + AAAA).
+            expect(dohCalls).toBeLessThanOrEqual(6);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+});
