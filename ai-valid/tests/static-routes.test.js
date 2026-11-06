@@ -161,8 +161,8 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
         const body = await res.json();
-        expect(body.name).toBe('ai-valid-agent');
-        expect(Array.isArray(body.capabilities)).toBe(true);
+        expect(body.agentsJson).toBe('0.1.0');
+        expect(body.flows[0].actions[0].operationId).toBe('auditWebsite');
     });
 
     it('should serve JSON for /.well-known/oauth-protected-resource/mcp and /.well-known/oauth-protected-resource', async () => {

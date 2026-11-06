@@ -11,7 +11,6 @@ import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 import x402Json from "../public/.well-known/x402.json";
 import agentsMd from "../public/AGENTS.md";
-import agentsJson from "../public/.well-known/agents.json";
 
 
 // Agent Skills Discovery RFC v0.2.0 index schema identifier (see evaluateAgentSkillsIndex).
@@ -146,6 +145,65 @@ const HOME_LINK_HEADER = [
 
 let ownSkillDigestPromise = null;
 const ownSkillDigest = () => (ownSkillDigestPromise ||= sha256Hex(new TextEncoder().encode(OWN_SKILL_MD)).then(h => `sha256:${h}`));
+
+// agents.json (Wildcard spec, https://github.com/wild-card-ai/agents-json):
+// one flow over the auditWebsite operation of our OpenAPI document.
+const OWN_AGENTS_JSON = {
+    "agentsJson": "0.1.0",
+    "info": {
+        "title": "AI-Valid Readiness Auditor",
+        "version": "1.0.0",
+        "description": "Audits how AI-ready a public website is (robots.txt AI directives, llms.txt, MCP/A2A/Agent Skills manifests, structured data, Markdown negotiation) and returns a weighted score with prioritised fixes. Use when a user asks whether a site is readable, discoverable or callable by AI agents."
+    },
+    "sources": [
+        {
+            "id": "aivalid",
+            "path": "https://ai-valid.secmy.app/openapi.json"
+        }
+    ],
+    "flows": [
+        {
+            "id": "audit_website",
+            "title": "Audit a website for AI readiness",
+            "description": "Run a full AI readiness audit of the given URL and return the score, grade and prioritised fixes.",
+            "actions": [
+                {
+                    "id": "audit",
+                    "sourceId": "aivalid",
+                    "operationId": "auditWebsite"
+                }
+            ],
+            "fields": {
+                "parameters": [
+                    {
+                        "name": "targetUrl",
+                        "description": "Absolute http(s) URL of the site to audit",
+                        "required": true,
+                        "type": "string"
+                    }
+                ],
+                "responses": {
+                    "success": {
+                        "type": "object",
+                        "description": "Audit result with score, priorities and per-check results"
+                    }
+                }
+            },
+            "links": [
+                {
+                    "origin": {
+                        "actionId": "audit_website",
+                        "fieldPath": "parameters.targetUrl"
+                    },
+                    "target": {
+                        "actionId": "audit",
+                        "fieldPath": "parameters.targetUrl"
+                    }
+                }
+            ]
+        }
+    ]
+};
 
 const STATIC_ROUTES = {
     "/": (request) => {
@@ -412,48 +470,13 @@ const STATIC_ROUTES = {
             }
         });
     },
-    "/.well-known/agents.json": () => {
-        let content = "";
-        if (typeof agentsJson === 'object' && agentsJson !== null && agentsJson.name) {
-            content = JSON.stringify(agentsJson, null, 2);
-        } else if (typeof agentsJson === 'string' && (agentsJson.trim().startsWith('{') || agentsJson.trim().startsWith('['))) {
-            try {
-                const parsed = JSON.parse(agentsJson);
-                if (parsed.name) content = JSON.stringify(parsed, null, 2);
-            } catch {}
+    "/.well-known/agents.json": () => new Response(JSON.stringify(OWN_AGENTS_JSON, null, 2), {
+        headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         }
-        if (!content) {
-            content = JSON.stringify({
-                "name": "ai-valid-agent",
-                "version": "1.0.0",
-                "description": "AI-Readiness and GEO Audit Agent for modern web platforms",
-                "homepage": "https://ai-valid.secmy.app",
-                "documentation": "https://ai-valid.secmy.app/AGENTS.md",
-                "capabilities": [
-                    {
-                        "name": "audit_website",
-                        "description": "Performs AI readiness analysis for a given URL",
-                        "endpoint": "/api/audit",
-                        "method": "GET",
-                        "parameters": {
-                            "targetUrl": {
-                                "type": "string",
-                                "required": true,
-                                "description": "URL to audit"
-                            }
-                        }
-                    }
-                ]
-            }, null, 2);
-        }
-        return new Response(content, {
-            headers: {
-                "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                ...corsHeaders
-            }
-        });
-    },
+    }),
     "/.well-known/oauth-protected-resource/mcp": () => {
         const resourceMeta = {
             "resource": "https://ai-valid.secmy.app/mcp",
@@ -579,7 +602,8 @@ export const CHECK_CATALOG = {
     "A2A Agent Card":              { weight: 3,  category: "Agent Protocols" },
     "Agent Skills":                { weight: 3,  category: "Agent Protocols" },
     "API Catalog":                 { weight: 3,  category: "Agent Protocols" },
-    "AI Plugin":                   { weight: 1,  category: "Agent Protocols" },
+    // OpenAI retired ChatGPT plugins in 2024; the manifest is reported, not scored.
+    "AI Plugin":                   { weight: 0,  category: "Agent Protocols", advisory: true },
     "WebMCP Integration":          { weight: 1,  category: "Agent Protocols" },
     "OAuth Discovery":             { weight: 1,  category: "Agent Protocols" },
     "OAuth Protected Resource":    { weight: 1,  category: "Agent Protocols" },
@@ -1246,15 +1270,15 @@ const PROMPT_LIBRARY = {
         ]
     },
     "agents.json": {
-        goal: "Publish an agents.json capability manifest.",
+        goal: "Publish an agents.json (Wildcard spec) describing task flows over the OpenAPI.",
         requirements: [
-            "Include `name`, `version`, `description`, and a `capabilities` array.",
-            "Describe each capability with its endpoint, HTTP method and parameter schema.",
-            "Only declare capabilities that actually exist and work.",
-            "Serve it at /.well-known/agents.json as application/json."
+            "Top-level fields: `agentsJson` (spec version, e.g. \"0.1.0\"), `info` (title, version, description written for an LLM), `sources`, `flows`.",
+            "Each source names an OpenAPI document: `{ \"id\": \"...\", \"path\": \"https://.../openapi.json\" }`.",
+            "Each flow has an `id`, `title`, `description` and `actions`; each action references a `sourceId` and an `operationId` from that OpenAPI. Use `links` to wire outputs of one action into inputs of the next.",
+            "Only reference operations that exist and work. Serve it at /.well-known/agents.json as application/json."
         ],
-        deliverable: "The complete agents.json.",
-        acceptance: ["The file is valid JSON, and every declared endpoint responds as described."]
+        deliverable: "The complete agents.json and any operationIds that must be added to the OpenAPI.",
+        acceptance: ["Every operationId in every flow resolves in the referenced OpenAPI document."]
     },
     "MCP Server": {
         goal: "Expose the site's capabilities through a Model Context Protocol server.",
@@ -1307,14 +1331,15 @@ const PROMPT_LIBRARY = {
         acceptance: ["Every operation in the referenced OpenAPI document has both an operationId and a description."]
     },
     "AI Plugin": {
-        goal: "Publish an ai-plugin.json manifest.",
+        goal: "Retire the legacy ChatGPT plugin manifest in favour of current agent interfaces.",
         requirements: [
-            "Include `name_for_human`, `name_for_model`, `description_for_human`, `description_for_model`, the auth configuration and a link to the OpenAPI spec.",
-            "Write `description_for_model` as an instruction telling the model when to use the API and when not to — this is the field that determines whether it gets called correctly.",
-            "Serve it at /.well-known/ai-plugin.json as application/json."
+            "OpenAI wound down the ChatGPT plugins beta in 2024; nothing current requires /.well-known/ai-plugin.json.",
+            "Move what it described into an OpenAPI document referenced from /.well-known/api-catalog (RFC 9727), keeping the `description_for_model` guidance as operation descriptions.",
+            "Expose agent tools through an MCP server instead.",
+            "Remove ai-plugin.json, or keep it only if a known consumer still reads it."
         ],
-        deliverable: "The complete ai-plugin.json.",
-        acceptance: ["`description_for_model` states the API's preconditions and limits, not just its features."]
+        deliverable: "The OpenAPI/API-catalog changes, and the decision on removing ai-plugin.json.",
+        acceptance: ["Every capability the plugin described is reachable through the API catalog or the MCP server."]
     },
     "OAuth Discovery": {
         goal: "Publish RFC 8414 OAuth 2.0 authorization server metadata.",
@@ -1593,6 +1618,123 @@ export function classifyMachineLinks(links) {
     }
     for (const k of Object.keys(out)) out[k] = [...new Set(out[k])];
     return out;
+}
+
+// --- MCP endpoint probing ---
+// A 401/403 on its own proves nothing: WAFs and generic auth walls answer the
+// same way for any path. An endpoint counts as an MCP server only when it
+// speaks the protocol (a JSON-RPC 2.0 message or an SSE stream), or when it
+// issues an OAuth Bearer challenge, which is how the MCP authorization spec
+// (RFC 9728 resource_metadata) tells clients where to authenticate.
+function bearerChallenge(res) {
+    const auth = res.headers.get('www-authenticate') || '';
+    if (!/^\s*bearer\b/i.test(auth) && !/,\s*bearer\b/i.test(auth)) return null;
+    return { resourceMetadata: /resource_metadata\s*=/i.test(auth) };
+}
+
+async function readJsonRpc(res) {
+    try {
+        const body = JSON.parse(await safeReadText(res, 256 * 1024));
+        const msgs = Array.isArray(body) ? body : [body];
+        const msg = msgs.find(m => m && m.jsonrpc === '2.0' && ('result' in m || 'error' in m));
+        return msg || null;
+    } catch {
+        return null;
+    }
+}
+
+const cancelBody = async (res) => {
+    if (res && res.body && typeof res.body.cancel === 'function') await res.body.cancel().catch(() => {});
+};
+
+/**
+ * Probes one candidate endpoint. Returns
+ *   { kind: 'live', transport: 'http'|'sse', tools }  — speaks MCP
+ *   { kind: 'oauth', resourceMetadata }               — Bearer challenge
+ *   { kind: 'auth' }                                  — 401 without a Bearer challenge
+ *   null                                              — no evidence of MCP
+ */
+export async function probeMcpEndpoint(url, fetchFn, headers = {}) {
+    let authOnly = false;
+    // Streamable HTTP: JSON-RPC over POST.
+    try {
+        const res = await fetchFn(url, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+            cf: { cacheEverything: false }
+        });
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.status === 200 && type.includes('text/event-stream')) {
+            await cancelBody(res);
+            return { kind: 'live', transport: 'sse', tools: 0 };
+        }
+        if (res.status === 200 || res.status === 400) {
+            // Servers that insist on `initialize` first still answer with a
+            // JSON-RPC error, which is just as conclusive.
+            const msg = await readJsonRpc(res);
+            if (msg) return { kind: 'live', transport: 'http', tools: Array.isArray(msg.result?.tools) ? msg.result.tools.length : 0 };
+        } else if (res.status === 401 || res.status === 403) {
+            const challenge = bearerChallenge(res);
+            await cancelBody(res);
+            if (challenge) return { kind: 'oauth', ...challenge };
+            if (res.status === 401) authOnly = true;
+        } else {
+            await cancelBody(res);
+        }
+    } catch {}
+
+    // Legacy HTTP+SSE transport: the stream opens on GET.
+    try {
+        const res = await fetchFn(url, {
+            headers: { ...headers, 'Accept': 'text/event-stream' },
+            cf: { cacheEverything: false }
+        });
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.status === 200 && type.includes('text/event-stream')) {
+            await cancelBody(res);
+            return { kind: 'live', transport: 'sse', tools: 0 };
+        }
+        if (res.status === 401 || res.status === 403) {
+            const challenge = bearerChallenge(res);
+            await cancelBody(res);
+            if (challenge) return { kind: 'oauth', ...challenge };
+            if (res.status === 401) authOnly = true;
+        } else {
+            await cancelBody(res);
+        }
+    } catch {}
+
+    return authOnly ? { kind: 'auth' } : null;
+}
+
+/**
+ * Validates /.well-known/agents.json against the Wildcard agents.json spec
+ * (https://github.com/wild-card-ai/agents-json): required agentsJson, info,
+ * sources and flows. Returns the audit's { status, message, code } shape.
+ */
+export function lintAgentsJson(json) {
+    if (!json || typeof json !== 'object' || Array.isArray(json)) {
+        return { status: 'err', message: 'agents.json is not a JSON object', code: 'Non-compliant' };
+    }
+    const looksWildcard = 'agentsJson' in json || 'flows' in json || 'sources' in json;
+    if (!looksWildcard) {
+        return { status: 'warn', message: 'Non-standard agents.json (no agentsJson/info/sources/flows) — agents.json clients will not understand it', code: 'Non-standard' };
+    }
+    const problems = [];
+    if (typeof json.agentsJson !== 'string' || !json.agentsJson.trim()) problems.push('missing "agentsJson" version');
+    if (!json.info || typeof json.info !== 'object' || !json.info.title || !json.info.version) problems.push('"info" needs title and version');
+    else if (!json.info.description) problems.push('"info.description" missing (it is what an LLM reads)');
+    const sources = Array.isArray(json.sources) ? json.sources : null;
+    if (!sources || !sources.length) problems.push('no "sources"');
+    else if (sources.some(src => !src || !src.id || !src.path)) problems.push('every source needs id and path');
+    const flows = Array.isArray(json.flows) ? json.flows : null;
+    if (!flows || !flows.length) problems.push('no "flows"');
+    else if (flows.some(f => !f || !f.id || !Array.isArray(f.actions) || !f.actions.length)) problems.push('every flow needs an id and actions');
+    if (problems.length) {
+        return { status: 'warn', message: `agents.json incomplete: ${problems.slice(0, 3).join('; ')}`, code: 'Partial' };
+    }
+    return { status: 'ok', message: `Valid agents.json ${json.agentsJson} (${flows.length} flow${flows.length === 1 ? '' : 's'}, ${sources.length} source${sources.length === 1 ? '' : 's'})`, code: 'Compliant' };
 }
 
 // --- Agent Skills Discovery (Cloudflare RFC, v0.2.0) ---
@@ -3142,20 +3284,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         },
         {
-            name: 'agents.json', prompt: `Create an agents.json manifest at /.well-known/agents.json declaring my AI agent's name, version, and callable capabilities.`, path: '/.well-known/agents.json', spec: 'https://agents.md/', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> Machine-readable agent configuration manifest at <code>/.well-known/agents.json</code>.<br/><br/><strong>Why it's critical:</strong> Provides structured metadata (name, version, endpoints, capabilities) for automated agent discovery registers and multi-agent systems.<br/><br/><strong>Impact of missing it:</strong> Autonomous agent discovery platforms cannot programmatically ingest your agent's capabilities.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing <code>name</code>, <code>version</code>, and <code>capabilities</code> list at <code>/.well-known/agents.json</code>.`,
+            name: 'agents.json', prompt: `Create an agents.json file at /.well-known/agents.json following the Wildcard agents.json specification (built on OpenAPI): an "agentsJson" version, an "info" object (title, version, description written for LLMs), "sources" referencing my OpenAPI documents by id and path, and "flows" describing multi-step tasks as sequences of OpenAPI operationIds with their field links.`, path: '/.well-known/agents.json', spec: 'https://github.com/wild-card-ai/agents-json', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> The <a href="https://github.com/wild-card-ai/agents-json">agents.json</a> specification: a JSON contract at <code>/.well-known/agents.json</code>, built on OpenAPI, describing <em>flows</em> — multi-step tasks as sequences of API operations.<br/><br/><strong>What is checked:</strong> the required <code>agentsJson</code>, <code>info</code>, <code>sources</code> and <code>flows</code> fields, that every source has an id and path, and that every flow has an id and actions.<br/><br/><strong>Why it's critical:</strong> OpenAPI lists endpoints; agents.json tells an agent which calls to chain, in what order, to accomplish a task.<br/><br/><strong>Not to be confused with:</strong> <code>AGENTS.md</code>, a separate Markdown convention for coding agents.`,
             validate: async (req, statusCode, cType) => {
-                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
                 if (statusCode === 200 && !isSoft404) {
+                    let json;
                     try {
-                        const json = await req.json();
-                        if (json && typeof json === 'object') {
-                            const capCount = Array.isArray(json.capabilities) ? json.capabilities.length : (Array.isArray(json.tools) ? json.tools.length : 0);
-                            const detail = capCount > 0 ? `${capCount} capabilities declared` : 'Config found';
-                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found' };
-                        }
-                    } catch {}
-                    return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
+                        json = JSON.parse(await safeReadText(req, 512 * 1024));
+                    } catch {
+                        return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
+                    }
+                    return lintAgentsJson(json);
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -3224,127 +3364,57 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json or deploy a live MCP endpoint at /mcp exposing your tools via SSE or Stream.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> Model Context Protocol (MCP) server integration.<br/><br/><strong>Why it's critical:</strong> It allows AI ecosystems (Claude Desktop, Cursor, intelligent agents) to securely connect to your platform, stream resources, and execute callable tools.<br/><br/><strong>Impact of missing it:</strong> Agents will not be able to interact with your business logic dynamically.<br/><br/><strong>Implementation Example:</strong> Deploy an MCP endpoint at <code>/mcp</code> or <code>/mcp/sse</code>, or publish a discovery manifest at <code>/.well-known/mcp/server-card.json</code>.`,
             validate: async (req, statusCode, cType, base) => {
-                let isSoft404 = statusCode === 200 && cType.includes('text/html');
-                
-                // 1. Check server-card.json if valid
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
+                let manifest = null;
                 if (statusCode === 200 && !isSoft404) {
                     try {
-                        const jsonBody = await req.json();
-                        let liveTarget = jsonBody.endpoints?.sse || jsonBody.endpoints?.http || jsonBody.url || '/mcp';
-                        let liveProbeOk = false;
-                        let isOAuthProtected = false;
-                        let toolCount = Array.isArray(jsonBody.tools) ? jsonBody.tools.length : 0;
-
-                        if (liveTarget) {
-                            try {
-                                const targetUrl = liveTarget.startsWith('http') ? liveTarget : `${base}${liveTarget.startsWith('/') ? '' : '/'}${liveTarget}`;
-                                const probeReq = await iFetch(targetUrl, {
-                                    method: 'POST',
-                                    headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
-                                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
-                                    cf: { cacheEverything: false }
-                                });
-                                if (probeReq.status === 200 || probeReq.status === 204) {
-                                    liveProbeOk = true;
-                                    try {
-                                        const resJson = await probeReq.json();
-                                        if (resJson?.result?.tools?.length) {
-                                            toolCount = resJson.result.tools.length;
-                                        }
-                                    } catch {}
-                                } else if ([401, 403].includes(probeReq.status)) {
-                                    const authHeader = (probeReq.headers.get('www-authenticate') || '').toLowerCase();
-                                    isOAuthProtected = authHeader.includes('bearer') || authHeader.includes('resource_metadata') || authHeader.includes('oauth');
-                                    if (!isOAuthProtected) {
-                                        try {
-                                            const probeBody = await probeReq.text();
-                                            if (probeBody.includes('token') || probeBody.includes('unauthorized') || probeBody.includes('auth')) {
-                                                isOAuthProtected = true;
-                                            }
-                                        } catch {}
-                                    }
-                                }
-                            } catch {}
-                        }
-
-                        if (liveProbeOk) {
-                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational' };
-                        }
-                        if (isOAuthProtected) {
-                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected' };
-                        }
-                        if (toolCount > 0) {
-                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active' };
-                        }
-                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
+                        const parsed = JSON.parse(await safeReadText(req, 256 * 1024));
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) manifest = parsed;
                     } catch {}
                 }
 
-                // 2. Direct probe of /mcp and /mcp/sse endpoints
-                const candidatePaths = ['/mcp', '/mcp/sse'];
-                for (const candPath of candidatePaths) {
+                // Endpoints declared by the card first, then the conventional paths.
+                const declared = manifest
+                    ? [manifest.endpoints?.streamableHttp, manifest.endpoints?.http, manifest.endpoints?.sse, manifest.url]
+                        .filter(v => typeof v === 'string' && v.trim())
+                    : [];
+                const candidates = [];
+                for (const target of [...declared, '/mcp', '/mcp/sse']) {
                     try {
-                        const mcpUrl = `${base}${candPath}`;
-                        const mcpGetReq = await iFetch(mcpUrl, {
-                            headers: { ...headersStandard, 'Accept': 'application/json, text/event-stream, */*' },
-                            cf: { cacheEverything: false }
-                        });
-                        const getStatus = mcpGetReq.status;
-                        const getCType = (mcpGetReq.headers.get('content-type') || '').toLowerCase();
-                        const getAuth = (mcpGetReq.headers.get('www-authenticate') || '').toLowerCase();
-                        const isGetSoft404 = getStatus === 200 && getCType.includes('text/html');
-
-                        if (getStatus === 200 && !isGetSoft404) {
-                            if (getCType.includes('text/event-stream')) {
-                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational' };
-                            }
-                            try {
-                                const jsonRes = await mcpGetReq.json();
-                                const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
-                                const isMcpJson = jsonRes && (jsonRes.jsonrpc === '2.0' || Array.isArray(jsonRes.tools) || jsonRes.capabilities || jsonRes.serverInfo);
-                                if (isMcpJson) {
-                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational' };
-                                }
-                            } catch {}
-                        }
-
-                        if ([401, 403].includes(getStatus)) {
-                            let isOAuth = getAuth.includes('bearer') || getAuth.includes('resource_metadata') || getAuth.includes('oauth');
-                            let bodySnippet = '';
-                            try {
-                                bodySnippet = await safeReadText(mcpGetReq, 4 * 1024);
-                                if (bodySnippet.includes('token') || bodySnippet.includes('unauthorized') || bodySnippet.includes('error')) {
-                                    isOAuth = true;
-                                }
-                            } catch {}
-
-                            if (isOAuth) {
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected' };
-                            }
-                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected' };
-                        }
-
-                        if (getStatus === 405) {
-                            const mcpPostReq = await iFetch(mcpUrl, {
-                                method: 'POST',
-                                headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
-                                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-                                cf: { cacheEverything: false }
-                            });
-                            const postStatus = mcpPostReq.status;
-                            const postAuth = (mcpPostReq.headers.get('www-authenticate') || '').toLowerCase();
-
-                            if (postStatus === 200 || postStatus === 204) {
-                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational' };
-                            }
-                            if ([401, 403].includes(postStatus)) {
-                                const isOAuth = postAuth.includes('bearer') || postAuth.includes('resource_metadata') || postAuth.includes('oauth');
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected' };
-                            }
-                        }
+                        const u = new URL(target, `${base}/`);
+                        if ((u.protocol === 'https:' || u.protocol === 'http:') && !candidates.includes(u.href)) candidates.push(u.href);
                     } catch {}
                 }
 
+                let oauthAt = null;
+                let authAt = null;
+                for (const url of candidates.slice(0, 4)) {
+                    const probe = await probeMcpEndpoint(url, iFetch, headersStandard);
+                    const where = new URL(url).origin === base ? new URL(url).pathname : url;
+                    if (probe?.kind === 'live') {
+                        const tools = probe.tools || (Array.isArray(manifest?.tools) ? manifest.tools.length : 0);
+                        const detail = tools > 0 ? `${tools} tools active` : 'endpoint responding';
+                        return probe.transport === 'sse'
+                            ? { status: 'ok', message: `Live MCP SSE endpoint active at ${where} (${detail})`, code: 'Live & Operational' }
+                            : { status: 'ok', message: `Live MCP Server operational at ${where} (${detail})`, code: 'Live & Operational' };
+                    }
+                    if (probe?.kind === 'oauth' && !oauthAt) oauthAt = { where, rm: probe.resourceMetadata };
+                    if (probe?.kind === 'auth' && !authAt) authAt = where;
+                }
+
+                if (oauthAt) {
+                    return { status: 'ok', message: `Live MCP server active at ${oauthAt.where} (OAuth 2.0 protected${oauthAt.rm ? ', RFC 9728 resource metadata advertised' : ''})`, code: 'OAuth Protected' };
+                }
+                const toolCount = Array.isArray(manifest?.tools) ? manifest.tools.length : 0;
+                if (manifest && toolCount > 0) {
+                    return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools (no live endpoint confirmed)`, code: 'Active' };
+                }
+                if (manifest) {
+                    return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
+                }
+                if (authAt) {
+                    return { status: 'warn', message: `${authAt} answers 401 without an OAuth Bearer challenge — cannot confirm an MCP server (MCP clients need WWW-Authenticate: Bearer resource_metadata=…)`, code: 'Protected' };
+                }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
                 return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
@@ -3404,8 +3474,21 @@ Example:
             }
         },
         {
-            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.`
+            name: 'AI Plugin', prompt: `My site may still publish a legacy /.well-known/ai-plugin.json from the retired ChatGPT plugins programme. Tell me whether anything still consumes it, and replace it with current equivalents: an OpenAPI description linked from an RFC 9727 API catalog and, for tool use by agents, an MCP server.`, path: '/.well-known/ai-plugin.json', spec: 'https://help.openai.com/en/articles/8988022-winding-down-the-chatgpt-plugins-beta', isJson: true, points: 0,
+            tooltip: `<strong>What it is:</strong> The <code>ai-plugin.json</code> manifest of the ChatGPT plugins beta, which OpenAI wound down in 2024 in favour of GPTs/Actions.<br/><br/><strong>Status:</strong> Legacy. It is reported for information and does not affect the score.<br/><br/><strong>What to use instead:</strong> An OpenAPI description referenced from an RFC 9727 <code>/.well-known/api-catalog</code>, and an MCP server for agent tool use.`,
+            validate: async (req, statusCode, cType) => {
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    try {
+                        const json = JSON.parse(await safeReadText(req, 256 * 1024));
+                        if (json && typeof json === 'object' && (json.schema_version || json.name_for_model || json.api)) {
+                            return { status: 'warn', message: 'Legacy ChatGPT plugin manifest found — the plugins programme is retired; prefer an API catalog + OpenAPI and MCP', code: 'Legacy' };
+                        }
+                    } catch {}
+                    return { status: 'warn', message: 'ai-plugin.json present but not a plugin manifest', code: 'Invalid' };
+                }
+                return { status: 'ok', message: 'No legacy plugin manifest (not needed)', code: 'Not Needed' };
+            }
         },
         {
             name: 'Universal Commerce', prompt: `Create a Universal Commerce Protocol (UCP) configuration at /.well-known/ucp pointing to my headless commerce endpoints.`, path: '/.well-known/ucp', spec: 'http://ucp.dev/', isJson: true, points: 5,

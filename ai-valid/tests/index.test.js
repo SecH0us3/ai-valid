@@ -1288,9 +1288,10 @@ describe('safeReadText helper', () => {
             }
             if (urlStr.endsWith('/.well-known/agents.json')) {
                 return new Response(JSON.stringify({
-                    name: 'test-agent',
-                    version: '1.0.0',
-                    capabilities: [{ name: 'audit' }]
+                    agentsJson: '0.1.0',
+                    info: { title: 'Test', version: '1.0.0', description: 'Test agent' },
+                    sources: [{ id: 'api', path: 'https://example.com/openapi.json' }],
+                    flows: [{ id: 'audit', title: 'Audit', description: 'Run audit', actions: [{ id: 'a', sourceId: 'api', operationId: 'performAudit' }] }]
                 }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' }
@@ -1368,7 +1369,7 @@ describe('safeReadText helper', () => {
 
             const agentsJson = data.protocols.results.find(r => r.name === 'agents.json');
             expect(agentsJson?.status).toBe('ok');
-            expect(agentsJson?.message).toContain('1 capabilities declared');
+            expect(agentsJson?.message).toContain('1 flow, 1 source');
 
             const llmsTxt = data.protocols.results.find(r => r.name === 'LLMs.txt');
             expect(llmsTxt?.status).toBe('ok');
