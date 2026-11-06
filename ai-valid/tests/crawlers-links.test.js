@@ -71,8 +71,23 @@ describe('AI crawler policy', () => {
     });
 
     it('flags blocking a vendor user agent while its trainer is allowed', () => {
-        const p = evaluateAiCrawlerPolicy(rules({ 'chatgpt-user': { disallow: ['/'] } }));
-        expect(p.issues.join('\n')).toMatch(/OpenAI: user-triggered ChatGPT-User blocked while training is allowed/);
+        const p = evaluateAiCrawlerPolicy(rules({ 'claude-user': { disallow: ['/'] } }));
+        expect(p.issues.join('\n')).toMatch(/Anthropic: user-triggered Claude-User blocked while training is allowed/);
+    });
+
+    it('reports robots rules for ChatGPT-User / Perplexity-User as ineffective', () => {
+        const p = evaluateAiCrawlerPolicy(rules({ 'chatgpt-user': { disallow: ['/'] }, 'perplexity-user': { disallow: ['/'] } }));
+        const msg = p.issues.join('\n');
+        expect(msg).toMatch(/ChatGPT-User, Perplexity-User generally ignore robots\.txt/);
+        expect(msg).not.toMatch(/OpenAI: user-triggered/);
+        expect(p.crawlers.find(c => c.name === 'ChatGPT-User').ignoresRobots).toBe(true);
+    });
+
+    it('does not count robots-ignoring fetchers as collateral of a * block', () => {
+        const p = evaluateAiCrawlerPolicy(rules({ '*': { disallow: ['/'] } }));
+        const collateral = p.issues.find(i => i.startsWith('blocked only by'));
+        expect(collateral).toMatch(/Claude-User/);
+        expect(collateral).not.toMatch(/ChatGPT-User|Perplexity-User/);
     });
 });
 
@@ -141,10 +156,11 @@ describe('robots.txt AI crawler checks in a full audit', () => {
     it('names the blocked search and user bots', async () => {
         const data = await audit({
             '/': html(),
-            '/robots.txt': text('User-agent: Claude-SearchBot\nDisallow: /\n\nUser-agent: Perplexity-User\nDisallow: /\n'),
+            '/robots.txt': text('User-agent: Claude-SearchBot\nDisallow: /\n\nUser-agent: Claude-User\nDisallow: /\n\nUser-agent: Perplexity-User\nDisallow: /\n'),
         });
         expect(find(data, 'AI Search Allowed').message).toBe('AI Search bots blocked: Claude-SearchBot');
-        expect(find(data, 'AI Agent Allowed').message).toBe('User-triggered AI agents blocked: Perplexity-User');
+        expect(find(data, 'AI Agent Allowed').message).toBe('User-triggered AI agents blocked: Claude-User');
+        expect(find(data, 'AI Crawler Directives').message).toMatch(/Perplexity-User generally ignore robots\.txt/);
         expect(data.bots.aiCrawlers.find(b => b.name === 'Claude-SearchBot')).toMatchObject({ role: 'search', named: true, allowed: false });
     });
 

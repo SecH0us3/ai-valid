@@ -795,12 +795,13 @@ const PROMPT_LIBRARY = {
     "AI Agent Allowed": {
         goal: "Allow user-directed agent fetches, which are requests a person actually asked for.",
         requirements: [
-            "Add an `Allow: /` group for ChatGPT-User, Claude-User and Perplexity-User (optionally MistralAI-User and meta-externalfetcher).",
+            "Add an `Allow: /` group for Claude-User (optionally MistralAI-User and meta-externalfetcher).",
+            "ChatGPT-User and Perplexity-User generally ignore robots.txt because a person requested the fetch (per OpenAI's and Perplexity's documentation); whether they reach you is decided by your WAF/bot protection, so check it does not challenge them.",
             "These agents fetch a page because a user asked about it in a conversation; blocking them blocks your own visitors' agents, not a scraper.",
             "Keep any training-crawler policy unchanged — this decision is independent of it."
         ],
         deliverable: "The robots.txt groups to add.",
-        acceptance: ["Requests from ChatGPT-User, Claude-User and Perplexity-User are permitted by the resulting rules."]
+        acceptance: ["Claude-User is permitted by the robots.txt rules, and the WAF does not challenge ChatGPT-User or Perplexity-User."]
     },
     "AI Training Blocked": {
         goal: "Make the model-training policy explicit, in whichever direction you intend.",
@@ -830,6 +831,7 @@ const PROMPT_LIBRARY = {
             "Replace retired tokens: `anthropic-ai` and `Claude-Web` are no longer honoured — use ClaudeBot (training), Claude-SearchBot (search) and Claude-User (user-triggered).",
             "If you opt out of training, cover every training token, not a subset: GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider, cohere-ai.",
             "If `User-agent: *` disallows the site, add explicit groups for the search and user-triggered crawlers you still want, so they are not blocked by accident.",
+            "Do not rely on robots.txt to block ChatGPT-User or Perplexity-User: their vendors document that user-requested fetches generally ignore it. Use WAF or server-side rules if you need to.",
             "Do not block a vendor's user-triggered fetcher while allowing its training crawler — that inverts the usual trade-off."
         ],
         deliverable: "The revised robots.txt, with one commented group per purpose.",
@@ -1470,16 +1472,20 @@ export function buildPrompt(check, origin) {
 //   training — bulk collection for model training
 //   search   — indexing for AI search answers with citations
 //   user     — fetches made live on behalf of a user's request
+// `ignoresRobots` marks fetchers whose vendor documents that robots.txt
+// generally does not govern them (user-requested fetches): OpenAI for
+// ChatGPT-User, Perplexity for Perplexity-User. Rules naming them are
+// reported as ineffective rather than scored. Claude-User does honour it.
 export const AI_CRAWLERS = [
     { token: 'gptbot',               label: 'GPTBot',               vendor: 'OpenAI',      role: 'training' },
     { token: 'oai-searchbot',        label: 'OAI-SearchBot',        vendor: 'OpenAI',      role: 'search' },
-    { token: 'chatgpt-user',         label: 'ChatGPT-User',         vendor: 'OpenAI',      role: 'user' },
+    { token: 'chatgpt-user',         label: 'ChatGPT-User',         vendor: 'OpenAI',      role: 'user', ignoresRobots: true },
     { token: 'claudebot',            label: 'ClaudeBot',            vendor: 'Anthropic',   role: 'training' },
     { token: 'claude-searchbot',     label: 'Claude-SearchBot',     vendor: 'Anthropic',   role: 'search' },
     { token: 'claude-user',          label: 'Claude-User',          vendor: 'Anthropic',   role: 'user' },
     { token: 'perplexitybot',        label: 'PerplexityBot',        vendor: 'Perplexity',  role: 'search' },
-    { token: 'perplexity-user',      label: 'Perplexity-User',      vendor: 'Perplexity',  role: 'user' },
-    { token: 'google-extended',      label: 'Google-Extended',      vendor: 'Google',      role: 'training' },
+    { token: 'perplexity-user',      label: 'Perplexity-User',      vendor: 'Perplexity',  role: 'user', ignoresRobots: true },
+    { token: 'google-extended',      label: 'Google-Extended',      vendor: 'Google',      role: 'training' }, // also Gemini grounding; no effect on Google Search
     { token: 'applebot-extended',    label: 'Applebot-Extended',    vendor: 'Apple',       role: 'training' },
     { token: 'meta-externalagent',   label: 'meta-externalagent',   vendor: 'Meta',        role: 'training' },
     { token: 'meta-externalfetcher', label: 'meta-externalfetcher', vendor: 'Meta',        role: 'user' },
@@ -1494,7 +1500,8 @@ export const AI_CRAWLERS = [
 
 // Bots whose access decides the scored "AI Search Allowed" / "AI Agent Allowed" checks.
 export const AI_SEARCH_REQUIRED = ['oai-searchbot', 'claude-searchbot', 'perplexitybot'];
-export const AI_AGENT_REQUIRED = ['chatgpt-user', 'claude-user', 'perplexity-user'];
+// Only user-triggered fetchers that actually obey robots.txt can be scored on it.
+export const AI_AGENT_REQUIRED = ['claude-user'];
 
 // Retired tokens that no current crawler obeys; a rule naming only these
 // silently stops applying.
@@ -1525,6 +1532,7 @@ export function evaluateAiCrawlerPolicy(rules) {
         role: b.role,
         named: Object.prototype.hasOwnProperty.call(rules, b.token),
         allowed: !robotsBlocksBot(rules, b.token),
+        ...(b.ignoresRobots ? { ignoresRobots: true } : {}),
     }));
     const byRole = (role) => crawlers.filter(c => c.role === role);
     const issues = [];
@@ -1542,9 +1550,16 @@ export function evaluateAiCrawlerPolicy(rules) {
         if (missed.length) issues.push(`training opt-out incomplete — still allowed: ${missed.join(', ')}`);
     }
 
+    // Rules for fetchers that do not consult robots.txt do nothing; blocking
+    // them takes a WAF or server-side rule.
+    const ineffective = crawlers.filter(c => c.ignoresRobots && c.named && !c.allowed).map(c => c.name);
+    if (ineffective.length) {
+        issues.push(`${ineffective.join(', ')} generally ignore robots.txt (user-requested fetches) — the Disallow has no effect; use WAF/server rules if you mean to block`);
+    }
+
     // Search and user-triggered fetchers caught by a blanket `*` block are
     // usually collateral damage rather than a decision.
-    const collateral = crawlers.filter(c => c.role !== 'training' && !c.named && !c.allowed).map(c => c.name);
+    const collateral = crawlers.filter(c => c.role !== 'training' && !c.ignoresRobots && !c.named && !c.allowed).map(c => c.name);
     if (collateral.length) {
         issues.push(`blocked only by the "*" group (add explicit groups if unintended): ${collateral.join(', ')}`);
     }
@@ -1554,7 +1569,7 @@ export function evaluateAiCrawlerPolicy(rules) {
     for (const vendor of new Set(crawlers.map(c => c.vendor))) {
         const own = crawlers.filter(c => c.vendor === vendor);
         const trainingAllowed = own.some(c => c.role === 'training' && c.allowed);
-        const userBlocked = own.filter(c => c.role === 'user' && !c.allowed && c.named);
+        const userBlocked = own.filter(c => c.role === 'user' && !c.ignoresRobots && !c.allowed && c.named);
         if (trainingAllowed && userBlocked.length) {
             issues.push(`${vendor}: user-triggered ${userBlocked.map(c => c.name).join(', ')} blocked while training is allowed`);
         }
@@ -3703,13 +3718,13 @@ Example:
                 },
                 {
                     name: "AI Agent Allowed",
-                    prompt: `Update my robots.txt to explicitly allow user-triggered AI agents: ChatGPT-User, Claude-User and Perplexity-User.`,
+                    prompt: `Update my robots.txt so user-triggered AI agents that honour it — Claude-User in particular — are allowed. ChatGPT-User and Perplexity-User generally ignore robots.txt, so make sure my WAF/bot protection does not block them either.`,
                     status: hasAIAgent ? 'ok' : 'warn',
                     message: hasAIAgent
-                        ? "User-triggered AI agents allowed (ChatGPT-User, Claude-User, Perplexity-User)"
+                        ? "User-triggered AI agents allowed (Claude-User; ChatGPT-User and Perplexity-User do not consult robots.txt)"
                         : (robotsFound ? `User-triggered AI agents blocked: ${aiAgentBlocked.join(', ')}` : "AI Agent bots disallowed or missing"),
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Allowing user-triggered agents (ChatGPT-User, Claude-User, Perplexity-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Allowing user-triggered agents (Claude-User honours robots.txt; ChatGPT-User and Perplexity-User generally do not) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
                     code: hasAIAgent ? 'Allowed' : 'Disallowed'
                 },
                 {
