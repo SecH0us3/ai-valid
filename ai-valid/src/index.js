@@ -134,12 +134,21 @@ exposed as the \`audit_website\` tool of the MCP server at \`https://ai-valid.se
 - Audit only sites the user names. Honour \`Retry-After\` on HTTP 429.
 `;
 
+const HOME_MARKDOWN = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
+
+// RFC 8288 pointers from the homepage to its machine-readable forms.
+const HOME_LINK_HEADER = [
+    '</index.md>; rel="alternate"; type="text/markdown"',
+    '</llms.txt>; rel="describedby"; type="text/plain"',
+    '</.well-known/api-catalog>; rel="api-catalog"',
+    '</openapi.json>; rel="service-desc"; type="application/json"'
+].join(', ');
+
 const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
         if (accept.includes("text/markdown")) {
-            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
-            return new Response(mdContent, {
+            return new Response(HOME_MARKDOWN, {
                 headers: { 
                     "Content-Type": "text/markdown; charset=utf-8",
                     "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
@@ -153,10 +162,18 @@ const STATIC_ROUTES = {
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
                 "Vary": "Accept",
+                "Link": HOME_LINK_HEADER,
                 ...corsHeaders
             },
         });
     },
+    "/index.md": () => new Response(HOME_MARKDOWN, {
+        headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
+        },
+    }),
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
@@ -493,6 +510,7 @@ export const CHECK_CATALOG = {
     "AI Search Allowed":           { weight: 10, category: "Discoverability" },
     "AI Agent Allowed":            { weight: 6,  category: "Discoverability" },
     "Sitemap Lastmod":             { weight: 3,  category: "Discoverability" },
+    "AI Crawler Directives":       { weight: 3,  category: "Discoverability" },
     "AI Training Blocked":         { weight: 0,  category: "Policy", advisory: true },
     "Differentiated Policy":       { weight: 0,  category: "Policy", advisory: true },
     "NoAI Meta Tag":               { weight: 0,  category: "Policy", advisory: true },
@@ -533,6 +551,7 @@ export const CHECK_CATALOG = {
 
     // --- Delivery & caching ---
     "Content Neg. (MD)":           { weight: 6,  category: "Delivery" },
+    "Machine-Readable Links":      { weight: 3,  category: "Delivery" },
     "Freshness Headers":           { weight: 6,  category: "Delivery" },
     "Conditional Requests (304)":  { weight: 3,  category: "Delivery" },
     "X-Robots-Tag Header":         { weight: 3,  category: "Delivery" },
@@ -731,22 +750,22 @@ const PROMPT_LIBRARY = {
     "AI Search Allowed": {
         goal: "Allow the AI search crawlers that can cite this site in generated answers.",
         requirements: [
-            "Add explicit `Allow: /` groups for OAI-SearchBot, PerplexityBot and YouBot.",
+            "Add explicit `Allow: /` groups for OAI-SearchBot, Claude-SearchBot and PerplexityBot (optionally DuckAssistBot and YouBot).",
             "These are retrieval crawlers for citation, distinct from the training crawlers — allowing them does not permit model training.",
             "Do not add these to a shared `*` group; name each agent in its own group."
         ],
         deliverable: "The robots.txt groups to add, and where they go relative to the existing rules.",
-        acceptance: ["Each of the three agents has a group whose rules permit the paths you want cited."]
+        acceptance: ["OAI-SearchBot, Claude-SearchBot and PerplexityBot each have a group whose rules permit the paths you want cited."]
     },
     "AI Agent Allowed": {
         goal: "Allow user-directed agent fetches, which are requests a person actually asked for.",
         requirements: [
-            "Add an `Allow: /` group for ChatGPT-User (and Perplexity-User if you also want Perplexity's on-demand fetches).",
+            "Add an `Allow: /` group for ChatGPT-User, Claude-User and Perplexity-User (optionally MistralAI-User and meta-externalfetcher).",
             "These agents fetch a page because a user asked about it in a conversation; blocking them blocks your own visitors' agents, not a scraper.",
             "Keep any training-crawler policy unchanged — this decision is independent of it."
         ],
         deliverable: "The robots.txt groups to add.",
-        acceptance: ["A request with the ChatGPT-User user-agent is permitted by the resulting rules."]
+        acceptance: ["Requests from ChatGPT-User, Claude-User and Perplexity-User are permitted by the resulting rules."]
     },
     "AI Training Blocked": {
         goal: "Make the model-training policy explicit, in whichever direction you intend.",
@@ -763,12 +782,34 @@ const PROMPT_LIBRARY = {
         goal: "State separate policies for AI search, user-directed agents and model training.",
         requirements: [
             "Treat the three as three decisions, not one. The common intent — be citable in AI search, serve users' agents, decline training — requires all three groups to differ.",
-            "Group 1 (cite me): OAI-SearchBot, PerplexityBot, YouBot.",
-            "Group 2 (serve my users' agents): ChatGPT-User, Perplexity-User.",
-            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot."
+            "Group 1 (cite me): OAI-SearchBot, Claude-SearchBot, PerplexityBot.",
+            "Group 2 (serve my users' agents): ChatGPT-User, Claude-User, Perplexity-User.",
+            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent."
         ],
         deliverable: "The full robots.txt with the three groups distinguished.",
         acceptance: ["The three groups do not all carry identical rules."]
+    },
+    "AI Crawler Directives": {
+        goal: "Address every current AI crawler token deliberately, grouped by purpose.",
+        requirements: [
+            "Replace retired tokens: `anthropic-ai` and `Claude-Web` are no longer honoured — use ClaudeBot (training), Claude-SearchBot (search) and Claude-User (user-triggered).",
+            "If you opt out of training, cover every training token, not a subset: GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider, cohere-ai.",
+            "If `User-agent: *` disallows the site, add explicit groups for the search and user-triggered crawlers you still want, so they are not blocked by accident.",
+            "Do not block a vendor's user-triggered fetcher while allowing its training crawler — that inverts the usual trade-off."
+        ],
+        deliverable: "The revised robots.txt, with one commented group per purpose.",
+        acceptance: ["No retired tokens remain, and every AI token in the registry resolves to the rule you intended."]
+    },
+    "Machine-Readable Links": {
+        goal: "Point from each page to its machine-readable representations with standard link relations.",
+        requirements: [
+            "Add `<link rel=\"alternate\" type=\"text/markdown\" href=\"...\">` to the <head> of each page, pointing at its Markdown rendition (for example `page.md`, or the same URL when it negotiates on `Accept: text/markdown`).",
+            "Add `<link rel=\"describedby\" href=\"/llms.txt\">` (llms.txt v2) so agents landing on any page find the site index.",
+            "Send the same relations as an HTTP `Link` header (RFC 8288), plus `rel=\"api-catalog\"` (RFC 9727) if you publish an API catalog — headers reach clients that never parse HTML.",
+            "The Markdown target must return 200 with `Content-Type: text/markdown`, not an HTML page."
+        ],
+        deliverable: "The <head> tags and the response-header configuration (server, CDN or middleware).",
+        acceptance: ["`curl -sI ORIGIN | grep -i '^link:'` shows the relations, and the Markdown URL returns text/markdown."]
     },
     "Content-Signal": {
         goal: "Declare machine-readable usage terms with a Content-Signal directive.",
@@ -1385,6 +1426,163 @@ export function buildPrompt(check, origin) {
     return parts.join('\n');
 }
 
+
+// --- AI crawler registry ---
+// Vendors now split their crawlers by purpose, and robots.txt has to address
+// each token separately: blocking a vendor's training crawler does not touch
+// its search or user-triggered fetcher, and vice versa.
+//   training — bulk collection for model training
+//   search   — indexing for AI search answers with citations
+//   user     — fetches made live on behalf of a user's request
+export const AI_CRAWLERS = [
+    { token: 'gptbot',               label: 'GPTBot',               vendor: 'OpenAI',      role: 'training' },
+    { token: 'oai-searchbot',        label: 'OAI-SearchBot',        vendor: 'OpenAI',      role: 'search' },
+    { token: 'chatgpt-user',         label: 'ChatGPT-User',         vendor: 'OpenAI',      role: 'user' },
+    { token: 'claudebot',            label: 'ClaudeBot',            vendor: 'Anthropic',   role: 'training' },
+    { token: 'claude-searchbot',     label: 'Claude-SearchBot',     vendor: 'Anthropic',   role: 'search' },
+    { token: 'claude-user',          label: 'Claude-User',          vendor: 'Anthropic',   role: 'user' },
+    { token: 'perplexitybot',        label: 'PerplexityBot',        vendor: 'Perplexity',  role: 'search' },
+    { token: 'perplexity-user',      label: 'Perplexity-User',      vendor: 'Perplexity',  role: 'user' },
+    { token: 'google-extended',      label: 'Google-Extended',      vendor: 'Google',      role: 'training' },
+    { token: 'applebot-extended',    label: 'Applebot-Extended',    vendor: 'Apple',       role: 'training' },
+    { token: 'meta-externalagent',   label: 'meta-externalagent',   vendor: 'Meta',        role: 'training' },
+    { token: 'meta-externalfetcher', label: 'meta-externalfetcher', vendor: 'Meta',        role: 'user' },
+    { token: 'amazonbot',            label: 'Amazonbot',            vendor: 'Amazon',      role: 'training' },
+    { token: 'ccbot',                label: 'CCBot',                vendor: 'Common Crawl', role: 'training' },
+    { token: 'bytespider',           label: 'Bytespider',           vendor: 'ByteDance',   role: 'training' },
+    { token: 'cohere-ai',            label: 'cohere-ai',            vendor: 'Cohere',      role: 'training' },
+    { token: 'mistralai-user',       label: 'MistralAI-User',       vendor: 'Mistral',     role: 'user' },
+    { token: 'duckassistbot',        label: 'DuckAssistBot',        vendor: 'DuckDuckGo',  role: 'search' },
+    { token: 'youbot',               label: 'YouBot',               vendor: 'You.com',     role: 'search' },
+];
+
+// Bots whose access decides the scored "AI Search Allowed" / "AI Agent Allowed" checks.
+export const AI_SEARCH_REQUIRED = ['oai-searchbot', 'claude-searchbot', 'perplexitybot'];
+export const AI_AGENT_REQUIRED = ['chatgpt-user', 'claude-user', 'perplexity-user'];
+
+// Retired tokens that no current crawler obeys; a rule naming only these
+// silently stops applying.
+export const DEPRECATED_AI_TOKENS = {
+    'anthropic-ai': 'ClaudeBot',
+    'claude-web': 'Claude-User / Claude-SearchBot',
+};
+
+const AI_CRAWLER_BY_TOKEN = Object.fromEntries(AI_CRAWLERS.map(b => [b.token, b]));
+
+/** RFC 9309 group selection: the bot's own group if named, else the `*` group. */
+export function robotsBlocksBot(rules, token) {
+    const agentRules = rules[token] || rules['*'];
+    if (!agentRules) return false;
+    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
+    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
+    return hasDisallowAll && !hasAllowAll;
+}
+
+/**
+ * Per-bot view of a parsed robots.txt plus the policy problems worth
+ * reporting. `rules` is { lowercasedAgent: { allow: [], disallow: [] } }.
+ */
+export function evaluateAiCrawlerPolicy(rules) {
+    const crawlers = AI_CRAWLERS.map(b => ({
+        name: b.label,
+        vendor: b.vendor,
+        role: b.role,
+        named: Object.prototype.hasOwnProperty.call(rules, b.token),
+        allowed: !robotsBlocksBot(rules, b.token),
+    }));
+    const byRole = (role) => crawlers.filter(c => c.role === role);
+    const issues = [];
+
+    const deprecated = Object.keys(DEPRECATED_AI_TOKENS).filter(t => Object.prototype.hasOwnProperty.call(rules, t));
+    for (const t of deprecated) {
+        issues.push(`retired token "${t}" is ignored by current crawlers — use ${DEPRECATED_AI_TOKENS[t]}`);
+    }
+
+    // A site that names some training crawlers clearly means to opt out of
+    // training; any training crawler it missed still collects.
+    const training = byRole('training');
+    if (training.some(c => c.named && !c.allowed)) {
+        const missed = training.filter(c => c.allowed).map(c => c.name);
+        if (missed.length) issues.push(`training opt-out incomplete — still allowed: ${missed.join(', ')}`);
+    }
+
+    // Search and user-triggered fetchers caught by a blanket `*` block are
+    // usually collateral damage rather than a decision.
+    const collateral = crawlers.filter(c => c.role !== 'training' && !c.named && !c.allowed).map(c => c.name);
+    if (collateral.length) {
+        issues.push(`blocked only by the "*" group (add explicit groups if unintended): ${collateral.join(', ')}`);
+    }
+
+    // Blocking a vendor's user-triggered fetcher while letting its training
+    // crawler in inverts the usual trade-off.
+    for (const vendor of new Set(crawlers.map(c => c.vendor))) {
+        const own = crawlers.filter(c => c.vendor === vendor);
+        const trainingAllowed = own.some(c => c.role === 'training' && c.allowed);
+        const userBlocked = own.filter(c => c.role === 'user' && !c.allowed && c.named);
+        if (trainingAllowed && userBlocked.length) {
+            issues.push(`${vendor}: user-triggered ${userBlocked.map(c => c.name).join(', ')} blocked while training is allowed`);
+        }
+    }
+
+    const summary = ['search', 'user', 'training'].map(role => {
+        const list = byRole(role);
+        const allowed = list.filter(c => c.allowed).length;
+        return `${role === 'user' ? 'user agents' : role} ${allowed}/${list.length} allowed`;
+    }).join(', ');
+
+    return { crawlers, issues, summary };
+}
+
+/** Labels of the given tokens that robots.txt blocks. */
+export function blockedAiCrawlers(rules, tokens) {
+    return tokens.filter(t => robotsBlocksBot(rules, t)).map(t => AI_CRAWLER_BY_TOKEN[t]?.label || t);
+}
+
+// --- Machine-readable alternates (RFC 8288 Link / <link>) ---
+// llms.txt v2 points from a page to its Markdown rendition with
+// rel="alternate" type="text/markdown", and to the llms.txt that covers it
+// with rel="describedby"; RFC 9727 registers rel="api-catalog" and RFC 8631
+// rel="service-desc" for API descriptions.
+
+/** Parses an HTTP Link header into [{ href, rel: [..], type }]. */
+export function parseLinkHeader(value) {
+    if (!value || typeof value !== 'string') return [];
+    const links = [];
+    // Split on commas that start a new <uri>, not those inside quoted params.
+    const parts = value.match(/<[^>]*>(?:\s*;\s*[^,;=]+(?:=(?:"[^"]*"|[^,;]*))?)*/g) || [];
+    for (const part of parts) {
+        const m = part.match(/^<([^>]*)>(.*)$/);
+        if (!m) continue;
+        const params = {};
+        for (const p of m[2].matchAll(/;\s*([^\s=;]+)\s*(?:=\s*(?:"([^"]*)"|([^;]*)))?/g)) {
+            params[p[1].toLowerCase()] = (p[2] ?? p[3] ?? '').trim();
+        }
+        links.push({
+            href: m[1].trim(),
+            rel: (params.rel || '').toLowerCase().split(/\s+/).filter(Boolean),
+            type: (params.type || '').toLowerCase(),
+        });
+    }
+    return links;
+}
+
+/** Sorts discovered links into the relations this audit understands. */
+export function classifyMachineLinks(links) {
+    const out = { markdown: [], llms: [], api: [] };
+    for (const l of links) {
+        if (!l.href) continue;
+        const type = (l.type || '').split(';')[0].trim();
+        if (l.rel.includes('alternate') && (type === 'text/markdown' || type === 'text/x-markdown')) {
+            out.markdown.push(l.href);
+        } else if (l.rel.includes('describedby') && (/llms(-full)?\.txt(\?|#|$)/i.test(l.href) || type === 'text/plain' || type === 'text/markdown')) {
+            out.llms.push(l.href);
+        } else if (l.rel.includes('api-catalog') || l.rel.includes('service-desc')) {
+            out.api.push(l.href);
+        }
+    }
+    for (const k of Object.keys(out)) out[k] = [...new Set(out[k])];
+    return out;
+}
 
 // --- Agent Skills Discovery (Cloudflare RFC, v0.2.0) ---
 // https://github.com/cloudflare/agent-skills-discovery-rfc
@@ -2299,6 +2497,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasSitemapLastmod = false;
     let robotsText = "";
     let robotsContentSignal = "";
+    let aiSearchBlocked = [];
+    let aiAgentBlocked = [];
+    let aiCrawlerPolicy = null;
 
     // --- Phase 1: robots.txt (and, once parsed, the sitemap it points at) ---
     const robotsPhase = (async () => {
@@ -2352,20 +2553,13 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             }
 
-            const isBotBlocked = (bot) => {
-                const agentRules = rules[bot] || rules['*'];
-                if (agentRules) {
-                    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
-                    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
-                    return hasDisallowAll && !hasAllowAll;
-                }
-                return false;
-            };
+            const isBotBlocked = (bot) => robotsBlocksBot(rules, bot);
 
-            const isBotAllowed = (bot) => !isBotBlocked(bot);
-
-            hasAISearch = isBotAllowed('oai-searchbot') && isBotAllowed('perplexitybot') && isBotAllowed('youbot');
-            hasAIAgent = isBotAllowed('chatgpt-user');
+            aiSearchBlocked = blockedAiCrawlers(rules, AI_SEARCH_REQUIRED);
+            aiAgentBlocked = blockedAiCrawlers(rules, AI_AGENT_REQUIRED);
+            aiCrawlerPolicy = evaluateAiCrawlerPolicy(rules);
+            hasAISearch = aiSearchBlocked.length === 0;
+            hasAIAgent = aiAgentBlocked.length === 0;
             hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
@@ -2445,6 +2639,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasBreadcrumbSchema = false;
     let hasSiteSearchSchema = false;
     let hasCanonical = false;
+    // Machine-readable alternates advertised by the homepage (<link> + Link header).
+    const discoveredLinks = [];
+    let machineLinks = { markdown: [], llms: [], api: [] };
+    let markdownAlternate = null; // { url, ok, reason }
     let hasHsts = false;
     let isHttps = false;
     let xRobotsTag = '';
@@ -2492,6 +2690,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         hasHsts = !!r_home.headers.get('strict-transport-security');
         xRobotsTag = (r_home.headers.get('x-robots-tag') || '').toLowerCase();
         hasBlockingXRobots = /\b(noindex|nosnippet|noai|noimageai)\b/.test(xRobotsTag);
+
+        for (const l of parseLinkHeader(r_home.headers.get('link') || '')) {
+            discoveredLinks.push({ ...l, source: 'header' });
+        }
 
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         // A server that hands Markdown to everyone regardless of Accept still
@@ -2576,6 +2778,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 element(el) {
                     const href = (el.getAttribute('href') || '').trim();
                     if (href) hasCanonical = true;
+                }
+            })
+            .on('link[href][rel]', {
+                element(el) {
+                    if (discoveredLinks.length >= 100) return;
+                    discoveredLinks.push({
+                        href: (el.getAttribute('href') || '').trim(),
+                        rel: (el.getAttribute('rel') || '').toLowerCase().split(/\s+/).filter(Boolean),
+                        type: (el.getAttribute('type') || '').toLowerCase(),
+                        source: 'html'
+                    });
                 }
             })
             .on('link[rel="alternate"]', {
@@ -2742,6 +2955,36 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
 
         // Evaluate new metrics
         hasCleanUrls = hasInternalLinks && !hasDirtyUrls;
+
+        // Follow the advertised Markdown alternate, if any, to confirm it is real.
+        machineLinks = classifyMachineLinks(discoveredLinks);
+        if (machineLinks.markdown.length) {
+            let mdUrl = null;
+            try { mdUrl = new URL(machineLinks.markdown[0], base); } catch {}
+            if (!mdUrl || (mdUrl.protocol !== 'https:' && mdUrl.protocol !== 'http:')) {
+                markdownAlternate = { url: machineLinks.markdown[0], ok: false, reason: 'invalid URL' };
+            } else {
+                markdownAlternate = { url: mdUrl.href, ok: false, reason: '' };
+                try {
+                    const r_alt = await iFetch(mdUrl.href, { headers: headersAgent, cf: { cacheEverything: false } });
+                    const altType = (r_alt.headers.get('content-type') || '').toLowerCase();
+                    if (r_alt.status !== 200) {
+                        markdownAlternate.reason = `returned ${r_alt.status}`;
+                    } else if (altType.includes('text/html')) {
+                        markdownAlternate.reason = 'returned HTML';
+                    } else if (altType.includes('markdown') || altType.includes('text/plain')) {
+                        markdownAlternate.ok = true;
+                    } else {
+                        markdownAlternate.reason = `served as ${altType.split(';')[0] || 'no content-type'}`;
+                    }
+                    if (r_alt.body && typeof r_alt.body.cancel === 'function') {
+                        await r_alt.body.cancel().catch(() => {});
+                    }
+                } catch {
+                    markdownAlternate.reason = 'unreachable';
+                }
+            }
+        }
 
         // An <img> without an alt attribute is invisible to an agent. One
         // described image out of two hundred used to be enough to pass.
@@ -3294,6 +3537,7 @@ Example:
             hasAIAgent,
             hasAITrainingBlocked,
             hasDifferentiatedPolicy,
+            aiCrawlers: aiCrawlerPolicy ? aiCrawlerPolicy.crawlers : [],
             sitemapFound,
             hasSitemapLastmod,
             results: [
@@ -3308,18 +3552,22 @@ Example:
                 },
                 {
                     name: "AI Search Allowed",
-                    prompt: `Update my robots.txt to explicitly allow AI search agents like OAI-SearchBot, PerplexityBot, and YouBot.`,
+                    prompt: `Update my robots.txt to explicitly allow AI search crawlers: OAI-SearchBot, Claude-SearchBot and PerplexityBot.`,
                     status: hasAISearch ? 'ok' : 'warn',
-                    message: hasAISearch ? "AI Search bots allowed" : "AI Search bots disallowed or missing",
+                    message: hasAISearch
+                        ? "AI Search bots allowed (OAI-SearchBot, Claude-SearchBot, PerplexityBot)"
+                        : (robotsFound ? `AI Search bots blocked: ${aiSearchBlocked.join(', ')}` : "AI Search bots disallowed or missing"),
                     spec: "https://developers.google.com/search/docs/crawling-indexing/robots/intro",
                     tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (like OAI-SearchBot, PerplexityBot, YouBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAISearch ? 'Allowed' : 'Disallowed'
                 },
                 {
                     name: "AI Agent Allowed",
-                    prompt: `Update my robots.txt to explicitly allow user-directed AI agents like ChatGPT-User.`,
+                    prompt: `Update my robots.txt to explicitly allow user-triggered AI agents: ChatGPT-User, Claude-User and Perplexity-User.`,
                     status: hasAIAgent ? 'ok' : 'warn',
-                    message: hasAIAgent ? "AI Agent bots allowed" : "AI Agent bots disallowed or missing",
+                    message: hasAIAgent
+                        ? "User-triggered AI agents allowed (ChatGPT-User, Claude-User, Perplexity-User)"
+                        : (robotsFound ? `User-triggered AI agents blocked: ${aiAgentBlocked.join(', ')}` : "AI Agent bots disallowed or missing"),
                     spec: "https://platform.openai.com/docs/bots",
                     tooltip: `<strong>What it is:</strong> Allowing user-initiated autonomous actions (like ChatGPT-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
                     code: hasAIAgent ? 'Allowed' : 'Disallowed'
@@ -3342,6 +3590,24 @@ Example:
                     tooltip: `<strong>What it is:</strong> The recommended model where citation engines (Search) and user assistants (Agent) are allowed, but bulk model trainers (Training) are blocked.<br/><br/><strong>Why it's critical:</strong> Avoids the "binary choice" of blocking everything or allowing everything.<br/><br/><strong>Impact of missing it:</strong> You either block AI entirely or allow model training without control.<br/><br/><strong>Implementation Example:</strong> Block GPTBot/ClaudeBot, but allow OAI-SearchBot and ChatGPT-User.`,
                     code: hasDifferentiatedPolicy ? 'Implemented' : 'Not Implemented'
                 },
+                (() => {
+                    const policy = aiCrawlerPolicy;
+                    const status = !robotsFound ? 'err' : (policy && policy.issues.length ? 'warn' : 'ok');
+                    const message = !robotsFound
+                        ? "No robots.txt to evaluate"
+                        : (policy.issues.length
+                            ? `${policy.issues.slice(0, 2).join('; ')}${policy.issues.length > 2 ? ` (+${policy.issues.length - 2} more)` : ''}`
+                            : `Current AI crawler tokens handled consistently — ${policy.summary}`);
+                    return {
+                        name: "AI Crawler Directives",
+                        prompt: `Review my robots.txt against the current AI crawler tokens and separate them by purpose: search (OAI-SearchBot, Claude-SearchBot, PerplexityBot), user-triggered (ChatGPT-User, Claude-User, Perplexity-User) and training (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, CCBot). Replace retired tokens such as anthropic-ai and Claude-Web.`,
+                        status,
+                        message,
+                        spec: "https://www.rfc-editor.org/rfc/rfc9309.html",
+                        tooltip: `<strong>What it is:</strong> A check of your robots.txt against the AI crawler tokens vendors use today, grouped by purpose: <em>search</em> (indexes for cited answers), <em>user-triggered</em> (fetches a page because a person asked) and <em>training</em>.<br/><br/><strong>Why it's critical:</strong> Each token is matched on its own. Rules naming only retired tokens (<code>anthropic-ai</code>, <code>Claude-Web</code>) no longer apply; a partial training opt-out leaves other trainers collecting; a blanket <code>User-agent: *</code> block silently removes you from AI search and from your own users' assistants.<br/><br/><strong>Impact of missing it:</strong> The policy you think you have is not the one crawlers apply.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>User-agent: Claude-SearchBot<br>User-agent: PerplexityBot<br>Allow: /</code>`,
+                        code: !robotsFound ? 'Missing' : (policy.issues.length ? 'Partial' : 'Consistent')
+                    };
+                })(),
                 {
                     name: "sitemap.xml",
                     prompt: `Please generate a \`sitemap.xml\` for my project if it doesn't exist, and ensure my \`/robots.txt\` includes a \`Sitemap: <url>\` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.`,
@@ -3397,6 +3663,8 @@ Example:
             hasAuthoritativeVoice,
             hasCleanUrls,
             hasCanonical,
+            machineLinks,
+            markdownAlternate,
             hasBreadcrumbSchema,
             hasSiteSearchSchema,
             hasServerRenderedContent,
@@ -3422,6 +3690,40 @@ Example:
                     tooltip: `<strong>What it is:</strong> Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.<br/><br/><strong>Why it's critical:</strong> LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.<br/><br/><strong>Impact of missing it:</strong> Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.<br/><br/><strong>Implementation Example:</strong> Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps.`,
                     code: supportsMarkdown ? (hasVaryAccept ? 'Supported' : 'No Vary') : 'Failed'
                 },
+                (() => {
+                    const found = [];
+                    if (machineLinks.markdown.length) found.push('Markdown alternate');
+                    if (machineLinks.llms.length) found.push('llms.txt (describedby)');
+                    if (machineLinks.api.length) found.push('API description');
+                    const viaHeader = discoveredLinks.some(l => l.source === 'header');
+                    let status, message, code;
+                    if (markdownAlternate && markdownAlternate.ok) {
+                        status = 'ok';
+                        code = 'Linked';
+                        message = `Advertised: ${found.join(', ')}${viaHeader ? ' (incl. Link header)' : ''}`;
+                    } else if (markdownAlternate) {
+                        status = 'warn';
+                        code = 'Partial';
+                        message = `Markdown alternate ${markdownAlternate.url} ${markdownAlternate.reason}`;
+                    } else if (found.length) {
+                        status = 'warn';
+                        code = 'Partial';
+                        message = `Advertised: ${found.join(', ')} — but no rel="alternate" type="text/markdown" for the page`;
+                    } else {
+                        status = 'err';
+                        code = 'Missing';
+                        message = 'No rel="alternate" text/markdown, rel="describedby" or rel="api-catalog" links in HTML or Link header';
+                    }
+                    return {
+                        name: "Machine-Readable Links",
+                        prompt: `Advertise my pages' machine-readable versions: add <link rel="alternate" type="text/markdown" href="..."> pointing at each page's Markdown rendition and <link rel="describedby" href="/llms.txt"> to the HTML head, and send the same relations (plus rel="api-catalog" if I publish one) in an HTTP Link header.`,
+                        status,
+                        message,
+                        spec: "https://www.rfc-editor.org/rfc/rfc8288.html",
+                        tooltip: `<strong>What it is:</strong> Standard link relations that point from a page to its machine-readable forms: <code>rel="alternate" type="text/markdown"</code> (the page as Markdown), <code>rel="describedby"</code> (the llms.txt covering it, per llms.txt v2) and <code>rel="api-catalog"</code> (RFC 9727), in the HTML <code>&lt;head&gt;</code> or an HTTP <code>Link</code> header (RFC 8288).<br/><br/><strong>Why it's critical:</strong> Agents usually arrive on a specific page, not at a well-known path. An explicit link tells them a cleaner representation exists without guessing URLs.<br/><br/><strong>Impact of missing it:</strong> Agents parse your full HTML even when a Markdown version exists, wasting context and losing structure.<br/><br/><strong>Implementation Example:</strong> <code>Link: &lt;/index.md&gt;; rel="alternate"; type="text/markdown", &lt;/llms.txt&gt;; rel="describedby"</code>`,
+                        code
+                    };
+                })(),
                 {
                     name: "Content-Signal",
                     prompt: `Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training.`,

@@ -9,8 +9,8 @@
 - **Weighted readiness score**: A percentage of the weight actually available, with a letter grade and a per-category breakdown — not a raw count of passing checks.
 - **Prioritised fixes**: A ranked shortlist of the failures that move the score most, each with a ready-to-use remediation prompt carrying your domain and the specific finding.
 - **Semantic Protocol Discovery**: Automatically scans for `.well-known` manifests including MCP (Model Context Protocol), A2A Agent Cards, API Catalogs (RFC 9727), Agent Skills discovery indexes (validated against the v0.2.0 RFC, with SHA-256 digest verification of every SKILL.md) and AI Plugins.
-- **Bot Accessibility Audit**: Validates `robots.txt` and explicit AI directives for `OAI-SearchBot`, `GPTBot`, and others.
-- **Content Optimization**: Checks server-side rendering, structured data, content negotiation (Markdown support) and legal usage signals via `Content-Signal` headers.
+- **Bot Accessibility Audit**: Validates `robots.txt` against a registry of current AI crawler tokens split by purpose — search (`OAI-SearchBot`, `Claude-SearchBot`, `PerplexityBot`), user-triggered (`ChatGPT-User`, `Claude-User`, `Perplexity-User`) and training (`GPTBot`, `ClaudeBot`, `Google-Extended`, …) — and flags retired tokens, partial training opt-outs and collateral `*` blocks.
+- **Content Optimization**: Checks server-side rendering, structured data, content negotiation (Markdown support), RFC 8288 machine-readable links (`rel="alternate" type="text/markdown"`, `rel="describedby"` → llms.txt, `rel="api-catalog"`) and legal usage signals via `Content-Signal` headers.
 - **MCP server**: The auditor is itself callable as a tool from any MCP client.
 - **Actionable Dashboard**: Results are categorized into **Passed**, **Warnings**, & **Not found**, providing a clear implementation roadmap.
 - **Deep Linking**: Share audit results easily via persistent URL hashes.
