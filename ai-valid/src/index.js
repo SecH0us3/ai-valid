@@ -11,8 +11,10 @@ import tdmPolicyJson from "../public/policies/tdm-policy.json";
 import apiCatalogTxt from '../public/api-catalog.txt';
 import x402Json from "../public/.well-known/x402.json";
 import agentsMd from "../public/AGENTS.md";
-import agentsJson from "../public/.well-known/agents.json";
 
+
+// Agent Skills Discovery RFC v0.2.0 index schema identifier (see evaluateAgentSkillsIndex).
+export const AGENT_SKILLS_SCHEMA_V020 = 'https://schemas.agentskills.io/discovery/0.2.0/schema.json';
 
 const FETCH_TIMEOUT = 5000;
 
@@ -88,12 +90,126 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "Content-Type, Accept"
 };
 
+// Our own Agent Skill, published through the discovery index above. The digest
+// in the index is computed from these exact bytes, so editing the text keeps
+// the index valid automatically.
+const OWN_SKILL_NAME = "ai-readiness-audit";
+const OWN_SKILL_DESCRIPTION = "Audit how AI-ready a website is - robots.txt AI directives, llms.txt, MCP, A2A and Agent Skills manifests, structured data and Markdown negotiation - and get a weighted score with prioritised fixes. Use when asked whether a site is readable, discoverable or callable by AI agents and crawlers.";
+const OWN_SKILL_MD = `---
+name: ${OWN_SKILL_NAME}
+description: ${OWN_SKILL_DESCRIPTION}
+---
+
+# AI Readiness Audit
+
+Run an AI-Valid audit against a public website and report the result.
+
+## When to use
+
+- The user asks whether a site is "AI-ready", agent-friendly or visible to AI search.
+- The user wants to know which AI manifests (llms.txt, MCP server card, A2A agent card,
+  Agent Skills index, API catalog) a site publishes, or why one is failing.
+
+## How to run it
+
+Call the public API with the site's URL (http or https):
+
+\`\`\`http
+GET https://ai-valid.secmy.app/api/audit?targetUrl=https://example.com
+Accept: text/markdown
+\`\`\`
+
+\`Accept: application/json\` returns the full structured result instead. The same audit is
+exposed as the \`audit_website\` tool of the MCP server at \`https://ai-valid.secmy.app/mcp\`.
+
+## Reading the result
+
+- \`score.total\` (0-100) and \`score.grade\` summarise readiness; advisory checks are not scored.
+- \`priorities\` lists the failures that move the score most, each with a ready-to-use fix prompt.
+- Report the grade, the top three priorities and their fixes; do not invent checks that were not run.
+
+## Constraints
+
+- Audit only sites the user names. Honour \`Retry-After\` on HTTP 429.
+`;
+
+const HOME_MARKDOWN = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
+
+// RFC 8288 pointers from the homepage to its machine-readable forms.
+const HOME_LINK_HEADER = [
+    '</index.md>; rel="alternate"; type="text/markdown"',
+    '</llms.txt>; rel="describedby"; type="text/plain"',
+    '</.well-known/api-catalog>; rel="api-catalog"',
+    '</openapi.json>; rel="service-desc"; type="application/json"'
+].join(', ');
+
+let ownSkillDigestPromise = null;
+const ownSkillDigest = () => (ownSkillDigestPromise ||= sha256Hex(new TextEncoder().encode(OWN_SKILL_MD)).then(h => `sha256:${h}`));
+
+// agents.json (Wildcard spec, https://github.com/wild-card-ai/agents-json):
+// one flow over the auditWebsite operation of our OpenAPI document.
+const ownAgentsJson = (origin) => ({
+    "agentsJson": "0.1.0",
+    "info": {
+        "title": "AI-Valid Readiness Auditor",
+        "version": "1.0.0",
+        "description": "Audits how AI-ready a public website is (robots.txt AI directives, llms.txt, MCP/A2A/Agent Skills manifests, structured data, Markdown negotiation) and returns a weighted score with prioritised fixes. Use when a user asks whether a site is readable, discoverable or callable by AI agents."
+    },
+    "sources": [
+        {
+            "id": "aivalid",
+            "path": `${origin}/openapi.json`
+        }
+    ],
+    "flows": [
+        {
+            "id": "audit_website",
+            "title": "Audit a website for AI readiness",
+            "description": "Run a full AI readiness audit of the given URL and return the score, grade and prioritised fixes.",
+            "actions": [
+                {
+                    "id": "audit",
+                    "sourceId": "aivalid",
+                    "operationId": "auditWebsite"
+                }
+            ],
+            "fields": {
+                "parameters": [
+                    {
+                        "name": "targetUrl",
+                        "description": "Absolute http(s) URL of the site to audit",
+                        "required": true,
+                        "type": "string"
+                    }
+                ],
+                "responses": {
+                    "success": {
+                        "type": "object",
+                        "description": "Audit result with score, priorities and per-check results"
+                    }
+                }
+            },
+            "links": [
+                {
+                    "origin": {
+                        "actionId": "audit_website",
+                        "fieldPath": "parameters.targetUrl"
+                    },
+                    "target": {
+                        "actionId": "audit",
+                        "fieldPath": "parameters.targetUrl"
+                    }
+                }
+            ]
+        }
+    ]
+});
+
 const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
         if (accept.includes("text/markdown")) {
-            const mdContent = `# AI-Valid | AI Readiness Audit\n\nInstant analysis of your site's accessibility for intelligent agents, crawlers, and modern AI protocols.\n\n## API Usage\nSend a GET request to \`/api/audit\` with a \`targetUrl\` query parameter:\n\n\`\`\`bash\ncurl "https://<your-worker-domain>/api/audit?targetUrl=https://example.com"\n\`\`\`\n`;
-            return new Response(mdContent, {
+            return new Response(HOME_MARKDOWN, {
                 headers: { 
                     "Content-Type": "text/markdown; charset=utf-8",
                     "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
@@ -107,10 +223,18 @@ const STATIC_ROUTES = {
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
                 "Vary": "Accept",
+                "Link": HOME_LINK_HEADER,
                 ...corsHeaders
             },
         });
     },
+    "/index.md": () => new Response(HOME_MARKDOWN, {
+        headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
+        },
+    }),
     "/style.css": () => new Response(cssContent, {
         headers: { 
             "Content-Type": "text/css; charset=utf-8",
@@ -188,26 +312,34 @@ const STATIC_ROUTES = {
             ...corsHeaders
         },
     }),
-    "/.well-known/agent-skills/index.json": () => {
+    "/.well-known/agent-skills/index.json": async () => {
         const agentSkills = {
+            "$schema": AGENT_SKILLS_SCHEMA_V020,
             "skills": [
                 {
-                    "name": "AuditPlatform",
-                    "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
-                    "endpoint": "/api/audit",
-                    "method": "GET"
+                    "name": OWN_SKILL_NAME,
+                    "type": "skill-md",
+                    "description": OWN_SKILL_DESCRIPTION,
+                    "url": `/.well-known/agent-skills/${OWN_SKILL_NAME}/SKILL.md`,
+                    "digest": await ownSkillDigest()
                 }
-
             ]
         };
         return new Response(JSON.stringify(agentSkills, null, 2), {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                "Cache-Control": "public, max-age=3600",
                 ...corsHeaders
             },
         });
     },
+    [`/.well-known/agent-skills/${OWN_SKILL_NAME}/SKILL.md`]: () => new Response(OWN_SKILL_MD, {
+        headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=3600",
+            ...corsHeaders
+        },
+    }),
     "/.well-known/x402.json": () => {
         let content = "";
         if (typeof x402Json === 'object' && x402Json !== null) {
@@ -247,7 +379,15 @@ const STATIC_ROUTES = {
         });
     },
     "/robots.txt": () => {
-        const robotsTxt = `User-agent: *\nAllow: /\n\nUser-agent: GPTBot\nDisallow: /\n\nUser-agent: ClaudeBot\nDisallow: /\n\nUser-agent: Google-Extended\nDisallow: /\n\nUser-agent: Amazonbot\nDisallow: /\n\nUser-agent: Applebot-Extended\nDisallow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n\nUser-agent: ChatGPT-User\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n`;
+        // Generated from the crawler registry so this site always passes its own
+        // "AI Crawler Directives" check: search and user agents in, training out.
+        const group = (role, rule) => AI_CRAWLERS.filter(b => b.role === role).map(b => `User-agent: ${b.label}`).join('\n') + `\n${rule}\n`;
+        const robotsTxt = [
+            'User-agent: *\nAllow: /\n',
+            '# AI search (cited answers)\n' + group('search', 'Allow: /'),
+            '# User-triggered AI agents\n' + group('user', 'Allow: /'),
+            '# Model training\n' + group('training', 'Disallow: /')
+        ].join('\n');
         return new Response(robotsTxt, {
             headers: {
                 "Content-Type": "text/plain; charset=utf-8",
@@ -330,48 +470,13 @@ const STATIC_ROUTES = {
             }
         });
     },
-    "/.well-known/agents.json": () => {
-        let content = "";
-        if (typeof agentsJson === 'object' && agentsJson !== null && agentsJson.name) {
-            content = JSON.stringify(agentsJson, null, 2);
-        } else if (typeof agentsJson === 'string' && (agentsJson.trim().startsWith('{') || agentsJson.trim().startsWith('['))) {
-            try {
-                const parsed = JSON.parse(agentsJson);
-                if (parsed.name) content = JSON.stringify(parsed, null, 2);
-            } catch {}
+    "/.well-known/agents.json": (request) => new Response(JSON.stringify(ownAgentsJson(new URL(request.url).origin), null, 2), {
+        headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+            ...corsHeaders
         }
-        if (!content) {
-            content = JSON.stringify({
-                "name": "ai-valid-agent",
-                "version": "1.0.0",
-                "description": "AI-Readiness and GEO Audit Agent for modern web platforms",
-                "homepage": "https://ai-valid.secmy.app",
-                "documentation": "https://ai-valid.secmy.app/AGENTS.md",
-                "capabilities": [
-                    {
-                        "name": "audit_website",
-                        "description": "Performs AI readiness analysis for a given URL",
-                        "endpoint": "/api/audit",
-                        "method": "GET",
-                        "parameters": {
-                            "targetUrl": {
-                                "type": "string",
-                                "required": true,
-                                "description": "URL to audit"
-                            }
-                        }
-                    }
-                ]
-            }, null, 2);
-        }
-        return new Response(content, {
-            headers: {
-                "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
-                ...corsHeaders
-            }
-        });
-    },
+    }),
     "/.well-known/oauth-protected-resource/mcp": () => {
         const resourceMeta = {
             "resource": "https://ai-valid.secmy.app/mcp",
@@ -439,6 +544,7 @@ export const CHECK_CATALOG = {
     "AI Search Allowed":           { weight: 10, category: "Discoverability" },
     "AI Agent Allowed":            { weight: 6,  category: "Discoverability" },
     "Sitemap Lastmod":             { weight: 3,  category: "Discoverability" },
+    "AI Crawler Directives":       { weight: 3,  category: "Discoverability" },
     "AI Training Blocked":         { weight: 0,  category: "Policy", advisory: true },
     "Differentiated Policy":       { weight: 0,  category: "Policy", advisory: true },
     "NoAI Meta Tag":               { weight: 0,  category: "Policy", advisory: true },
@@ -479,6 +585,7 @@ export const CHECK_CATALOG = {
 
     // --- Delivery & caching ---
     "Content Neg. (MD)":           { weight: 6,  category: "Delivery" },
+    "Machine-Readable Links":      { weight: 3,  category: "Delivery" },
     "Freshness Headers":           { weight: 6,  category: "Delivery" },
     "Conditional Requests (304)":  { weight: 3,  category: "Delivery" },
     "X-Robots-Tag Header":         { weight: 3,  category: "Delivery" },
@@ -495,7 +602,8 @@ export const CHECK_CATALOG = {
     "A2A Agent Card":              { weight: 3,  category: "Agent Protocols" },
     "Agent Skills":                { weight: 3,  category: "Agent Protocols" },
     "API Catalog":                 { weight: 3,  category: "Agent Protocols" },
-    "AI Plugin":                   { weight: 1,  category: "Agent Protocols" },
+    // OpenAI retired ChatGPT plugins in 2024; the manifest is reported, not scored.
+    "AI Plugin":                   { weight: 0,  category: "Agent Protocols", legacy: true },
     "WebMCP Integration":          { weight: 1,  category: "Agent Protocols" },
     "OAuth Discovery":             { weight: 1,  category: "Agent Protocols" },
     "OAuth Protected Resource":    { weight: 1,  category: "Agent Protocols" },
@@ -640,7 +748,7 @@ const PROMPT_LIBRARY = {
         requirements: [
             "Keep the existing rules for conventional search crawlers intact — do not tighten them as a side effect.",
             "Add a separate group for each AI user-agent you want to address rather than relying on the `*` group; several AI crawlers ignore `*` when a named group exists.",
-            "Decide the three cases independently: AI search citation (OAI-SearchBot, PerplexityBot, YouBot), live agent fetching on a user's behalf (ChatGPT-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
+            "Decide the three cases independently: AI search citation (OAI-SearchBot, Claude-SearchBot, PerplexityBot), live agent fetching on a user's behalf (ChatGPT-User, Claude-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
             "Add a `Sitemap:` line with the absolute URL of the sitemap."
         ],
         deliverable: "The complete robots.txt content, to be served at /robots.txt as text/plain.",
@@ -677,22 +785,23 @@ const PROMPT_LIBRARY = {
     "AI Search Allowed": {
         goal: "Allow the AI search crawlers that can cite this site in generated answers.",
         requirements: [
-            "Add explicit `Allow: /` groups for OAI-SearchBot, PerplexityBot and YouBot.",
+            "Add explicit `Allow: /` groups for OAI-SearchBot, Claude-SearchBot and PerplexityBot (optionally DuckAssistBot and YouBot).",
             "These are retrieval crawlers for citation, distinct from the training crawlers — allowing them does not permit model training.",
             "Do not add these to a shared `*` group; name each agent in its own group."
         ],
         deliverable: "The robots.txt groups to add, and where they go relative to the existing rules.",
-        acceptance: ["Each of the three agents has a group whose rules permit the paths you want cited."]
+        acceptance: ["OAI-SearchBot, Claude-SearchBot and PerplexityBot each have a group whose rules permit the paths you want cited."]
     },
     "AI Agent Allowed": {
         goal: "Allow user-directed agent fetches, which are requests a person actually asked for.",
         requirements: [
-            "Add an `Allow: /` group for ChatGPT-User (and Perplexity-User if you also want Perplexity's on-demand fetches).",
+            "Add an `Allow: /` group for Claude-User (optionally MistralAI-User and meta-externalfetcher).",
+            "ChatGPT-User and Perplexity-User generally ignore robots.txt because a person requested the fetch (per OpenAI's and Perplexity's documentation); whether they reach you is decided by your WAF/bot protection, so check it does not challenge them.",
             "These agents fetch a page because a user asked about it in a conversation; blocking them blocks your own visitors' agents, not a scraper.",
             "Keep any training-crawler policy unchanged — this decision is independent of it."
         ],
         deliverable: "The robots.txt groups to add.",
-        acceptance: ["A request with the ChatGPT-User user-agent is permitted by the resulting rules."]
+        acceptance: ["Claude-User is permitted by the robots.txt rules, and the WAF does not challenge ChatGPT-User or Perplexity-User."]
     },
     "AI Training Blocked": {
         goal: "Make the model-training policy explicit, in whichever direction you intend.",
@@ -709,12 +818,35 @@ const PROMPT_LIBRARY = {
         goal: "State separate policies for AI search, user-directed agents and model training.",
         requirements: [
             "Treat the three as three decisions, not one. The common intent — be citable in AI search, serve users' agents, decline training — requires all three groups to differ.",
-            "Group 1 (cite me): OAI-SearchBot, PerplexityBot, YouBot.",
-            "Group 2 (serve my users' agents): ChatGPT-User, Perplexity-User.",
-            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot."
+            "Group 1 (cite me): OAI-SearchBot, Claude-SearchBot, PerplexityBot.",
+            "Group 2 (serve my users' agents): ChatGPT-User, Claude-User, Perplexity-User.",
+            "Group 3 (training): GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent."
         ],
         deliverable: "The full robots.txt with the three groups distinguished.",
         acceptance: ["The three groups do not all carry identical rules."]
+    },
+    "AI Crawler Directives": {
+        goal: "Address every current AI crawler token deliberately, grouped by purpose.",
+        requirements: [
+            "Replace retired tokens: `anthropic-ai` and `Claude-Web` are no longer honoured — use ClaudeBot (training), Claude-SearchBot (search) and Claude-User (user-triggered).",
+            "If you opt out of training, cover every training token, not a subset: GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider, cohere-ai.",
+            "If `User-agent: *` disallows the site, add explicit groups for the search and user-triggered crawlers you still want, so they are not blocked by accident.",
+            "Do not rely on robots.txt to block ChatGPT-User or Perplexity-User: their vendors document that user-requested fetches generally ignore it. Use WAF or server-side rules if you need to.",
+            "Do not block a vendor's user-triggered fetcher while allowing its training crawler — that inverts the usual trade-off."
+        ],
+        deliverable: "The revised robots.txt, with one commented group per purpose.",
+        acceptance: ["No retired tokens remain, and every AI token in the registry resolves to the rule you intended."]
+    },
+    "Machine-Readable Links": {
+        goal: "Point from each page to its machine-readable representations with standard link relations.",
+        requirements: [
+            "Add `<link rel=\"alternate\" type=\"text/markdown\" href=\"...\">` to the <head> of each page, pointing at its Markdown rendition (for example `page.md`, or the same URL when it negotiates on `Accept: text/markdown`).",
+            "Add `<link rel=\"describedby\" href=\"/llms.txt\">` (llms.txt v2) so agents landing on any page find the site index.",
+            "Send the same relations as an HTTP `Link` header (RFC 8288), plus `rel=\"api-catalog\"` (RFC 9727) if you publish an API catalog — headers reach clients that never parse HTML.",
+            "The Markdown target must return 200 with `Content-Type: text/markdown`, not an HTML page."
+        ],
+        deliverable: "The <head> tags and the response-header configuration (server, CDN or middleware).",
+        acceptance: ["`curl -sI ORIGIN | grep -i '^link:'` shows the relations, and the Markdown URL returns text/markdown."]
     },
     "Content-Signal": {
         goal: "Declare machine-readable usage terms with a Content-Signal directive.",
@@ -1140,15 +1272,15 @@ const PROMPT_LIBRARY = {
         ]
     },
     "agents.json": {
-        goal: "Publish an agents.json capability manifest.",
+        goal: "Publish an agents.json (Wildcard spec) describing task flows over the OpenAPI.",
         requirements: [
-            "Include `name`, `version`, `description`, and a `capabilities` array.",
-            "Describe each capability with its endpoint, HTTP method and parameter schema.",
-            "Only declare capabilities that actually exist and work.",
-            "Serve it at /.well-known/agents.json as application/json."
+            "Top-level fields: `agentsJson` (spec version, e.g. \"0.1.0\"), `info` (title, version, description written for an LLM), `sources`, `flows`.",
+            "Each source names an OpenAPI document: `{ \"id\": \"...\", \"path\": \"https://.../openapi.json\" }`.",
+            "Each flow has an `id`, `title`, `description` and `actions`; each action references a `sourceId` and an `operationId` from that OpenAPI. Use `links` to wire outputs of one action into inputs of the next.",
+            "Only reference operations that exist and work. Serve it at /.well-known/agents.json as application/json."
         ],
-        deliverable: "The complete agents.json.",
-        acceptance: ["The file is valid JSON, and every declared endpoint responds as described."]
+        deliverable: "The complete agents.json and any operationIds that must be added to the OpenAPI.",
+        acceptance: ["Every operationId in every flow resolves in the referenced OpenAPI document."]
     },
     "MCP Server": {
         goal: "Expose the site's capabilities through a Model Context Protocol server.",
@@ -1175,14 +1307,19 @@ const PROMPT_LIBRARY = {
         acceptance: ["The card validates against the A2A schema and every declared endpoint resolves."]
     },
     "Agent Skills": {
-        goal: "Publish an Agent Skills index mapping endpoints to task-level skills.",
+        goal: "Publish an Agent Skills Discovery index (RFC v0.2.0) listing installable Agent Skills.",
         requirements: [
-            "Describe each skill by the task it accomplishes, not by the REST route it wraps.",
-            "Give each skill a name, a description, its endpoint and its method.",
-            "Serve the index at /.well-known/agent-skills/index.json."
+            `Serve /.well-known/agent-skills/index.json as application/json with "$schema": "${AGENT_SKILLS_SCHEMA_V020}" and a "skills" array.`,
+            "Give every entry name (1-64 chars: lowercase letters, digits, single hyphens), type (\"skill-md\" or \"archive\"), description (max 1024 chars), url and digest (\"sha256:\" + 64 lowercase hex of the artifact's raw bytes).",
+            "Write each skill as a SKILL.md with YAML frontmatter (name, description) followed by Markdown instructions; serve it as text/markdown, conventionally at /.well-known/agent-skills/{name}/SKILL.md.",
+            "Describe each skill by the task it accomplishes and when to use it, not by the REST route it wraps.",
+            "Answer GET and HEAD, and return 404 for missing files; recompute the digests on every change to a SKILL.md."
         ],
-        deliverable: "The complete skills index JSON.",
-        acceptance: ["Each skill description would let a model decide, unaided, whether the skill applies to a given request."]
+        deliverable: "The index.json plus one SKILL.md (or .tar.gz/.zip archive with SKILL.md at its root) per skill.",
+        acceptance: [
+            "Every digest matches sha256 of the served bytes, and every SKILL.md frontmatter name equals its index entry name.",
+            "Each skill description would let a model decide, unaided, whether the skill applies to a given request."
+        ]
     },
     "API Catalog": {
         goal: "Publish an RFC 9727 API catalog pointing at the OpenAPI description.",
@@ -1196,14 +1333,15 @@ const PROMPT_LIBRARY = {
         acceptance: ["Every operation in the referenced OpenAPI document has both an operationId and a description."]
     },
     "AI Plugin": {
-        goal: "Publish an ai-plugin.json manifest.",
+        goal: "Retire the legacy ChatGPT plugin manifest in favour of current agent interfaces.",
         requirements: [
-            "Include `name_for_human`, `name_for_model`, `description_for_human`, `description_for_model`, the auth configuration and a link to the OpenAPI spec.",
-            "Write `description_for_model` as an instruction telling the model when to use the API and when not to — this is the field that determines whether it gets called correctly.",
-            "Serve it at /.well-known/ai-plugin.json as application/json."
+            "OpenAI wound down the ChatGPT plugins beta in 2024; nothing current requires /.well-known/ai-plugin.json.",
+            "Move what it described into an OpenAPI document referenced from /.well-known/api-catalog (RFC 9727), keeping the `description_for_model` guidance as operation descriptions.",
+            "Expose agent tools through an MCP server instead.",
+            "Remove ai-plugin.json, or keep it only if a known consumer still reads it."
         ],
-        deliverable: "The complete ai-plugin.json.",
-        acceptance: ["`description_for_model` states the API's preconditions and limits, not just its features."]
+        deliverable: "The OpenAPI/API-catalog changes, and the decision on removing ai-plugin.json.",
+        acceptance: ["Every capability the plugin described is reachable through the API catalog or the MCP server."]
     },
     "OAuth Discovery": {
         goal: "Publish RFC 8414 OAuth 2.0 authorization server metadata.",
@@ -1326,6 +1464,584 @@ export function buildPrompt(check, origin) {
     return parts.join('\n');
 }
 
+
+// --- AI crawler registry ---
+// Vendors now split their crawlers by purpose, and robots.txt has to address
+// each token separately: blocking a vendor's training crawler does not touch
+// its search or user-triggered fetcher, and vice versa.
+//   training — bulk collection for model training
+//   search   — indexing for AI search answers with citations
+//   user     — fetches made live on behalf of a user's request
+// `ignoresRobots` marks fetchers whose vendor documents that robots.txt
+// generally does not govern them (user-requested fetches): OpenAI for
+// ChatGPT-User, Perplexity for Perplexity-User. Rules naming them are
+// reported as ineffective rather than scored. Claude-User does honour it.
+export const AI_CRAWLERS = [
+    { token: 'gptbot',               label: 'GPTBot',               vendor: 'OpenAI',      role: 'training' },
+    { token: 'oai-searchbot',        label: 'OAI-SearchBot',        vendor: 'OpenAI',      role: 'search' },
+    { token: 'chatgpt-user',         label: 'ChatGPT-User',         vendor: 'OpenAI',      role: 'user', ignoresRobots: true },
+    { token: 'claudebot',            label: 'ClaudeBot',            vendor: 'Anthropic',   role: 'training' },
+    { token: 'claude-searchbot',     label: 'Claude-SearchBot',     vendor: 'Anthropic',   role: 'search' },
+    { token: 'claude-user',          label: 'Claude-User',          vendor: 'Anthropic',   role: 'user' },
+    { token: 'perplexitybot',        label: 'PerplexityBot',        vendor: 'Perplexity',  role: 'search' },
+    { token: 'perplexity-user',      label: 'Perplexity-User',      vendor: 'Perplexity',  role: 'user', ignoresRobots: true },
+    { token: 'google-extended',      label: 'Google-Extended',      vendor: 'Google',      role: 'training' }, // also Gemini grounding; no effect on Google Search
+    { token: 'applebot-extended',    label: 'Applebot-Extended',    vendor: 'Apple',       role: 'training' },
+    { token: 'meta-externalagent',   label: 'meta-externalagent',   vendor: 'Meta',        role: 'training' },
+    { token: 'meta-externalfetcher', label: 'meta-externalfetcher', vendor: 'Meta',        role: 'user' },
+    { token: 'amazonbot',            label: 'Amazonbot',            vendor: 'Amazon',      role: 'training' },
+    { token: 'ccbot',                label: 'CCBot',                vendor: 'Common Crawl', role: 'training' },
+    { token: 'bytespider',           label: 'Bytespider',           vendor: 'ByteDance',   role: 'training' },
+    { token: 'cohere-ai',            label: 'cohere-ai',            vendor: 'Cohere',      role: 'training' },
+    { token: 'mistralai-user',       label: 'MistralAI-User',       vendor: 'Mistral',     role: 'user' },
+    { token: 'duckassistbot',        label: 'DuckAssistBot',        vendor: 'DuckDuckGo',  role: 'search' },
+    { token: 'youbot',               label: 'YouBot',               vendor: 'You.com',     role: 'search' },
+];
+
+// Bots whose access decides the scored "AI Search Allowed" / "AI Agent Allowed" checks.
+export const AI_SEARCH_REQUIRED = ['oai-searchbot', 'claude-searchbot', 'perplexitybot'];
+// Only user-triggered fetchers that actually obey robots.txt can be scored on it.
+export const AI_AGENT_REQUIRED = ['claude-user'];
+
+// Retired tokens that no current crawler obeys; a rule naming only these
+// silently stops applying.
+export const DEPRECATED_AI_TOKENS = {
+    'anthropic-ai': 'ClaudeBot',
+    'claude-web': 'Claude-User / Claude-SearchBot',
+};
+
+const AI_CRAWLER_BY_TOKEN = Object.fromEntries(AI_CRAWLERS.map(b => [b.token, b]));
+
+/** RFC 9309 group selection: the bot's own group if named, else the `*` group. */
+export function robotsBlocksBot(rules, token) {
+    const agentRules = rules[token] || rules['*'];
+    if (!agentRules) return false;
+    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
+    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
+    return hasDisallowAll && !hasAllowAll;
+}
+
+/**
+ * Per-bot view of a parsed robots.txt plus the policy problems worth
+ * reporting. `rules` is { lowercasedAgent: { allow: [], disallow: [] } }.
+ */
+export function evaluateAiCrawlerPolicy(rules) {
+    const crawlers = AI_CRAWLERS.map(b => ({
+        name: b.label,
+        vendor: b.vendor,
+        role: b.role,
+        named: Object.prototype.hasOwnProperty.call(rules, b.token),
+        allowed: !robotsBlocksBot(rules, b.token),
+        ...(b.ignoresRobots ? { ignoresRobots: true } : {}),
+    }));
+    const byRole = (role) => crawlers.filter(c => c.role === role);
+    const issues = [];
+
+    const deprecated = Object.keys(DEPRECATED_AI_TOKENS).filter(t => Object.prototype.hasOwnProperty.call(rules, t));
+    for (const t of deprecated) {
+        issues.push(`retired token "${t}" is ignored by current crawlers — use ${DEPRECATED_AI_TOKENS[t]}`);
+    }
+
+    // A site that names some training crawlers clearly means to opt out of
+    // training; any training crawler it missed still collects.
+    const training = byRole('training');
+    if (training.some(c => c.named && !c.allowed)) {
+        const missed = training.filter(c => c.allowed).map(c => c.name);
+        if (missed.length) issues.push(`training opt-out incomplete — still allowed: ${missed.join(', ')}`);
+    }
+
+    // Rules for fetchers that do not consult robots.txt do nothing; blocking
+    // them takes a WAF or server-side rule.
+    const ineffective = crawlers.filter(c => c.ignoresRobots && c.named && !c.allowed).map(c => c.name);
+    if (ineffective.length) {
+        issues.push(`${ineffective.join(', ')} generally ignore robots.txt (user-requested fetches) — the Disallow has no effect; use WAF/server rules if you mean to block`);
+    }
+
+    // Search and user-triggered fetchers caught by a blanket `*` block are
+    // usually collateral damage rather than a decision.
+    const collateral = crawlers.filter(c => c.role !== 'training' && !c.ignoresRobots && !c.named && !c.allowed).map(c => c.name);
+    if (collateral.length) {
+        issues.push(`blocked only by the "*" group (add explicit groups if unintended): ${collateral.join(', ')}`);
+    }
+
+    // Blocking a vendor's user-triggered fetcher while letting its training
+    // crawler in inverts the usual trade-off.
+    for (const vendor of new Set(crawlers.map(c => c.vendor))) {
+        const own = crawlers.filter(c => c.vendor === vendor);
+        const trainingAllowed = own.some(c => c.role === 'training' && c.allowed);
+        const userBlocked = own.filter(c => c.role === 'user' && !c.ignoresRobots && !c.allowed && c.named);
+        if (trainingAllowed && userBlocked.length) {
+            issues.push(`${vendor}: user-triggered ${userBlocked.map(c => c.name).join(', ')} blocked while training is allowed`);
+        }
+    }
+
+    const summary = ['search', 'user', 'training'].map(role => {
+        const list = byRole(role);
+        const allowed = list.filter(c => c.allowed).length;
+        return `${role === 'user' ? 'user agents' : role} ${allowed}/${list.length} allowed`;
+    }).join(', ');
+
+    return { crawlers, issues, summary };
+}
+
+/** Labels of the given tokens that robots.txt blocks. */
+export function blockedAiCrawlers(rules, tokens) {
+    return tokens.filter(t => robotsBlocksBot(rules, t)).map(t => AI_CRAWLER_BY_TOKEN[t]?.label || t);
+}
+
+// --- Machine-readable alternates (RFC 8288 Link / <link>) ---
+// llms.txt v2 points from a page to its Markdown rendition with
+// rel="alternate" type="text/markdown", and to the llms.txt that covers it
+// with rel="describedby"; RFC 9727 registers rel="api-catalog" and RFC 8631
+// rel="service-desc" for API descriptions.
+
+/** Parses an HTTP Link header into [{ href, rel: [..], type }]. */
+export function parseLinkHeader(value) {
+    if (!value || typeof value !== 'string') return [];
+    const links = [];
+    // Split on commas that start a new <uri>, not those inside quoted params.
+    const parts = value.match(/<[^>]*>(?:\s*;\s*[^,;=]+(?:=(?:"[^"]*"|[^,;]*))?)*/g) || [];
+    for (const part of parts) {
+        const m = part.match(/^<([^>]*)>(.*)$/);
+        if (!m) continue;
+        const params = {};
+        for (const p of m[2].matchAll(/;\s*([^\s=;]+)\s*(?:=\s*(?:"([^"]*)"|([^;]*)))?/g)) {
+            params[p[1].toLowerCase()] = (p[2] ?? p[3] ?? '').trim();
+        }
+        links.push({
+            href: m[1].trim(),
+            rel: (params.rel || '').toLowerCase().split(/\s+/).filter(Boolean),
+            type: (params.type || '').toLowerCase(),
+        });
+    }
+    return links;
+}
+
+/** Sorts discovered links into the relations this audit understands. */
+export function classifyMachineLinks(links) {
+    const out = { markdown: [], llms: [], api: [] };
+    for (const l of links) {
+        if (!l.href) continue;
+        const type = (l.type || '').split(';')[0].trim();
+        if (l.rel.includes('alternate') && (type === 'text/markdown' || type === 'text/x-markdown')) {
+            out.markdown.push(l.href);
+        } else if (l.rel.includes('describedby') && (/llms(-full)?\.txt(\?|#|$)/i.test(l.href) || type === 'text/plain' || type === 'text/markdown')) {
+            out.llms.push(l.href);
+        } else if (l.rel.includes('api-catalog') || l.rel.includes('service-desc')) {
+            out.api.push(l.href);
+        }
+    }
+    for (const k of Object.keys(out)) out[k] = [...new Set(out[k])];
+    return out;
+}
+
+// --- MCP endpoint probing ---
+// A 401/403 on its own proves nothing: WAFs and generic auth walls answer the
+// same way for any path. An endpoint counts as an MCP server only when it
+// speaks the protocol (a JSON-RPC 2.0 message or an SSE stream), or when it
+// issues an OAuth Bearer challenge, which is how the MCP authorization spec
+// (RFC 9728 resource_metadata) tells clients where to authenticate.
+function bearerChallenge(res) {
+    // Drop quoted parameter values first so `realm="... Bearer ..."` cannot match.
+    const auth = (res.headers.get('www-authenticate') || '').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    if (!/(?:^|,)\s*bearer(?:\s|,|$)/i.test(auth)) return null;
+    return { resourceMetadata: /resource_metadata\s*=/i.test(auth) };
+}
+
+async function readJsonRpc(res) {
+    let text = '';
+    try {
+        text = await safeReadText(res, 256 * 1024);
+        const body = JSON.parse(text);
+        const msgs = Array.isArray(body) ? body : [body];
+        const msg = msgs.find(m => m && m.jsonrpc === '2.0' && ('result' in m || 'error' in m));
+        return msg || null;
+    } catch {
+        // A large tools/list reply is cut at the read cap and no longer parses;
+        // its opening is still unmistakably JSON-RPC.
+        if (/^\s*\[?\s*\{/.test(text) && /"jsonrpc"\s*:\s*"2\.0"/.test(text) && /"(result|error)"\s*:/.test(text)) {
+            const tools = text.match(/"name"\s*:/g);
+            return { jsonrpc: '2.0', result: {}, truncated: true, approxTools: /"tools"\s*:/.test(text) && tools ? tools.length : 0 };
+        }
+        return null;
+    }
+}
+
+const cancelBody = async (res) => {
+    if (res && res.body && typeof res.body.cancel === 'function') await res.body.cancel().catch(() => {});
+};
+
+/**
+ * Probes one candidate endpoint. Returns
+ *   { kind: 'live', transport: 'http'|'sse', tools }  — speaks MCP
+ *   { kind: 'oauth', resourceMetadata }               — Bearer challenge
+ *   { kind: 'auth' }                                  — 401 without a Bearer challenge
+ *   null                                              — no evidence of MCP
+ */
+export async function probeMcpEndpoint(url, fetchFn, headers = {}) {
+    let authOnly = false;
+    // Streamable HTTP: JSON-RPC over POST.
+    try {
+        const res = await fetchFn(url, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+            cf: { cacheEverything: false }
+        });
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.status === 200 && type.includes('text/event-stream')) {
+            await cancelBody(res);
+            return { kind: 'live', transport: 'sse', tools: 0 };
+        }
+        if (res.status === 401 || res.status === 403) {
+            const challenge = bearerChallenge(res);
+            await cancelBody(res);
+            if (challenge) return { kind: 'oauth', ...challenge };
+            if (res.status === 401) authOnly = true;
+        } else if (type.includes('json')) {
+            // Servers that insist on `initialize` or a session first still
+            // answer with a JSON-RPC error (400, 404, ...), which is just as
+            // conclusive as a result.
+            const msg = await readJsonRpc(res);
+            if (msg) {
+                const tools = Array.isArray(msg.result?.tools) ? msg.result.tools.length : (msg.approxTools || 0);
+                return { kind: 'live', transport: 'http', tools };
+            }
+        } else {
+            await cancelBody(res);
+        }
+    } catch {}
+
+    // Legacy HTTP+SSE transport: the stream opens on GET.
+    try {
+        const res = await fetchFn(url, {
+            headers: { ...headers, 'Accept': 'text/event-stream' },
+            cf: { cacheEverything: false }
+        });
+        const type = (res.headers.get('content-type') || '').toLowerCase();
+        if (res.status === 200 && type.includes('text/event-stream')) {
+            await cancelBody(res);
+            return { kind: 'live', transport: 'sse', tools: 0 };
+        }
+        if (res.status === 401 || res.status === 403) {
+            const challenge = bearerChallenge(res);
+            await cancelBody(res);
+            if (challenge) return { kind: 'oauth', ...challenge };
+            if (res.status === 401) authOnly = true;
+        } else {
+            await cancelBody(res);
+        }
+    } catch {}
+
+    return authOnly ? { kind: 'auth' } : null;
+}
+
+/**
+ * Validates /.well-known/agents.json against the Wildcard agents.json spec
+ * (https://github.com/wild-card-ai/agents-json): required agentsJson, info,
+ * sources and flows. Returns the audit's { status, message, code } shape.
+ */
+export function lintAgentsJson(json) {
+    if (!json || typeof json !== 'object' || Array.isArray(json)) {
+        return { status: 'err', message: 'agents.json is not a JSON object', code: 'Non-compliant' };
+    }
+    const looksWildcard = 'agentsJson' in json || 'flows' in json || 'sources' in json;
+    if (!looksWildcard) {
+        return { status: 'warn', message: 'Non-standard agents.json (no agentsJson/info/sources/flows) — agents.json clients will not understand it', code: 'Non-standard' };
+    }
+    const problems = [];
+    if (typeof json.agentsJson !== 'string' || !json.agentsJson.trim()) problems.push('missing "agentsJson" version');
+    if (!json.info || typeof json.info !== 'object' || !json.info.title || !json.info.version) problems.push('"info" needs title and version');
+    else if (!json.info.description) problems.push('"info.description" missing (it is what an LLM reads)');
+    const sources = Array.isArray(json.sources) ? json.sources : null;
+    if (!sources || !sources.length) problems.push('no "sources"');
+    else if (sources.some(src => !src || !src.id || !src.path)) problems.push('every source needs id and path');
+    const flows = Array.isArray(json.flows) ? json.flows : null;
+    if (!flows || !flows.length) problems.push('no "flows"');
+    else if (flows.some(f => !f || !f.id || !Array.isArray(f.actions) || !f.actions.length)) problems.push('every flow needs an id and actions');
+    else {
+        const sourceIds = new Set((sources || []).map(src => src && src.id).filter(Boolean));
+        const actions = flows.flatMap(f => f.actions);
+        if (actions.some(a => !a || !a.sourceId || !a.operationId)) problems.push('every action needs sourceId and operationId');
+        else {
+            const unknown = [...new Set(actions.map(a => a.sourceId).filter(id => !sourceIds.has(id)))];
+            if (unknown.length) problems.push(`actions reference undeclared sources: ${unknown.slice(0, 3).join(', ')}`);
+        }
+    }
+    if (problems.length) {
+        return { status: 'warn', message: `agents.json incomplete: ${problems.slice(0, 3).join('; ')}`, code: 'Partial' };
+    }
+    return { status: 'ok', message: `Valid agents.json ${json.agentsJson} (${flows.length} flow${flows.length === 1 ? '' : 's'}, ${sources.length} source${sources.length === 1 ? '' : 's'})`, code: 'Compliant' };
+}
+
+// --- Agent Skills Discovery (Cloudflare RFC, v0.2.0) ---
+// https://github.com/cloudflare/agent-skills-discovery-rfc
+// The index lives at /.well-known/agent-skills/index.json and lists skills as
+// { name, type, description, url, digest }; every artifact is pinned by the
+// SHA-256 of its raw bytes, and SKILL.md files follow the agentskills.io format.
+const AGENT_SKILLS_KNOWN_SCHEMAS = new Set([AGENT_SKILLS_SCHEMA_V020]);
+const AGENT_SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_SKILL_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const AGENT_SKILL_TYPES = new Set(['skill-md', 'archive']);
+// Bound the work a single audit does on someone else's index.
+const AGENT_SKILLS_MAX_VERIFY = 5;
+const AGENT_SKILL_MD_MAX_BYTES = 1024 * 1024;
+const AGENT_SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
+
+export function isValidAgentSkillName(name) {
+    return typeof name === 'string' && name.length >= 1 && name.length <= 64 && AGENT_SKILL_NAME_RE.test(name);
+}
+
+/**
+ * Structural lint of a parsed discovery index. Pure: no network.
+ * Returns the detected version, index-level problems, and the entries that are
+ * well-formed enough to fetch and verify.
+ */
+export function lintAgentSkillsIndex(index) {
+    const result = { version: null, fatal: null, issues: [], entries: [], total: 0 };
+    if (!index || typeof index !== 'object' || Array.isArray(index)) {
+        result.fatal = 'Index is not a JSON object';
+        return result;
+    }
+    const schema = index.$schema;
+    if (schema === undefined) {
+        result.version = '0.1.0';
+    } else if (typeof schema === 'string' && AGENT_SKILLS_KNOWN_SCHEMAS.has(schema)) {
+        result.version = '0.2.0';
+    } else {
+        result.version = 'unknown';
+    }
+    if (!Array.isArray(index.skills)) {
+        result.fatal = 'Missing required "skills" array';
+        return result;
+    }
+    result.total = index.skills.length;
+    const seen = new Set();
+    index.skills.forEach((entry, i) => {
+        const label = entry && typeof entry.name === 'string' && entry.name ? `"${entry.name}"` : `#${i + 1}`;
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            result.issues.push(`skill ${label}: not an object`);
+            return;
+        }
+        const problems = [];
+        if (!isValidAgentSkillName(entry.name)) {
+            problems.push('invalid name (1-64 chars, lowercase letters, digits and single hyphens)');
+        } else if (seen.has(entry.name)) {
+            problems.push('duplicate name');
+        }
+        if (typeof entry.type !== 'string' || !entry.type) {
+            problems.push('missing type');
+        }
+        if (typeof entry.description !== 'string' || !entry.description.trim()) {
+            problems.push('missing description');
+        } else if (entry.description.length > 1024) {
+            problems.push('description over 1024 characters');
+        }
+        if (typeof entry.url !== 'string' || !entry.url.trim()) {
+            problems.push('missing url');
+        }
+        if (typeof entry.digest !== 'string' || !AGENT_SKILL_DIGEST_RE.test(entry.digest)) {
+            problems.push('digest must be "sha256:" + 64 lowercase hex chars');
+        }
+        if (problems.length) {
+            result.issues.push(`skill ${label}: ${problems.join(', ')}`);
+            return;
+        }
+        seen.add(entry.name);
+        if (!AGENT_SKILL_TYPES.has(entry.type)) {
+            // Clients skip unknown types; it is not fatal, but nothing will load it.
+            result.issues.push(`skill ${label}: unknown type "${entry.type}" (clients skip it)`);
+            return;
+        }
+        result.entries.push(entry);
+    });
+    return result;
+}
+
+const normaliseSpace = (str) => String(str).replace(/\s+/g, ' ').trim();
+
+/** Extracts `name` and `description` from SKILL.md YAML frontmatter. */
+export function parseSkillFrontmatter(text) {
+    if (typeof text !== 'string') return null;
+    const src = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    const m = src.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/);
+    if (!m) return null;
+    const lines = m[1].split('\n');
+    const fields = {};
+    for (let i = 0; i < lines.length; i++) {
+        const kv = lines[i].match(/^([A-Za-z0-9_-]+):[ \t]*(.*)$/);
+        if (!kv) continue;
+        const key = kv[1];
+        let value = kv[2].trim();
+        if (/^[|>][+-]?$/.test(value)) {
+            // Block scalar: gather the indented continuation lines.
+            const block = [];
+            while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || lines[i + 1].trim() === '')) {
+                block.push(lines[++i].trim());
+            }
+            value = block.join(value.startsWith('|') ? '\n' : ' ').trim();
+        } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+            value = value.slice(1, -1).replace(/''/g, "'");
+        } else if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+            // YAML double-quoted escapes are a superset of JSON's for the common cases.
+            try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
+        }
+        fields[key] = value;
+    }
+    return { name: fields.name, description: fields.description, body: src.slice(m[0].length) };
+}
+
+export async function sha256Hex(bytes) {
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Reads up to maxBytes of raw body; reports whether the body was cut short. */
+export async function safeReadBytes(response, maxBytes) {
+    if (!response.body || typeof response.body.getReader !== 'function') {
+        const buf = new Uint8Array(await response.arrayBuffer());
+        return buf.byteLength > maxBytes ? { bytes: buf.subarray(0, maxBytes), truncated: true } : { bytes: buf, truncated: false };
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    let truncated = false;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(value);
+            total += chunk.byteLength;
+            if (total > maxBytes) {
+                truncated = true;
+                await reader.cancel().catch(() => {});
+                break;
+            }
+            chunks.push(chunk);
+        }
+    } finally {
+        try { reader.releaseLock(); } catch {}
+    }
+    const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+    let offset = 0;
+    for (const c of chunks) { bytes.set(c, offset); offset += c.byteLength; }
+    return { bytes, truncated };
+}
+
+/**
+ * Fetches one skill artifact and checks it the way a conforming client would:
+ * digest over the raw bytes, media type, and (for skill-md) the frontmatter.
+ * Returns a list of problems; empty means the artifact is usable.
+ */
+async function verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers) {
+    let artifactUrl;
+    try {
+        artifactUrl = new URL(entry.url, indexUrl);
+    } catch {
+        return ['url does not resolve'];
+    }
+    if (artifactUrl.protocol !== 'https:' && artifactUrl.protocol !== 'http:') {
+        return ['url must be http(s)'];
+    }
+    let res;
+    try {
+        res = await fetchFn(artifactUrl.href, { headers, cf: { cacheEverything: false } });
+    } catch {
+        return ['artifact unreachable'];
+    }
+    if (res.status !== 200) {
+        // Release the connection: Workers cap open connections per invocation.
+        if (res.body && typeof res.body.cancel === 'function') await res.body.cancel().catch(() => {});
+        return [`artifact returned ${res.status}`];
+    }
+    const cType = (res.headers.get('content-type') || '').toLowerCase();
+    const isMd = entry.type === 'skill-md';
+    const { bytes, truncated } = await safeReadBytes(res, isMd ? AGENT_SKILL_MD_MAX_BYTES : AGENT_SKILL_ARCHIVE_MAX_BYTES);
+    if (truncated) return ['artifact too large to verify'];
+
+    const problems = [];
+    const hex = await sha256Hex(bytes);
+    if (`sha256:${hex}` !== entry.digest) problems.push('digest mismatch');
+
+    if (isMd) {
+        if (!cType.includes('text/markdown') && !cType.includes('text/plain')) {
+            problems.push(`served as ${cType.split(';')[0] || 'no content-type'} (expected text/markdown)`);
+        }
+        const fm = parseSkillFrontmatter(new TextDecoder().decode(bytes));
+        if (!fm) {
+            problems.push('SKILL.md has no YAML frontmatter');
+        } else {
+            if (!fm.name) problems.push('frontmatter missing name');
+            else if (fm.name !== entry.name) problems.push(`frontmatter name "${fm.name}" differs from index`);
+            if (!fm.description) problems.push('frontmatter missing description');
+            else if (normaliseSpace(fm.description) !== normaliseSpace(entry.description)) problems.push('description differs from frontmatter');
+        }
+    } else {
+        const isGzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
+        const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+        if (!isGzip && !isZip) problems.push('archive is neither .tar.gz nor .zip');
+    }
+    return problems;
+}
+
+/**
+ * Full check of a fetched discovery index response. Returns the audit's
+ * { status, message, code } shape.
+ */
+export async function evaluateAgentSkillsIndex(res, statusCode, cType, indexUrl, fetchFn, headers = {}) {
+    const isSoft404 = statusCode === 200 && cType.includes('text/html');
+    if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+    if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+    if (statusCode !== 200) return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+
+    let index;
+    try {
+        index = JSON.parse(await safeReadText(res, 512 * 1024));
+    } catch {
+        return { status: 'err', message: 'Invalid JSON content', code: 'Invalid JSON' };
+    }
+    const lint = lintAgentSkillsIndex(index);
+    if (lint.fatal) return { status: 'err', message: lint.fatal, code: 'Non-compliant' };
+    if (lint.version === 'unknown') {
+        return { status: 'warn', message: `Unrecognised $schema "${String(index.$schema).slice(0, 80)}" — clients will not process this index (expected ${AGENT_SKILLS_SCHEMA_V020})`, code: 'Unknown Schema' };
+    }
+    if (lint.version === '0.1.0') {
+        return { status: 'warn', message: `No $schema — clients treat this as a legacy v0.1.0 index; migrate to v0.2.0 (${AGENT_SKILLS_SCHEMA_V020}) with type/url/digest per skill`, code: 'Partial' };
+    }
+    if (lint.total === 0) return { status: 'warn', message: 'Index lists no skills', code: 'Empty' };
+
+    const issues = [...lint.issues];
+    if (!cType.includes('application/json')) {
+        issues.unshift(`index served as ${cType.split(';')[0] || 'no content-type'} (must be application/json)`);
+    }
+
+    const toVerify = lint.entries.slice(0, AGENT_SKILLS_MAX_VERIFY);
+    const verified = await Promise.all(toVerify.map(async (entry) => {
+        const problems = await verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers);
+        return { entry, problems };
+    }));
+    let usable = 0;
+    for (const { entry, problems } of verified) {
+        // A digest failure or a missing artifact means clients MUST NOT use it;
+        // the remaining problems are metadata quality.
+        const fatal = problems.some(p => p === 'digest mismatch' || p.startsWith('artifact') || p.startsWith('url') || p.startsWith('archive') || p.startsWith('SKILL.md') || p.startsWith('frontmatter'));
+        if (!fatal) usable++;
+        if (problems.length) issues.push(`skill "${entry.name}": ${problems.join(', ')}`);
+    }
+    const unchecked = lint.entries.length - toVerify.length;
+    const n = lint.total;
+
+    if (usable === 0) {
+        return { status: 'err', message: `No usable skills: ${issues.slice(0, 2).join('; ')}`, code: 'Non-compliant' };
+    }
+    if (issues.length) {
+        const more = issues.length > 2 ? ` (+${issues.length - 2} more)` : '';
+        const scope = unchecked > 0 ? ` (first ${toVerify.length} of ${n} checked)` : '';
+        return { status: 'warn', message: `${usable}/${toVerify.length} checked skills usable${scope} — ${issues.slice(0, 2).join('; ')}${more}`, code: 'Partial' };
+    }
+    const tail = unchecked > 0 ? `, first ${toVerify.length} digests verified` : ', digests verified';
+    return { status: 'ok', message: `Agent Skills v0.2.0 index: ${n} skill${n === 1 ? '' : 's'}${tail}`, code: 'Compliant' };
+}
 
 export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
     if (!response.body || typeof response.body.getReader !== 'function') {
@@ -1788,8 +2504,9 @@ export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
-        if (request.method === "GET" && STATIC_ROUTES[url.pathname]) {
-            return STATIC_ROUTES[url.pathname](request);
+        if ((request.method === "GET" || request.method === "HEAD") && STATIC_ROUTES[url.pathname]) {
+            const res = await STATIC_ROUTES[url.pathname](request);
+            return request.method === "HEAD" ? new Response(null, { status: res.status, headers: res.headers }) : res;
         }
 
         // --- API Route ---
@@ -1980,6 +2697,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasSitemapLastmod = false;
     let robotsText = "";
     let robotsContentSignal = "";
+    let aiSearchBlocked = [];
+    let aiAgentBlocked = [];
+    let aiCrawlerPolicy = null;
 
     // --- Phase 1: robots.txt (and, once parsed, the sitemap it points at) ---
     const robotsPhase = (async () => {
@@ -2033,21 +2753,14 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 }
             }
 
-            const isBotBlocked = (bot) => {
-                const agentRules = rules[bot] || rules['*'];
-                if (agentRules) {
-                    const hasDisallowAll = agentRules.disallow.some(p => p === '/' || p === '/*');
-                    const hasAllowAll = agentRules.allow.some(p => p === '/' || p === '/*');
-                    return hasDisallowAll && !hasAllowAll;
-                }
-                return false;
-            };
+            const isBotBlocked = (bot) => robotsBlocksBot(rules, bot);
 
-            const isBotAllowed = (bot) => !isBotBlocked(bot);
-
-            hasAISearch = isBotAllowed('oai-searchbot') && isBotAllowed('perplexitybot') && isBotAllowed('youbot');
-            hasAIAgent = isBotAllowed('chatgpt-user');
-            hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
+            aiSearchBlocked = blockedAiCrawlers(rules, AI_SEARCH_REQUIRED);
+            aiAgentBlocked = blockedAiCrawlers(rules, AI_AGENT_REQUIRED);
+            aiCrawlerPolicy = evaluateAiCrawlerPolicy(rules);
+            hasAISearch = aiSearchBlocked.length === 0;
+            hasAIAgent = aiAgentBlocked.length === 0;
+            hasAITrainingBlocked = AI_CRAWLERS.filter(b => b.role === 'training').every(b => isBotBlocked(b.token));
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
         }
@@ -2126,6 +2839,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
     let hasBreadcrumbSchema = false;
     let hasSiteSearchSchema = false;
     let hasCanonical = false;
+    // Machine-readable alternates advertised by the homepage (<link> + Link header).
+    const discoveredLinks = [];
+    let machineLinks = { markdown: [], llms: [], api: [] };
+    let markdownAlternate = null; // { url, ok, reason }
     let hasHsts = false;
     let isHttps = false;
     let xRobotsTag = '';
@@ -2173,6 +2890,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         hasHsts = !!r_home.headers.get('strict-transport-security');
         xRobotsTag = (r_home.headers.get('x-robots-tag') || '').toLowerCase();
         hasBlockingXRobots = /\b(noindex|nosnippet|noai|noimageai)\b/.test(xRobotsTag);
+
+        for (const l of parseLinkHeader(r_home.headers.get('link') || '')) {
+            discoveredLinks.push({ ...l, source: 'header' });
+        }
 
         const cType = (r_home.headers.get('content-type') || '').toLowerCase();
         // A server that hands Markdown to everyone regardless of Accept still
@@ -2257,6 +2978,17 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                 element(el) {
                     const href = (el.getAttribute('href') || '').trim();
                     if (href) hasCanonical = true;
+                }
+            })
+            .on('link[href][rel]', {
+                element(el) {
+                    if (discoveredLinks.length >= 100) return;
+                    discoveredLinks.push({
+                        href: (el.getAttribute('href') || '').trim(),
+                        rel: (el.getAttribute('rel') || '').toLowerCase().split(/\s+/).filter(Boolean),
+                        type: (el.getAttribute('type') || '').toLowerCase(),
+                        source: 'html'
+                    });
                 }
             })
             .on('link[rel="alternate"]', {
@@ -2424,6 +3156,38 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         // Evaluate new metrics
         hasCleanUrls = hasInternalLinks && !hasDirtyUrls;
 
+        // Follow the advertised Markdown alternate, if any, to confirm it is real.
+        machineLinks = classifyMachineLinks(discoveredLinks);
+        if (machineLinks.markdown.length) {
+            let mdUrl = null;
+            // Relative hrefs resolve against the page that carried them, i.e. the
+            // homepage after any redirects, not the bare origin.
+            try { mdUrl = new URL(machineLinks.markdown[0], r_home.url || base); } catch {}
+            if (!mdUrl || (mdUrl.protocol !== 'https:' && mdUrl.protocol !== 'http:')) {
+                markdownAlternate = { url: machineLinks.markdown[0], ok: false, reason: 'invalid URL' };
+            } else {
+                markdownAlternate = { url: mdUrl.href, ok: false, reason: '' };
+                try {
+                    const r_alt = await iFetch(mdUrl.href, { headers: headersAgent, cf: { cacheEverything: false } });
+                    const altType = (r_alt.headers.get('content-type') || '').toLowerCase();
+                    if (r_alt.status !== 200) {
+                        markdownAlternate.reason = `returned ${r_alt.status}`;
+                    } else if (altType.includes('text/html')) {
+                        markdownAlternate.reason = 'returned HTML';
+                    } else if (altType.includes('markdown') || altType.includes('text/plain')) {
+                        markdownAlternate.ok = true;
+                    } else {
+                        markdownAlternate.reason = `served as ${altType.split(';')[0] || 'no content-type'}`;
+                    }
+                    if (r_alt.body && typeof r_alt.body.cancel === 'function') {
+                        await r_alt.body.cancel().catch(() => {});
+                    }
+                } catch {
+                    markdownAlternate.reason = 'unreachable';
+                }
+            }
+        }
+
         // An <img> without an alt attribute is invisible to an agent. One
         // described image out of two hundred used to be enough to pass.
         hasImageAlt = imagesTotal === 0 || (imagesWithAlt / imagesTotal) >= 0.8;
@@ -2557,20 +3321,18 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         },
         {
-            name: 'agents.json', prompt: `Create an agents.json manifest at /.well-known/agents.json declaring my AI agent's name, version, and callable capabilities.`, path: '/.well-known/agents.json', spec: 'https://agents.md/', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> Machine-readable agent configuration manifest at <code>/.well-known/agents.json</code>.<br/><br/><strong>Why it's critical:</strong> Provides structured metadata (name, version, endpoints, capabilities) for automated agent discovery registers and multi-agent systems.<br/><br/><strong>Impact of missing it:</strong> Autonomous agent discovery platforms cannot programmatically ingest your agent's capabilities.<br/><br/><strong>Implementation Example:</strong> Publish a JSON file containing <code>name</code>, <code>version</code>, and <code>capabilities</code> list at <code>/.well-known/agents.json</code>.`,
+            name: 'agents.json', prompt: `Create an agents.json file at /.well-known/agents.json following the Wildcard agents.json specification (built on OpenAPI): an "agentsJson" version, an "info" object (title, version, description written for LLMs), "sources" referencing my OpenAPI documents by id and path, and "flows" describing multi-step tasks as sequences of OpenAPI operationIds with their field links.`, path: '/.well-known/agents.json', spec: 'https://github.com/wild-card-ai/agents-json', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> The <a href="https://github.com/wild-card-ai/agents-json">agents.json</a> specification: a JSON contract at <code>/.well-known/agents.json</code>, built on OpenAPI, describing <em>flows</em> — multi-step tasks as sequences of API operations.<br/><br/><strong>What is checked:</strong> the required <code>agentsJson</code>, <code>info</code>, <code>sources</code> and <code>flows</code> fields, that every source has an id and path, and that every flow has an id and actions.<br/><br/><strong>Why it's critical:</strong> OpenAPI lists endpoints; agents.json tells an agent which calls to chain, in what order, to accomplish a task.<br/><br/><strong>Not to be confused with:</strong> <code>AGENTS.md</code>, a separate Markdown convention for coding agents.`,
             validate: async (req, statusCode, cType) => {
-                let isSoft404 = statusCode === 200 && cType.includes('text/html');
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
                 if (statusCode === 200 && !isSoft404) {
+                    let json;
                     try {
-                        const json = await req.json();
-                        if (json && typeof json === 'object') {
-                            const capCount = Array.isArray(json.capabilities) ? json.capabilities.length : (Array.isArray(json.tools) ? json.tools.length : 0);
-                            const detail = capCount > 0 ? `${capCount} capabilities declared` : 'Config found';
-                            return { status: 'ok', message: `Valid agents.json manifest (${detail})`, code: 'Found' };
-                        }
-                    } catch {}
-                    return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
+                        json = JSON.parse(await safeReadText(req, 512 * 1024));
+                    } catch {
+                        return { status: 'err', message: 'Invalid JSON content in agents.json', code: 'Invalid JSON' };
+                    }
+                    return lintAgentsJson(json);
                 }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
@@ -2630,134 +3392,73 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         },
         {
-            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.`
+            name: 'Agent Skills', prompt: `Publish an Agent Skills discovery index at /.well-known/agent-skills/index.json following the Agent Skills Discovery RFC v0.2.0: a top-level $schema of "${AGENT_SKILLS_SCHEMA_V020}" and a skills array whose entries carry name, type (skill-md or archive), description, url and a sha256 digest of the artifact. Write one SKILL.md per skill (YAML frontmatter with name and description) at /.well-known/agent-skills/{name}/SKILL.md.`, path: '/.well-known/agent-skills/index.json', spec: 'https://github.com/cloudflare/agent-skills-discovery-rfc', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> The Agent Skills Discovery index (RFC v0.2.0) at <code>/.well-known/agent-skills/index.json</code>, listing <a href="https://agentskills.io/">Agent Skills</a> (SKILL.md files or archives) an agent can install.<br/><br/><strong>What is checked:</strong> the <code>$schema</code> identifier, each entry's <code>name</code>/<code>type</code>/<code>description</code>/<code>url</code>/<code>digest</code>, then every artifact is fetched and its SHA-256 compared with the declared digest; SKILL.md files must carry YAML frontmatter whose <code>name</code> matches the index.<br/><br/><strong>Impact of missing it:</strong> Agents cannot discover or safely install your skills — and clients MUST discard any artifact whose digest does not match.<br/><br/><strong>Implementation Example:</strong> <code>{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[{"name":"search-docs","type":"skill-md","description":"…","url":"/.well-known/agent-skills/search-docs/SKILL.md","digest":"sha256:…"}]}</code>`,
+            validate: async (req, statusCode, cType, base) =>
+                evaluateAgentSkillsIndex(req, statusCode, cType, req.url || `${base}/.well-known/agent-skills/index.json`, iFetch, headersStandard)
         },
         {
             name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json or deploy a live MCP endpoint at /mcp exposing your tools via SSE or Stream.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> Model Context Protocol (MCP) server integration.<br/><br/><strong>Why it's critical:</strong> It allows AI ecosystems (Claude Desktop, Cursor, intelligent agents) to securely connect to your platform, stream resources, and execute callable tools.<br/><br/><strong>Impact of missing it:</strong> Agents will not be able to interact with your business logic dynamically.<br/><br/><strong>Implementation Example:</strong> Deploy an MCP endpoint at <code>/mcp</code> or <code>/mcp/sse</code>, or publish a discovery manifest at <code>/.well-known/mcp/server-card.json</code>.`,
             validate: async (req, statusCode, cType, base) => {
-                let isSoft404 = statusCode === 200 && cType.includes('text/html');
-                
-                // 1. Check server-card.json if valid
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
+                let manifest = null;
                 if (statusCode === 200 && !isSoft404) {
                     try {
-                        const jsonBody = await req.json();
-                        let liveTarget = jsonBody.endpoints?.sse || jsonBody.endpoints?.http || jsonBody.url || '/mcp';
-                        let liveProbeOk = false;
-                        let isOAuthProtected = false;
-                        let toolCount = Array.isArray(jsonBody.tools) ? jsonBody.tools.length : 0;
-
-                        if (liveTarget) {
-                            try {
-                                const targetUrl = liveTarget.startsWith('http') ? liveTarget : `${base}${liveTarget.startsWith('/') ? '' : '/'}${liveTarget}`;
-                                const probeReq = await iFetch(targetUrl, {
-                                    method: 'POST',
-                                    headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
-                                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
-                                    cf: { cacheEverything: false }
-                                });
-                                if (probeReq.status === 200 || probeReq.status === 204) {
-                                    liveProbeOk = true;
-                                    try {
-                                        const resJson = await probeReq.json();
-                                        if (resJson?.result?.tools?.length) {
-                                            toolCount = resJson.result.tools.length;
-                                        }
-                                    } catch {}
-                                } else if ([401, 403].includes(probeReq.status)) {
-                                    const authHeader = (probeReq.headers.get('www-authenticate') || '').toLowerCase();
-                                    isOAuthProtected = authHeader.includes('bearer') || authHeader.includes('resource_metadata') || authHeader.includes('oauth');
-                                    if (!isOAuthProtected) {
-                                        try {
-                                            const probeBody = await probeReq.text();
-                                            if (probeBody.includes('token') || probeBody.includes('unauthorized') || probeBody.includes('auth')) {
-                                                isOAuthProtected = true;
-                                            }
-                                        } catch {}
-                                    }
-                                }
-                            } catch {}
-                        }
-
-                        if (liveProbeOk) {
-                            return { status: 'ok', message: `Live MCP Server operational (${toolCount > 0 ? `${toolCount} tools active` : 'endpoint responding'})`, code: 'Live & Operational' };
-                        }
-                        if (isOAuthProtected) {
-                            return { status: 'ok', message: 'Live MCP server active (OAuth 2.0 protected)', code: 'OAuth Protected' };
-                        }
-                        if (toolCount > 0) {
-                            return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools`, code: 'Active' };
-                        }
-                        return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
+                        const parsed = JSON.parse(await safeReadText(req, 256 * 1024));
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) manifest = parsed;
                     } catch {}
                 }
 
-                // 2. Direct probe of /mcp and /mcp/sse endpoints
-                const candidatePaths = ['/mcp', '/mcp/sse'];
-                for (const candPath of candidatePaths) {
+                // Endpoints declared by the card first, then the conventional paths.
+                const declared = manifest
+                    ? [manifest.endpoints?.streamableHttp, manifest.endpoints?.http, manifest.endpoints?.sse, manifest.url]
+                        .filter(v => typeof v === 'string' && v.trim())
+                    : [];
+                // Declared endpoints resolve against the card's own URL; the
+                // conventional fallbacks are origin-absolute.
+                const cardUrl = req.url || `${base}/.well-known/mcp/server-card.json`;
+                const candidates = [];
+                for (const target of [...declared.slice(0, 2), '/mcp', '/mcp/sse']) {
                     try {
-                        const mcpUrl = `${base}${candPath}`;
-                        const mcpGetReq = await iFetch(mcpUrl, {
-                            headers: { ...headersStandard, 'Accept': 'application/json, text/event-stream, */*' },
-                            cf: { cacheEverything: false }
-                        });
-                        const getStatus = mcpGetReq.status;
-                        const getCType = (mcpGetReq.headers.get('content-type') || '').toLowerCase();
-                        const getAuth = (mcpGetReq.headers.get('www-authenticate') || '').toLowerCase();
-                        const isGetSoft404 = getStatus === 200 && getCType.includes('text/html');
-
-                        if (getStatus === 200 && !isGetSoft404) {
-                            if (getCType.includes('text/event-stream')) {
-                                return { status: 'ok', message: `Live MCP SSE endpoint active at ${candPath}`, code: 'Live & Operational' };
-                            }
-                            try {
-                                const jsonRes = await mcpGetReq.json();
-                                const toolCount = Array.isArray(jsonRes?.tools) ? jsonRes.tools.length : 0;
-                                const isMcpJson = jsonRes && (jsonRes.jsonrpc === '2.0' || Array.isArray(jsonRes.tools) || jsonRes.capabilities || jsonRes.serverInfo);
-                                if (isMcpJson) {
-                                    return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (${toolCount > 0 ? `${toolCount} tools` : 'JSON response'})`, code: 'Live & Operational' };
-                                }
-                            } catch {}
-                        }
-
-                        if ([401, 403].includes(getStatus)) {
-                            let isOAuth = getAuth.includes('bearer') || getAuth.includes('resource_metadata') || getAuth.includes('oauth');
-                            let bodySnippet = '';
-                            try {
-                                bodySnippet = await safeReadText(mcpGetReq, 4 * 1024);
-                                if (bodySnippet.includes('token') || bodySnippet.includes('unauthorized') || bodySnippet.includes('error')) {
-                                    isOAuth = true;
-                                }
-                            } catch {}
-
-                            if (isOAuth) {
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (OAuth 2.0 protected)`, code: 'OAuth Protected' };
-                            }
-                            return { status: 'ok', message: `Live MCP endpoint active at ${candPath} (Protected)`, code: 'Protected' };
-                        }
-
-                        if (getStatus === 405) {
-                            const mcpPostReq = await iFetch(mcpUrl, {
-                                method: 'POST',
-                                headers: { ...headersStandard, 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
-                                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
-                                cf: { cacheEverything: false }
-                            });
-                            const postStatus = mcpPostReq.status;
-                            const postAuth = (mcpPostReq.headers.get('www-authenticate') || '').toLowerCase();
-
-                            if (postStatus === 200 || postStatus === 204) {
-                                return { status: 'ok', message: `Live MCP endpoint active at ${candPath}`, code: 'Live & Operational' };
-                            }
-                            if ([401, 403].includes(postStatus)) {
-                                const isOAuth = postAuth.includes('bearer') || postAuth.includes('resource_metadata') || postAuth.includes('oauth');
-                                return { status: 'ok', message: `Live MCP server active at ${candPath} (${isOAuth ? 'OAuth 2.0 protected' : 'Protected'})`, code: isOAuth ? 'OAuth Protected' : 'Protected' };
-                            }
-                        }
+                        const u = new URL(target, cardUrl);
+                        if ((u.protocol === 'https:' || u.protocol === 'http:') && !candidates.includes(u.href)) candidates.push(u.href);
                     } catch {}
                 }
 
+                let oauthAt = null;
+                let authAt = null;
+                // Probed concurrently so slow hosts cost one timeout, not one per
+                // candidate; results are then read in priority order.
+                const probes = await Promise.all(candidates.slice(0, 4).map(url =>
+                    probeMcpEndpoint(url, iFetch, headersStandard).catch(() => null)));
+                for (const [k, url] of candidates.slice(0, 4).entries()) {
+                    const probe = probes[k];
+                    const where = new URL(url).origin === base ? new URL(url).pathname : url;
+                    if (probe?.kind === 'live') {
+                        const tools = probe.tools || (Array.isArray(manifest?.tools) ? manifest.tools.length : 0);
+                        const detail = tools > 0 ? `${tools} tools active` : 'endpoint responding';
+                        return probe.transport === 'sse'
+                            ? { status: 'ok', message: `Live MCP SSE endpoint active at ${where} (${detail})`, code: 'Live & Operational' }
+                            : { status: 'ok', message: `Live MCP Server operational at ${where} (${detail})`, code: 'Live & Operational' };
+                    }
+                    if (probe?.kind === 'oauth' && !oauthAt) oauthAt = { where, rm: probe.resourceMetadata };
+                    if (probe?.kind === 'auth' && !authAt) authAt = where;
+                }
+
+                if (oauthAt) {
+                    return { status: 'ok', message: `Live MCP server active at ${oauthAt.where} (OAuth 2.0 protected${oauthAt.rm ? ', RFC 9728 resource metadata advertised' : ''})`, code: 'OAuth Protected' };
+                }
+                const toolCount = Array.isArray(manifest?.tools) ? manifest.tools.length : 0;
+                if (manifest && toolCount > 0) {
+                    return { status: 'ok', message: `MCP manifest found with ${toolCount} defined tools (no live endpoint confirmed)`, code: 'Active' };
+                }
+                if (manifest) {
+                    return { status: 'ok', message: 'Valid MCP server card manifest found', code: 'Manifest' };
+                }
+                if (authAt) {
+                    return { status: 'warn', message: `${authAt} answers 401 without an OAuth Bearer challenge — cannot confirm an MCP server (MCP clients need WWW-Authenticate: Bearer resource_metadata=…)`, code: 'Protected' };
+                }
                 if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
                 if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
                 return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
@@ -2817,8 +3518,21 @@ Example:
             }
         },
         {
-            name: 'AI Plugin', prompt: `Create an AI Plugin manifest at /.well-known/ai-plugin.json with a description_for_model and a link to my OpenAPI schema.`, path: '/.well-known/ai-plugin.json', spec: 'https://projects.laion.ai/Open-Assistant/docs/plugins/details', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> Originally introduced by OpenAI, this is the standard manifesto that turns your website's REST API into an AI "Plugin" or "Action" for consumer LLM chats.<br/><br/><strong>Why it's critical:</strong> When users chat with ChatGPT or Copilot, the AI needs to know exactly what your API does to decide when to call it. This file provides the "natural language" metadata and authentication rules connecting the LLM to your OpenAPI schema.<br/><br/><strong>Impact of missing it:</strong> You cannot create Custom GPTs or Copilot extensions that natively interact with your platform. The AI will not know how to discover your API endpoints.<br/><br/><strong>Implementation Example:</strong> Host a file at <code>/.well-known/ai-plugin.json</code>. Inside, provide a <code>name_for_human</code>, a highly detailed <code>description_for_model</code> (telling the AI explicitly when and how to use it), and a link to your <code>openapi.yaml</code> spec.`
+            name: 'AI Plugin', prompt: `My site may still publish a legacy /.well-known/ai-plugin.json from the retired ChatGPT plugins programme. Tell me whether anything still consumes it, and replace it with current equivalents: an OpenAPI description linked from an RFC 9727 API catalog and, for tool use by agents, an MCP server.`, path: '/.well-known/ai-plugin.json', spec: 'https://help.openai.com/en/articles/8988022-winding-down-the-chatgpt-plugins-beta', isJson: true,
+            tooltip: `<strong>What it is:</strong> The <code>ai-plugin.json</code> manifest of the ChatGPT plugins beta, which OpenAI wound down in 2024 in favour of GPTs/Actions.<br/><br/><strong>Status:</strong> Legacy. It is reported for information and does not affect the score.<br/><br/><strong>What to use instead:</strong> An OpenAPI description referenced from an RFC 9727 <code>/.well-known/api-catalog</code>, and an MCP server for agent tool use.`,
+            validate: async (req, statusCode, cType) => {
+                const isSoft404 = statusCode === 200 && cType.includes('text/html');
+                if (statusCode === 200 && !isSoft404) {
+                    try {
+                        const json = JSON.parse(await safeReadText(req, 256 * 1024));
+                        if (json && typeof json === 'object' && (json.schema_version || json.name_for_model || json.api)) {
+                            return { status: 'warn', message: 'Legacy ChatGPT plugin manifest found — the plugins programme is retired; prefer an API catalog + OpenAPI and MCP', code: 'Legacy' };
+                        }
+                    } catch {}
+                }
+                // Anything else, including catch-all 200s, means no plugin manifest.
+                return { status: 'ok', message: 'No legacy plugin manifest (not needed)', code: 'Not Needed' };
+            }
         },
         {
             name: 'Universal Commerce', prompt: `Create a Universal Commerce Protocol (UCP) configuration at /.well-known/ucp pointing to my headless commerce endpoints.`, path: '/.well-known/ucp', spec: 'http://ucp.dev/', isJson: true, points: 5,
@@ -2951,6 +3665,11 @@ Example:
                 }
             } catch (e) {
                 message = 'Network error';
+                // Unscored checks should not show up as failures on a flaky fetch.
+                if (!getCheckMeta(data.name).weight) {
+                    status = 'warn';
+                    code = 'Unknown';
+                }
             }
 
             return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
@@ -2973,6 +3692,7 @@ Example:
             hasAIAgent,
             hasAITrainingBlocked,
             hasDifferentiatedPolicy,
+            aiCrawlers: aiCrawlerPolicy ? aiCrawlerPolicy.crawlers : [],
             sitemapFound,
             hasSitemapLastmod,
             results: [
@@ -2987,29 +3707,33 @@ Example:
                 },
                 {
                     name: "AI Search Allowed",
-                    prompt: `Update my robots.txt to explicitly allow AI search agents like OAI-SearchBot, PerplexityBot, and YouBot.`,
+                    prompt: `Update my robots.txt to explicitly allow AI search crawlers: OAI-SearchBot, Claude-SearchBot and PerplexityBot.`,
                     status: hasAISearch ? 'ok' : 'warn',
-                    message: hasAISearch ? "AI Search bots allowed" : "AI Search bots disallowed or missing",
+                    message: hasAISearch
+                        ? "AI Search bots allowed (OAI-SearchBot, Claude-SearchBot, PerplexityBot)"
+                        : (robotsFound ? `AI Search bots blocked: ${aiSearchBlocked.join(', ')}` : "AI Search bots disallowed or missing"),
                     spec: "https://developers.google.com/search/docs/crawling-indexing/robots/intro",
-                    tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (like OAI-SearchBot, PerplexityBot, YouBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (OAI-SearchBot, Claude-SearchBot, PerplexityBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAISearch ? 'Allowed' : 'Disallowed'
                 },
                 {
                     name: "AI Agent Allowed",
-                    prompt: `Update my robots.txt to explicitly allow user-directed AI agents like ChatGPT-User.`,
+                    prompt: `Update my robots.txt so user-triggered AI agents that honour it — Claude-User in particular — are allowed. ChatGPT-User and Perplexity-User generally ignore robots.txt, so make sure my WAF/bot protection does not block them either.`,
                     status: hasAIAgent ? 'ok' : 'warn',
-                    message: hasAIAgent ? "AI Agent bots allowed" : "AI Agent bots disallowed or missing",
+                    message: hasAIAgent
+                        ? "User-triggered AI agents allowed (Claude-User; ChatGPT-User and Perplexity-User do not consult robots.txt)"
+                        : (robotsFound ? `User-triggered AI agents blocked: ${aiAgentBlocked.join(', ')}` : "AI Agent bots disallowed or missing"),
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Allowing user-initiated autonomous actions (like ChatGPT-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Allowing user-triggered agents (Claude-User honours robots.txt; ChatGPT-User and Perplexity-User generally do not) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
                     code: hasAIAgent ? 'Allowed' : 'Disallowed'
                 },
                 {
                     name: "AI Training Blocked",
-                    prompt: `Update my robots.txt to disallow AI training and model scraping bots such as GPTBot, ClaudeBot, Google-Extended, Amazonbot, and Applebot-Extended.`,
+                    prompt: `Update my robots.txt to disallow AI training and model scraping bots : GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider and cohere-ai.`,
                     status: hasAITrainingBlocked ? 'ok' : 'warn',
                     message: hasAITrainingBlocked ? "AI Training bots blocked" : "AI Training bots allowed or missing disallow directives",
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Amazonbot, cohere-ai, applebot-extended).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider, cohere-ai).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
                     code: hasAITrainingBlocked ? 'Blocked' : 'Allowed'
                 },
                 {
@@ -3021,6 +3745,25 @@ Example:
                     tooltip: `<strong>What it is:</strong> The recommended model where citation engines (Search) and user assistants (Agent) are allowed, but bulk model trainers (Training) are blocked.<br/><br/><strong>Why it's critical:</strong> Avoids the "binary choice" of blocking everything or allowing everything.<br/><br/><strong>Impact of missing it:</strong> You either block AI entirely or allow model training without control.<br/><br/><strong>Implementation Example:</strong> Block GPTBot/ClaudeBot, but allow OAI-SearchBot and ChatGPT-User.`,
                     code: hasDifferentiatedPolicy ? 'Implemented' : 'Not Implemented'
                 },
+                (() => {
+                    const policy = aiCrawlerPolicy;
+                    const evaluated = robotsFound && policy;
+                    const status = !evaluated ? 'err' : (policy.issues.length ? 'warn' : 'ok');
+                    const message = !evaluated
+                        ? (robotsFound ? "robots.txt could not be read" : "No robots.txt to evaluate")
+                        : (policy.issues.length
+                            ? `${policy.issues.slice(0, 2).join('; ')}${policy.issues.length > 2 ? ` (+${policy.issues.length - 2} more)` : ''}`
+                            : `Current AI crawler tokens handled consistently — ${policy.summary}`);
+                    return {
+                        name: "AI Crawler Directives",
+                        prompt: `Review my robots.txt against the current AI crawler tokens and separate them by purpose: search (OAI-SearchBot, Claude-SearchBot, PerplexityBot), user-triggered (ChatGPT-User, Claude-User, Perplexity-User) and training (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, CCBot). Replace retired tokens such as anthropic-ai and Claude-Web.`,
+                        status,
+                        message,
+                        spec: "https://www.rfc-editor.org/rfc/rfc9309.html",
+                        tooltip: `<strong>What it is:</strong> A check of your robots.txt against the AI crawler tokens vendors use today, grouped by purpose: <em>search</em> (indexes for cited answers), <em>user-triggered</em> (fetches a page because a person asked) and <em>training</em>.<br/><br/><strong>Why it's critical:</strong> Each token is matched on its own. Rules naming only retired tokens (<code>anthropic-ai</code>, <code>Claude-Web</code>) no longer apply; a partial training opt-out leaves other trainers collecting; a blanket <code>User-agent: *</code> block silently removes you from AI search and from your own users' assistants.<br/><br/><strong>Impact of missing it:</strong> The policy you think you have is not the one crawlers apply.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>User-agent: Claude-SearchBot<br>User-agent: PerplexityBot<br>Allow: /</code>`,
+                        code: !evaluated ? 'Missing' : (policy.issues.length ? 'Partial' : 'Consistent')
+                    };
+                })(),
                 {
                     name: "sitemap.xml",
                     prompt: `Please generate a \`sitemap.xml\` for my project if it doesn't exist, and ensure my \`/robots.txt\` includes a \`Sitemap: <url>\` directive pointing to it. The sitemap should follow standard XML schema and list all important public pages.`,
@@ -3076,6 +3819,8 @@ Example:
             hasAuthoritativeVoice,
             hasCleanUrls,
             hasCanonical,
+            machineLinks,
+            markdownAlternate,
             hasBreadcrumbSchema,
             hasSiteSearchSchema,
             hasServerRenderedContent,
@@ -3101,6 +3846,40 @@ Example:
                     tooltip: `<strong>What it is:</strong> Dynamic content routing. When a bot sends <code>Accept: text/markdown</code>, the server returns clean Markdown instead of full HTML.<br/><br/><strong>Why it's critical:</strong> LLMs process text tokens. Forcing an LLM to read a complex HTML DOM drastically inflates the 'noise', eating up prompt context limits and increasing latency.<br/><br/><strong>Impact of missing it:</strong> Data extraction becomes fragile. Your website remains a 'human-first' application that breaks agent logic when CSS classes and div nested structures get in the way of semantic information.<br/><br/><strong>Implementation Example:</strong> Utilize Cloudflare Workers, Nginx proxies, or Next.js middleware to sniff for <code>Accept: text/markdown</code> in the request header and return parsed Markdown text instantly without any styling wraps.`,
                     code: supportsMarkdown ? (hasVaryAccept ? 'Supported' : 'No Vary') : 'Failed'
                 },
+                (() => {
+                    const found = [];
+                    if (machineLinks.markdown.length) found.push('Markdown alternate');
+                    if (machineLinks.llms.length) found.push('llms.txt (describedby)');
+                    if (machineLinks.api.length) found.push('API description');
+                    const viaHeader = discoveredLinks.some(l => l.source === 'header');
+                    let status, message, code;
+                    if (markdownAlternate && markdownAlternate.ok) {
+                        status = 'ok';
+                        code = 'Linked';
+                        message = `Advertised: ${found.join(', ')}${viaHeader ? ' (incl. Link header)' : ''}`;
+                    } else if (markdownAlternate) {
+                        status = 'warn';
+                        code = 'Partial';
+                        message = `Markdown alternate ${markdownAlternate.url} ${markdownAlternate.reason}`;
+                    } else if (found.length) {
+                        status = 'warn';
+                        code = 'Partial';
+                        message = `Advertised: ${found.join(', ')} — but no rel="alternate" type="text/markdown" for the page`;
+                    } else {
+                        status = 'err';
+                        code = 'Missing';
+                        message = 'No rel="alternate" text/markdown, rel="describedby" or rel="api-catalog" links in HTML or Link header';
+                    }
+                    return {
+                        name: "Machine-Readable Links",
+                        prompt: `Advertise my pages' machine-readable versions: add <link rel="alternate" type="text/markdown" href="..."> pointing at each page's Markdown rendition and <link rel="describedby" href="/llms.txt"> to the HTML head, and send the same relations (plus rel="api-catalog" if I publish one) in an HTTP Link header.`,
+                        status,
+                        message,
+                        spec: "https://www.rfc-editor.org/rfc/rfc8288.html",
+                        tooltip: `<strong>What it is:</strong> Standard link relations that point from a page to its machine-readable forms: <code>rel="alternate" type="text/markdown"</code> (the page as Markdown), <code>rel="describedby"</code> (the llms.txt covering it, per llms.txt v2) and <code>rel="api-catalog"</code> (RFC 9727), in the HTML <code>&lt;head&gt;</code> or an HTTP <code>Link</code> header (RFC 8288).<br/><br/><strong>Why it's critical:</strong> Agents usually arrive on a specific page, not at a well-known path. An explicit link tells them a cleaner representation exists without guessing URLs.<br/><br/><strong>Impact of missing it:</strong> Agents parse your full HTML even when a Markdown version exists, wasting context and losing structure.<br/><br/><strong>Implementation Example:</strong> <code>Link: &lt;/index.md&gt;; rel="alternate"; type="text/markdown", &lt;/llms.txt&gt;; rel="describedby"</code>`,
+                        code
+                    };
+                })(),
                 {
                     name: "Content-Signal",
                     prompt: `Add a 'Content-Signal' HTTP response header to my server responses (e.g., Content-Signal: ai-train=no, search=yes) to explicitly declare usage policies for AI scraping and training.`,
@@ -3492,6 +4271,7 @@ Examples of specific types:
         check.weight = meta.weight;
         check.category = meta.category;
         if (meta.advisory) check.advisory = true;
+        if (meta.legacy) check.legacy = true;
         check.prompt = buildPrompt(check, base);
     }
 

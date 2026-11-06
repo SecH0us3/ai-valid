@@ -81,9 +81,11 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         const res = await index.fetch(req, env, ctx);
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
-        expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+        expect(res.headers.get('Cache-Control')).toBe('public, max-age=3600');
         const body = await res.json();
-        expect(body.skills[0].method).toBe('GET');
+        expect(body.$schema).toBe('https://schemas.agentskills.io/discovery/0.2.0/schema.json');
+        expect(body.skills[0].type).toBe('skill-md');
+        expect(body.skills[0].digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     });
 
     it('should serve JSON for /.well-known/x402.json', async () => {
@@ -159,8 +161,8 @@ describe('AI-Valid Worker - Static GET Routes', () => {
         expect(res.status).toBe(200);
         expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
         const body = await res.json();
-        expect(body.name).toBe('ai-valid-agent');
-        expect(Array.isArray(body.capabilities)).toBe(true);
+        expect(body.agentsJson).toBe('0.1.0');
+        expect(body.flows[0].actions[0].operationId).toBe('auditWebsite');
     });
 
     it('should serve JSON for /.well-known/oauth-protected-resource/mcp and /.well-known/oauth-protected-resource', async () => {

@@ -385,7 +385,13 @@ document.addEventListener('DOMContentLoaded', () => {
             protoName.appendChild(iconSpan);
             protoName.appendChild(document.createTextNode(` ${p.name}`));
 
-            if (p.advisory) {
+            if (p.legacy) {
+                const legacy = document.createElement('span');
+                legacy.className = 'proto-weight';
+                legacy.textContent = 'legacy';
+                legacy.title = 'A retired format — reported for information, not scored.';
+                protoName.appendChild(legacy);
+            } else if (p.advisory) {
                 const advisory = document.createElement('span');
                 advisory.className = 'proto-weight';
                 advisory.textContent = 'advisory';
