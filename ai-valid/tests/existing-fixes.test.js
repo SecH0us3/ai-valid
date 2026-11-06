@@ -110,3 +110,69 @@ describe('agents.json follows the Wildcard spec', () => {
         expect(lintAgentsJson(await res.json()).status).toBe('ok');
     });
 });
+
+describe('review regressions (round 2)', () => {
+    it('counts a truncated, oversized tools/list reply as live', async () => {
+        const tools = Array.from({ length: 3000 }, (_, i) => ({ name: `tool_${i}`, description: 'x'.repeat(80), inputSchema: { type: 'object' } }));
+        const big = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools } });
+        expect(big.length).toBeGreaterThan(256 * 1024);
+        const res = await probeMcpEndpoint('https://example.com/mcp', async (_u, opts) => opts.method === 'POST'
+            ? new Response(big, { headers: { 'Content-Type': 'application/json' } })
+            : new Response(null, { status: 405 }));
+        expect(res.kind).toBe('live');
+        expect(res.tools).toBeGreaterThan(0);
+    });
+
+    it('ignores "Bearer" inside a quoted realm', async () => {
+        const res = await probeMcpEndpoint('https://example.com/mcp', async () =>
+            new Response(null, { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="Login, Bearer tokens not accepted"' } }));
+        expect(res).toEqual({ kind: 'auth' });
+    });
+
+    it('accepts a second challenge that is Bearer', async () => {
+        const res = await probeMcpEndpoint('https://example.com/mcp', async () =>
+            new Response(null, { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="x", Bearer resource_metadata="https://e/x"' } }));
+        expect(res.kind).toBe('oauth');
+    });
+
+    it('recognises a JSON-RPC error on a 404 (missing session)', async () => {
+        const res = await probeMcpEndpoint('https://example.com/mcp', async (_u, opts) => opts.method === 'POST'
+            ? json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found' } }, 404)
+            : new Response(null, { status: 405 }));
+        expect(res.kind).toBe('live');
+    });
+
+    it('resolves relative card endpoints against the card URL', async () => {
+        const seen = [];
+        const data = await audit((u, opts) => {
+            seen.push(u.pathname);
+            if (u.pathname === '/.well-known/mcp/server-card.json') {
+                const r = json({ serverInfo: { name: 'x' }, endpoints: { http: 'rpc' } });
+                Object.defineProperty(r, 'url', { value: u.href });
+                return r;
+            }
+            if (u.pathname === '/.well-known/mcp/rpc' && opts.method === 'POST') return json({ jsonrpc: '2.0', id: 1, result: { tools: [] } });
+            return null;
+        });
+        expect(seen).toContain('/.well-known/mcp/rpc');
+        expect(find(data, 'MCP Server').code).toBe('Live & Operational');
+    });
+
+    it('treats a catch-all 200 at ai-plugin.json as no manifest', async () => {
+        const data = await audit((u) => u.pathname === '/.well-known/ai-plugin.json' ? json({ error: 'not found' }) : null);
+        const c = find(data, 'AI Plugin');
+        expect(c).toMatchObject({ status: 'ok', code: 'Not Needed', legacy: true });
+        expect(c.advisory).toBeUndefined();
+    });
+
+    it('rejects agents.json actions without operationId or with unknown sources', () => {
+        const base = { agentsJson: '0.1.0', info: { title: 'T', version: '1', description: 'd' }, sources: [{ id: 'api', path: '/o.json' }] };
+        expect(lintAgentsJson({ ...base, flows: [{ id: 'f', actions: [{}] }] }).message).toMatch(/sourceId and operationId/);
+        expect(lintAgentsJson({ ...base, flows: [{ id: 'f', actions: [{ sourceId: 'nope', operationId: 'x' }] }] }).message).toMatch(/undeclared sources: nope/);
+    });
+
+    it('serves agents.json pointing at the current origin', async () => {
+        const res = await index.fetch(new Request('https://preview.example.dev/.well-known/agents.json'), {}, {});
+        expect((await res.json()).sources[0].path).toBe('https://preview.example.dev/openapi.json');
+    });
+});

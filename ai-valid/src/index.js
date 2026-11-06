@@ -148,7 +148,7 @@ const ownSkillDigest = () => (ownSkillDigestPromise ||= sha256Hex(new TextEncode
 
 // agents.json (Wildcard spec, https://github.com/wild-card-ai/agents-json):
 // one flow over the auditWebsite operation of our OpenAPI document.
-const OWN_AGENTS_JSON = {
+const ownAgentsJson = (origin) => ({
     "agentsJson": "0.1.0",
     "info": {
         "title": "AI-Valid Readiness Auditor",
@@ -158,7 +158,7 @@ const OWN_AGENTS_JSON = {
     "sources": [
         {
             "id": "aivalid",
-            "path": "https://ai-valid.secmy.app/openapi.json"
+            "path": `${origin}/openapi.json`
         }
     ],
     "flows": [
@@ -203,7 +203,7 @@ const OWN_AGENTS_JSON = {
             ]
         }
     ]
-};
+});
 
 const STATIC_ROUTES = {
     "/": (request) => {
@@ -470,7 +470,7 @@ const STATIC_ROUTES = {
             }
         });
     },
-    "/.well-known/agents.json": () => new Response(JSON.stringify(OWN_AGENTS_JSON, null, 2), {
+    "/.well-known/agents.json": (request) => new Response(JSON.stringify(ownAgentsJson(new URL(request.url).origin), null, 2), {
         headers: {
             "Content-Type": "application/json; charset=utf-8",
             "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
@@ -603,7 +603,7 @@ export const CHECK_CATALOG = {
     "Agent Skills":                { weight: 3,  category: "Agent Protocols" },
     "API Catalog":                 { weight: 3,  category: "Agent Protocols" },
     // OpenAI retired ChatGPT plugins in 2024; the manifest is reported, not scored.
-    "AI Plugin":                   { weight: 0,  category: "Agent Protocols", advisory: true },
+    "AI Plugin":                   { weight: 0,  category: "Agent Protocols", legacy: true },
     "WebMCP Integration":          { weight: 1,  category: "Agent Protocols" },
     "OAuth Discovery":             { weight: 1,  category: "Agent Protocols" },
     "OAuth Protected Resource":    { weight: 1,  category: "Agent Protocols" },
@@ -1627,18 +1627,27 @@ export function classifyMachineLinks(links) {
 // issues an OAuth Bearer challenge, which is how the MCP authorization spec
 // (RFC 9728 resource_metadata) tells clients where to authenticate.
 function bearerChallenge(res) {
-    const auth = res.headers.get('www-authenticate') || '';
-    if (!/^\s*bearer\b/i.test(auth) && !/,\s*bearer\b/i.test(auth)) return null;
+    // Drop quoted parameter values first so `realm="... Bearer ..."` cannot match.
+    const auth = (res.headers.get('www-authenticate') || '').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    if (!/(?:^|,)\s*bearer(?:\s|,|$)/i.test(auth)) return null;
     return { resourceMetadata: /resource_metadata\s*=/i.test(auth) };
 }
 
 async function readJsonRpc(res) {
+    let text = '';
     try {
-        const body = JSON.parse(await safeReadText(res, 256 * 1024));
+        text = await safeReadText(res, 256 * 1024);
+        const body = JSON.parse(text);
         const msgs = Array.isArray(body) ? body : [body];
         const msg = msgs.find(m => m && m.jsonrpc === '2.0' && ('result' in m || 'error' in m));
         return msg || null;
     } catch {
+        // A large tools/list reply is cut at the read cap and no longer parses;
+        // its opening is still unmistakably JSON-RPC.
+        if (/^\s*\[?\s*\{/.test(text) && /"jsonrpc"\s*:\s*"2\.0"/.test(text) && /"(result|error)"\s*:/.test(text)) {
+            const tools = text.match(/"name"\s*:/g);
+            return { jsonrpc: '2.0', result: {}, truncated: true, approxTools: /"tools"\s*:/.test(text) && tools ? tools.length : 0 };
+        }
         return null;
     }
 }
@@ -1669,16 +1678,20 @@ export async function probeMcpEndpoint(url, fetchFn, headers = {}) {
             await cancelBody(res);
             return { kind: 'live', transport: 'sse', tools: 0 };
         }
-        if (res.status === 200 || res.status === 400) {
-            // Servers that insist on `initialize` first still answer with a
-            // JSON-RPC error, which is just as conclusive.
-            const msg = await readJsonRpc(res);
-            if (msg) return { kind: 'live', transport: 'http', tools: Array.isArray(msg.result?.tools) ? msg.result.tools.length : 0 };
-        } else if (res.status === 401 || res.status === 403) {
+        if (res.status === 401 || res.status === 403) {
             const challenge = bearerChallenge(res);
             await cancelBody(res);
             if (challenge) return { kind: 'oauth', ...challenge };
             if (res.status === 401) authOnly = true;
+        } else if (type.includes('json')) {
+            // Servers that insist on `initialize` or a session first still
+            // answer with a JSON-RPC error (400, 404, ...), which is just as
+            // conclusive as a result.
+            const msg = await readJsonRpc(res);
+            if (msg) {
+                const tools = Array.isArray(msg.result?.tools) ? msg.result.tools.length : (msg.approxTools || 0);
+                return { kind: 'live', transport: 'http', tools };
+            }
         } else {
             await cancelBody(res);
         }
@@ -1731,6 +1744,15 @@ export function lintAgentsJson(json) {
     const flows = Array.isArray(json.flows) ? json.flows : null;
     if (!flows || !flows.length) problems.push('no "flows"');
     else if (flows.some(f => !f || !f.id || !Array.isArray(f.actions) || !f.actions.length)) problems.push('every flow needs an id and actions');
+    else {
+        const sourceIds = new Set((sources || []).map(src => src && src.id).filter(Boolean));
+        const actions = flows.flatMap(f => f.actions);
+        if (actions.some(a => !a || !a.sourceId || !a.operationId)) problems.push('every action needs sourceId and operationId');
+        else {
+            const unknown = [...new Set(actions.map(a => a.sourceId).filter(id => !sourceIds.has(id)))];
+            if (unknown.length) problems.push(`actions reference undeclared sources: ${unknown.slice(0, 3).join(', ')}`);
+        }
+    }
     if (problems.length) {
         return { status: 'warn', message: `agents.json incomplete: ${problems.slice(0, 3).join('; ')}`, code: 'Partial' };
     }
@@ -3378,18 +3400,25 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
                     ? [manifest.endpoints?.streamableHttp, manifest.endpoints?.http, manifest.endpoints?.sse, manifest.url]
                         .filter(v => typeof v === 'string' && v.trim())
                     : [];
+                // Declared endpoints resolve against the card's own URL; the
+                // conventional fallbacks are origin-absolute.
+                const cardUrl = req.url || `${base}/.well-known/mcp/server-card.json`;
                 const candidates = [];
-                for (const target of [...declared, '/mcp', '/mcp/sse']) {
+                for (const target of [...declared.slice(0, 2), '/mcp', '/mcp/sse']) {
                     try {
-                        const u = new URL(target, `${base}/`);
+                        const u = new URL(target, cardUrl);
                         if ((u.protocol === 'https:' || u.protocol === 'http:') && !candidates.includes(u.href)) candidates.push(u.href);
                     } catch {}
                 }
 
                 let oauthAt = null;
                 let authAt = null;
-                for (const url of candidates.slice(0, 4)) {
-                    const probe = await probeMcpEndpoint(url, iFetch, headersStandard);
+                // Probed concurrently so slow hosts cost one timeout, not one per
+                // candidate; results are then read in priority order.
+                const probes = await Promise.all(candidates.slice(0, 4).map(url =>
+                    probeMcpEndpoint(url, iFetch, headersStandard).catch(() => null)));
+                for (const [k, url] of candidates.slice(0, 4).entries()) {
+                    const probe = probes[k];
                     const where = new URL(url).origin === base ? new URL(url).pathname : url;
                     if (probe?.kind === 'live') {
                         const tools = probe.tools || (Array.isArray(manifest?.tools) ? manifest.tools.length : 0);
@@ -3474,7 +3503,7 @@ Example:
             }
         },
         {
-            name: 'AI Plugin', prompt: `My site may still publish a legacy /.well-known/ai-plugin.json from the retired ChatGPT plugins programme. Tell me whether anything still consumes it, and replace it with current equivalents: an OpenAPI description linked from an RFC 9727 API catalog and, for tool use by agents, an MCP server.`, path: '/.well-known/ai-plugin.json', spec: 'https://help.openai.com/en/articles/8988022-winding-down-the-chatgpt-plugins-beta', isJson: true, points: 0,
+            name: 'AI Plugin', prompt: `My site may still publish a legacy /.well-known/ai-plugin.json from the retired ChatGPT plugins programme. Tell me whether anything still consumes it, and replace it with current equivalents: an OpenAPI description linked from an RFC 9727 API catalog and, for tool use by agents, an MCP server.`, path: '/.well-known/ai-plugin.json', spec: 'https://help.openai.com/en/articles/8988022-winding-down-the-chatgpt-plugins-beta', isJson: true,
             tooltip: `<strong>What it is:</strong> The <code>ai-plugin.json</code> manifest of the ChatGPT plugins beta, which OpenAI wound down in 2024 in favour of GPTs/Actions.<br/><br/><strong>Status:</strong> Legacy. It is reported for information and does not affect the score.<br/><br/><strong>What to use instead:</strong> An OpenAPI description referenced from an RFC 9727 <code>/.well-known/api-catalog</code>, and an MCP server for agent tool use.`,
             validate: async (req, statusCode, cType) => {
                 const isSoft404 = statusCode === 200 && cType.includes('text/html');
@@ -3485,8 +3514,8 @@ Example:
                             return { status: 'warn', message: 'Legacy ChatGPT plugin manifest found — the plugins programme is retired; prefer an API catalog + OpenAPI and MCP', code: 'Legacy' };
                         }
                     } catch {}
-                    return { status: 'warn', message: 'ai-plugin.json present but not a plugin manifest', code: 'Invalid' };
                 }
+                // Anything else, including catch-all 200s, means no plugin manifest.
                 return { status: 'ok', message: 'No legacy plugin manifest (not needed)', code: 'Not Needed' };
             }
         },
@@ -3621,6 +3650,11 @@ Example:
                 }
             } catch (e) {
                 message = 'Network error';
+                // Unscored checks should not show up as failures on a flaky fetch.
+                if (!getCheckMeta(data.name).weight) {
+                    status = 'warn';
+                    code = 'Unknown';
+                }
             }
 
             return { name: data.name, path: data.path, spec: data.spec, tooltip: data.tooltip, prompt: data.prompt, status, message, code };
@@ -4222,6 +4256,7 @@ Examples of specific types:
         check.weight = meta.weight;
         check.category = meta.category;
         if (meta.advisory) check.advisory = true;
+        if (meta.legacy) check.legacy = true;
         check.prompt = buildPrompt(check, base);
     }
 
