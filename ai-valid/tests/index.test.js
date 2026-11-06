@@ -680,6 +680,9 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
                         `User-agent: Amazonbot\nDisallow: /\n` +
                         `User-agent: cohere-ai\nDisallow: /\n` +
                         `User-agent: applebot-extended\nDisallow: /\n` +
+                        `User-agent: meta-externalagent\nDisallow: /\n` +
+                        `User-agent: CCBot\nDisallow: /\n` +
+                        `User-agent: Bytespider\nDisallow: /\n` +
                         `Content-Signal: search=yes, ai-train=no, use=reference\n` +
                         `Sitemap: https://example.com/sitemap.xml`,
                         { status: 200 }
@@ -816,7 +819,7 @@ describe('AI-Valid Worker - Content GEO Audits', () => {
                     return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
                 }
                 if (urlStr.includes('robots.txt')) {
-                    return new Response('User-agent: GPTBot\nUser-agent: ClaudeBot\nUser-agent: Google-Extended\nUser-agent: Amazonbot\nUser-agent: cohere-ai\nUser-agent: applebot-extended\nDisallow: /\nUser-agent: PerplexityBot\nAllow: /', { status: 200 });
+                    return new Response('User-agent: GPTBot\nUser-agent: ClaudeBot\nUser-agent: Google-Extended\nUser-agent: Amazonbot\nUser-agent: cohere-ai\nUser-agent: applebot-extended\nUser-agent: meta-externalagent\nUser-agent: CCBot\nUser-agent: Bytespider\nDisallow: /\nUser-agent: PerplexityBot\nAllow: /', { status: 200 });
                 }
                 if (urlStr.includes('sitemap.xml')) {
                     return new Response('Not Found', { status: 404 });

@@ -120,12 +120,32 @@ describe('evaluateAgentSkillsIndex', () => {
         expect(r.message).toMatch(/artifact returned 404/);
     });
 
-    it('gives partial credit when SKILL.md frontmatter disagrees with the index', async () => {
+    it('rejects a skill whose SKILL.md name disagrees with the index', async () => {
         const md = SKILL_MD.replace('name: search-docs', 'name: docs-search');
         const r = await evaluate(await goodIndex({ digest: await digestOf(md) }), mdRoute(md));
-        expect(r.status).toBe('warn');
-        expect(r.code).toBe('Partial');
+        expect(r.status).toBe('err');
         expect(r.message).toMatch(/frontmatter name "docs-search" differs/);
+    });
+
+    it('compares descriptions after YAML unquoting and whitespace folding', async () => {
+        const md = "---\nname: search-docs\ndescription: 'It''s a  search skill.'\n---\nbody\n";
+        const r = await evaluate(await goodIndex({ description: "It's a search skill.", digest: await digestOf(md) }), mdRoute(md));
+        expect(r.status).toBe('ok');
+    });
+
+    it('reports only checked skills in the partial ratio', async () => {
+        const idx = await goodIndex();
+        const base = idx.skills[0];
+        idx.skills = Array.from({ length: 7 }, (_, i) => ({ ...base, name: `s${i}`, url: `/s${i}.md`, digest: undefined }));
+        const routes = {};
+        for (let i = 0; i < 7; i++) {
+            const md = `---\nname: s${i}\ndescription: ${base.description}\n---\n`;
+            idx.skills[i].digest = await digestOf(md);
+            routes[`/s${i}.md`] = () => new Response(md, { headers: { 'Content-Type': i === 0 ? 'application/octet-stream' : 'text/markdown' } });
+        }
+        const r = await evaluate(idx, routes);
+        expect(r.status).toBe('warn');
+        expect(r.message).toMatch(/^5\/5 checked skills usable \(first 5 of 7 checked\)/);
     });
 
     it('flags SKILL.md served with the wrong media type', async () => {

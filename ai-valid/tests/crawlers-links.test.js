@@ -183,3 +183,37 @@ describe('AI-Valid homepage advertises its machine-readable forms', () => {
         expect(md.headers.get('content-type')).toMatch(/text\/markdown/);
     });
 });
+
+describe('review regressions', () => {
+    it('AI-Valid robots.txt passes its own AI Crawler Directives check', async () => {
+        const robots = await (await index.fetch(new Request('https://localhost/robots.txt'), {}, {})).text();
+        const data = await audit({ '/': html(), '/robots.txt': text(robots) });
+        expect(find(data, 'AI Crawler Directives').status).toBe('ok');
+        expect(find(data, 'AI Search Allowed').status).toBe('ok');
+        expect(find(data, 'AI Agent Allowed').status).toBe('ok');
+        expect(find(data, 'AI Training Blocked').status).toBe('ok');
+    });
+
+    it('resolves a relative Markdown alternate against the redirected homepage URL', async () => {
+        const originalFetch = global.fetch;
+        global.fetch = async (url) => {
+            const u = new URL(url.toString());
+            if (u.hostname === 'cloudflare-dns.com') return new Response(JSON.stringify({ Answer: [{ type: 1, data: '93.184.216.34' }] }));
+            if (u.pathname === '/') return new Response(null, { status: 301, headers: { Location: '/en/' } });
+            if (u.pathname === '/en/') {
+                const r = new Response('<html><head><title>x</title><link rel="alternate" type="text/markdown" href="index.md"></head><body>hi</body></html>', { headers: { 'Content-Type': 'text/html' } });
+                Object.defineProperty(r, 'url', { value: u.href });
+                return r;
+            }
+            if (u.pathname === '/en/index.md') return new Response('# Hi', { headers: { 'Content-Type': 'text/markdown' } });
+            return new Response('Not Found', { status: 404 });
+        };
+        try {
+            const res = await index.fetch(new Request(`https://localhost/api/audit?targetUrl=${encodeURIComponent(ORIGIN)}`), {}, {});
+            const data = await res.json();
+            expect(find(data, 'Machine-Readable Links').status).toBe('ok');
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+});

@@ -144,6 +144,9 @@ const HOME_LINK_HEADER = [
     '</openapi.json>; rel="service-desc"; type="application/json"'
 ].join(', ');
 
+let ownSkillDigestPromise = null;
+const ownSkillDigest = () => (ownSkillDigestPromise ||= sha256Hex(new TextEncoder().encode(OWN_SKILL_MD)).then(h => `sha256:${h}`));
+
 const STATIC_ROUTES = {
     "/": (request) => {
         const accept = request.headers.get("Accept") || "";
@@ -260,7 +263,7 @@ const STATIC_ROUTES = {
                     "type": "skill-md",
                     "description": OWN_SKILL_DESCRIPTION,
                     "url": `/.well-known/agent-skills/${OWN_SKILL_NAME}/SKILL.md`,
-                    "digest": `sha256:${await sha256Hex(new TextEncoder().encode(OWN_SKILL_MD))}`
+                    "digest": await ownSkillDigest()
                 }
             ]
         };
@@ -318,7 +321,15 @@ const STATIC_ROUTES = {
         });
     },
     "/robots.txt": () => {
-        const robotsTxt = `User-agent: *\nAllow: /\n\nUser-agent: GPTBot\nDisallow: /\n\nUser-agent: ClaudeBot\nDisallow: /\n\nUser-agent: Google-Extended\nDisallow: /\n\nUser-agent: Amazonbot\nDisallow: /\n\nUser-agent: Applebot-Extended\nDisallow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n\nUser-agent: ChatGPT-User\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n`;
+        // Generated from the crawler registry so this site always passes its own
+        // "AI Crawler Directives" check: search and user agents in, training out.
+        const group = (role, rule) => AI_CRAWLERS.filter(b => b.role === role).map(b => `User-agent: ${b.label}`).join('\n') + `\n${rule}\n`;
+        const robotsTxt = [
+            'User-agent: *\nAllow: /\n',
+            '# AI search (cited answers)\n' + group('search', 'Allow: /'),
+            '# User-triggered AI agents\n' + group('user', 'Allow: /'),
+            '# Model training\n' + group('training', 'Disallow: /')
+        ].join('\n');
         return new Response(robotsTxt, {
             headers: {
                 "Content-Type": "text/plain; charset=utf-8",
@@ -713,7 +724,7 @@ const PROMPT_LIBRARY = {
         requirements: [
             "Keep the existing rules for conventional search crawlers intact — do not tighten them as a side effect.",
             "Add a separate group for each AI user-agent you want to address rather than relying on the `*` group; several AI crawlers ignore `*` when a named group exists.",
-            "Decide the three cases independently: AI search citation (OAI-SearchBot, PerplexityBot, YouBot), live agent fetching on a user's behalf (ChatGPT-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
+            "Decide the three cases independently: AI search citation (OAI-SearchBot, Claude-SearchBot, PerplexityBot), live agent fetching on a user's behalf (ChatGPT-User, Claude-User, Perplexity-User), and model training (GPTBot, ClaudeBot, Google-Extended, Amazonbot, Applebot-Extended, CCBot, meta-externalagent).",
             "Add a `Sitemap:` line with the absolute URL of the sitemap."
         ],
         deliverable: "The complete robots.txt content, to be served at /robots.txt as text/plain.",
@@ -1668,6 +1679,8 @@ export function lintAgentSkillsIndex(index) {
     return result;
 }
 
+const normaliseSpace = (str) => String(str).replace(/\s+/g, ' ').trim();
+
 /** Extracts `name` and `description` from SKILL.md YAML frontmatter. */
 export function parseSkillFrontmatter(text) {
     if (typeof text !== 'string') return null;
@@ -1688,8 +1701,11 @@ export function parseSkillFrontmatter(text) {
                 block.push(lines[++i].trim());
             }
             value = block.join(value.startsWith('|') ? '\n' : ' ').trim();
-        } else if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
+        } else if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+            value = value.slice(1, -1).replace(/''/g, "'");
+        } else if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+            // YAML double-quoted escapes are a superset of JSON's for the common cases.
+            try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
         }
         fields[key] = value;
     }
@@ -1754,7 +1770,11 @@ async function verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers) {
     } catch {
         return ['artifact unreachable'];
     }
-    if (res.status !== 200) return [`artifact returned ${res.status}`];
+    if (res.status !== 200) {
+        // Release the connection: Workers cap open connections per invocation.
+        if (res.body && typeof res.body.cancel === 'function') await res.body.cancel().catch(() => {});
+        return [`artifact returned ${res.status}`];
+    }
     const cType = (res.headers.get('content-type') || '').toLowerCase();
     const isMd = entry.type === 'skill-md';
     const { bytes, truncated } = await safeReadBytes(res, isMd ? AGENT_SKILL_MD_MAX_BYTES : AGENT_SKILL_ARCHIVE_MAX_BYTES);
@@ -1775,7 +1795,7 @@ async function verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers) {
             if (!fm.name) problems.push('frontmatter missing name');
             else if (fm.name !== entry.name) problems.push(`frontmatter name "${fm.name}" differs from index`);
             if (!fm.description) problems.push('frontmatter missing description');
-            else if (fm.description.trim() !== entry.description.trim()) problems.push('description differs from frontmatter');
+            else if (normaliseSpace(fm.description) !== normaliseSpace(entry.description)) problems.push('description differs from frontmatter');
         }
     } else {
         const isGzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
@@ -1825,7 +1845,7 @@ export async function evaluateAgentSkillsIndex(res, statusCode, cType, indexUrl,
     for (const { entry, problems } of verified) {
         // A digest failure or a missing artifact means clients MUST NOT use it;
         // the remaining problems are metadata quality.
-        const fatal = problems.some(p => p === 'digest mismatch' || p.startsWith('artifact') || p.startsWith('url') || p.startsWith('archive') || p.startsWith('SKILL.md'));
+        const fatal = problems.some(p => p === 'digest mismatch' || p.startsWith('artifact') || p.startsWith('url') || p.startsWith('archive') || p.startsWith('SKILL.md') || p.startsWith('frontmatter'));
         if (!fatal) usable++;
         if (problems.length) issues.push(`skill "${entry.name}": ${problems.join(', ')}`);
     }
@@ -1837,7 +1857,8 @@ export async function evaluateAgentSkillsIndex(res, statusCode, cType, indexUrl,
     }
     if (issues.length) {
         const more = issues.length > 2 ? ` (+${issues.length - 2} more)` : '';
-        return { status: 'warn', message: `${usable}/${n} skills verified — ${issues.slice(0, 2).join('; ')}${more}`, code: 'Partial' };
+        const scope = unchecked > 0 ? ` (first ${toVerify.length} of ${n} checked)` : '';
+        return { status: 'warn', message: `${usable}/${toVerify.length} checked skills usable${scope} — ${issues.slice(0, 2).join('; ')}${more}`, code: 'Partial' };
     }
     const tail = unchecked > 0 ? `, first ${toVerify.length} digests verified` : ', digests verified';
     return { status: 'ok', message: `Agent Skills v0.2.0 index: ${n} skill${n === 1 ? '' : 's'}${tail}`, code: 'Compliant' };
@@ -2560,7 +2581,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             aiCrawlerPolicy = evaluateAiCrawlerPolicy(rules);
             hasAISearch = aiSearchBlocked.length === 0;
             hasAIAgent = aiAgentBlocked.length === 0;
-            hasAITrainingBlocked = isBotBlocked('gptbot') && isBotBlocked('claudebot') && isBotBlocked('google-extended') && isBotBlocked('amazonbot') && isBotBlocked('cohere-ai') && isBotBlocked('applebot-extended');
+            hasAITrainingBlocked = AI_CRAWLERS.filter(b => b.role === 'training').every(b => isBotBlocked(b.token));
             hasDifferentiatedPolicy = hasAISearch && hasAIAgent && hasAITrainingBlocked;
 
         }
@@ -2960,7 +2981,9 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
         machineLinks = classifyMachineLinks(discoveredLinks);
         if (machineLinks.markdown.length) {
             let mdUrl = null;
-            try { mdUrl = new URL(machineLinks.markdown[0], base); } catch {}
+            // Relative hrefs resolve against the page that carried them, i.e. the
+            // homepage after any redirects, not the bare origin.
+            try { mdUrl = new URL(machineLinks.markdown[0], r_home.url || base); } catch {}
             if (!mdUrl || (mdUrl.protocol !== 'https:' && mdUrl.protocol !== 'http:')) {
                 markdownAlternate = { url: machineLinks.markdown[0], ok: false, reason: 'invalid URL' };
             } else {
@@ -3195,7 +3218,7 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             name: 'Agent Skills', prompt: `Publish an Agent Skills discovery index at /.well-known/agent-skills/index.json following the Agent Skills Discovery RFC v0.2.0: a top-level $schema of "${AGENT_SKILLS_SCHEMA_V020}" and a skills array whose entries carry name, type (skill-md or archive), description, url and a sha256 digest of the artifact. Write one SKILL.md per skill (YAML frontmatter with name and description) at /.well-known/agent-skills/{name}/SKILL.md.`, path: '/.well-known/agent-skills/index.json', spec: 'https://github.com/cloudflare/agent-skills-discovery-rfc', isJson: true, points: 5,
             tooltip: `<strong>What it is:</strong> The Agent Skills Discovery index (RFC v0.2.0) at <code>/.well-known/agent-skills/index.json</code>, listing <a href="https://agentskills.io/">Agent Skills</a> (SKILL.md files or archives) an agent can install.<br/><br/><strong>What is checked:</strong> the <code>$schema</code> identifier, each entry's <code>name</code>/<code>type</code>/<code>description</code>/<code>url</code>/<code>digest</code>, then every artifact is fetched and its SHA-256 compared with the declared digest; SKILL.md files must carry YAML frontmatter whose <code>name</code> matches the index.<br/><br/><strong>Impact of missing it:</strong> Agents cannot discover or safely install your skills — and clients MUST discard any artifact whose digest does not match.<br/><br/><strong>Implementation Example:</strong> <code>{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[{"name":"search-docs","type":"skill-md","description":"…","url":"/.well-known/agent-skills/search-docs/SKILL.md","digest":"sha256:…"}]}</code>`,
             validate: async (req, statusCode, cType, base) =>
-                evaluateAgentSkillsIndex(req, statusCode, cType, `${base}/.well-known/agent-skills/index.json`, iFetch, headersStandard)
+                evaluateAgentSkillsIndex(req, statusCode, cType, req.url || `${base}/.well-known/agent-skills/index.json`, iFetch, headersStandard)
         },
         {
             name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json or deploy a live MCP endpoint at /mcp exposing your tools via SSE or Stream.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,
@@ -3558,7 +3581,7 @@ Example:
                         ? "AI Search bots allowed (OAI-SearchBot, Claude-SearchBot, PerplexityBot)"
                         : (robotsFound ? `AI Search bots blocked: ${aiSearchBlocked.join(', ')}` : "AI Search bots disallowed or missing"),
                     spec: "https://developers.google.com/search/docs/crawling-indexing/robots/intro",
-                    tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (like OAI-SearchBot, PerplexityBot, YouBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Allowing search engines and AI engines that provide source citations (OAI-SearchBot, Claude-SearchBot, PerplexityBot).<br/><br/><strong>Why it's critical:</strong> It ensures that your website is discoverable by modern AI-based answers and engines that link back to your content.<br/><br/><strong>Impact of missing it:</strong> If blocked, you lose traffic from major AI engines.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>Allow: /</code>`,
                     code: hasAISearch ? 'Allowed' : 'Disallowed'
                 },
                 {
@@ -3569,16 +3592,16 @@ Example:
                         ? "User-triggered AI agents allowed (ChatGPT-User, Claude-User, Perplexity-User)"
                         : (robotsFound ? `User-triggered AI agents blocked: ${aiAgentBlocked.join(', ')}` : "AI Agent bots disallowed or missing"),
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Allowing user-initiated autonomous actions (like ChatGPT-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Allowing user-triggered agents (ChatGPT-User, Claude-User, Perplexity-User) to fetch your content dynamically on the user's behalf.<br/><br/><strong>Why it's critical:</strong> Allows users to run real-time tasks on your page via AI tools.<br/><br/><strong>Impact of missing it:</strong> Users cannot interact with your site natively through conversational assistant tools.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: ChatGPT-User<br>Allow: /</code>`,
                     code: hasAIAgent ? 'Allowed' : 'Disallowed'
                 },
                 {
                     name: "AI Training Blocked",
-                    prompt: `Update my robots.txt to disallow AI training and model scraping bots such as GPTBot, ClaudeBot, Google-Extended, Amazonbot, and Applebot-Extended.`,
+                    prompt: `Update my robots.txt to disallow AI training and model scraping bots : GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider and cohere-ai.`,
                     status: hasAITrainingBlocked ? 'ok' : 'warn',
                     message: hasAITrainingBlocked ? "AI Training bots blocked" : "AI Training bots allowed or missing disallow directives",
                     spec: "https://platform.openai.com/docs/bots",
-                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Amazonbot, cohere-ai, applebot-extended).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
+                    tooltip: `<strong>What it is:</strong> Disallowing crawlers that scrape content to train foundation models without direct referral value (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, meta-externalagent, Amazonbot, CCBot, Bytespider, cohere-ai).<br/><br/><strong>Why it's critical:</strong> Protects your intellectual property from being digested without economic attribution.<br/><br/><strong>Impact of missing it:</strong> Your site is ingested into models that compete with your business directly.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: GPTBot<br>Disallow: /</code>`,
                     code: hasAITrainingBlocked ? 'Blocked' : 'Allowed'
                 },
                 {
@@ -3592,9 +3615,10 @@ Example:
                 },
                 (() => {
                     const policy = aiCrawlerPolicy;
-                    const status = !robotsFound ? 'err' : (policy && policy.issues.length ? 'warn' : 'ok');
-                    const message = !robotsFound
-                        ? "No robots.txt to evaluate"
+                    const evaluated = robotsFound && policy;
+                    const status = !evaluated ? 'err' : (policy.issues.length ? 'warn' : 'ok');
+                    const message = !evaluated
+                        ? (robotsFound ? "robots.txt could not be read" : "No robots.txt to evaluate")
                         : (policy.issues.length
                             ? `${policy.issues.slice(0, 2).join('; ')}${policy.issues.length > 2 ? ` (+${policy.issues.length - 2} more)` : ''}`
                             : `Current AI crawler tokens handled consistently — ${policy.summary}`);
@@ -3605,7 +3629,7 @@ Example:
                         message,
                         spec: "https://www.rfc-editor.org/rfc/rfc9309.html",
                         tooltip: `<strong>What it is:</strong> A check of your robots.txt against the AI crawler tokens vendors use today, grouped by purpose: <em>search</em> (indexes for cited answers), <em>user-triggered</em> (fetches a page because a person asked) and <em>training</em>.<br/><br/><strong>Why it's critical:</strong> Each token is matched on its own. Rules naming only retired tokens (<code>anthropic-ai</code>, <code>Claude-Web</code>) no longer apply; a partial training opt-out leaves other trainers collecting; a blanket <code>User-agent: *</code> block silently removes you from AI search and from your own users' assistants.<br/><br/><strong>Impact of missing it:</strong> The policy you think you have is not the one crawlers apply.<br/><br/><strong>Implementation Example:</strong> <code>User-agent: OAI-SearchBot<br>User-agent: Claude-SearchBot<br>User-agent: PerplexityBot<br>Allow: /</code>`,
-                        code: !robotsFound ? 'Missing' : (policy.issues.length ? 'Partial' : 'Consistent')
+                        code: !evaluated ? 'Missing' : (policy.issues.length ? 'Partial' : 'Consistent')
                     };
                 })(),
                 {
