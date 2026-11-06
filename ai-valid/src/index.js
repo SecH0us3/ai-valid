@@ -14,6 +14,9 @@ import agentsMd from "../public/AGENTS.md";
 import agentsJson from "../public/.well-known/agents.json";
 
 
+// Agent Skills Discovery RFC v0.2.0 index schema identifier (see evaluateAgentSkillsIndex).
+export const AGENT_SKILLS_SCHEMA_V020 = 'https://schemas.agentskills.io/discovery/0.2.0/schema.json';
+
 const FETCH_TIMEOUT = 5000;
 
 // Maximum number of outbound sub-requests kept in flight at once. Cloudflare
@@ -87,6 +90,49 @@ const corsHeaders = {
     "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept"
 };
+
+// Our own Agent Skill, published through the discovery index above. The digest
+// in the index is computed from these exact bytes, so editing the text keeps
+// the index valid automatically.
+const OWN_SKILL_NAME = "ai-readiness-audit";
+const OWN_SKILL_DESCRIPTION = "Audit how AI-ready a website is - robots.txt AI directives, llms.txt, MCP, A2A and Agent Skills manifests, structured data and Markdown negotiation - and get a weighted score with prioritised fixes. Use when asked whether a site is readable, discoverable or callable by AI agents and crawlers.";
+const OWN_SKILL_MD = `---
+name: ${OWN_SKILL_NAME}
+description: ${OWN_SKILL_DESCRIPTION}
+---
+
+# AI Readiness Audit
+
+Run an AI-Valid audit against a public website and report the result.
+
+## When to use
+
+- The user asks whether a site is "AI-ready", agent-friendly or visible to AI search.
+- The user wants to know which AI manifests (llms.txt, MCP server card, A2A agent card,
+  Agent Skills index, API catalog) a site publishes, or why one is failing.
+
+## How to run it
+
+Call the public API with the site's URL (http or https):
+
+\`\`\`http
+GET https://ai-valid.secmy.app/api/audit?targetUrl=https://example.com
+Accept: text/markdown
+\`\`\`
+
+\`Accept: application/json\` returns the full structured result instead. The same audit is
+exposed as the \`audit_website\` tool of the MCP server at \`https://ai-valid.secmy.app/mcp\`.
+
+## Reading the result
+
+- \`score.total\` (0-100) and \`score.grade\` summarise readiness; advisory checks are not scored.
+- \`priorities\` lists the failures that move the score most, each with a ready-to-use fix prompt.
+- Report the grade, the top three priorities and their fixes; do not invent checks that were not run.
+
+## Constraints
+
+- Audit only sites the user names. Honour \`Retry-After\` on HTTP 429.
+`;
 
 const STATIC_ROUTES = {
     "/": (request) => {
@@ -188,26 +234,34 @@ const STATIC_ROUTES = {
             ...corsHeaders
         },
     }),
-    "/.well-known/agent-skills/index.json": () => {
+    "/.well-known/agent-skills/index.json": async () => {
         const agentSkills = {
+            "$schema": AGENT_SKILLS_SCHEMA_V020,
             "skills": [
                 {
-                    "name": "AuditPlatform",
-                    "description": "Performs an AI readiness audit on a given URL. Validates protocols like llms.txt, API Catalogs, MCP, and AI bot accessibility.",
-                    "endpoint": "/api/audit",
-                    "method": "GET"
+                    "name": OWN_SKILL_NAME,
+                    "type": "skill-md",
+                    "description": OWN_SKILL_DESCRIPTION,
+                    "url": `/.well-known/agent-skills/${OWN_SKILL_NAME}/SKILL.md`,
+                    "digest": `sha256:${await sha256Hex(new TextEncoder().encode(OWN_SKILL_MD))}`
                 }
-
             ]
         };
         return new Response(JSON.stringify(agentSkills, null, 2), {
             headers: { 
                 "Content-Type": "application/json; charset=utf-8",
-                "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                "Cache-Control": "public, max-age=3600",
                 ...corsHeaders
             },
         });
     },
+    [`/.well-known/agent-skills/${OWN_SKILL_NAME}/SKILL.md`]: () => new Response(OWN_SKILL_MD, {
+        headers: {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Cache-Control": "public, max-age=3600",
+            ...corsHeaders
+        },
+    }),
     "/.well-known/x402.json": () => {
         let content = "";
         if (typeof x402Json === 'object' && x402Json !== null) {
@@ -1175,14 +1229,19 @@ const PROMPT_LIBRARY = {
         acceptance: ["The card validates against the A2A schema and every declared endpoint resolves."]
     },
     "Agent Skills": {
-        goal: "Publish an Agent Skills index mapping endpoints to task-level skills.",
+        goal: "Publish an Agent Skills Discovery index (RFC v0.2.0) listing installable Agent Skills.",
         requirements: [
-            "Describe each skill by the task it accomplishes, not by the REST route it wraps.",
-            "Give each skill a name, a description, its endpoint and its method.",
-            "Serve the index at /.well-known/agent-skills/index.json."
+            `Serve /.well-known/agent-skills/index.json as application/json with "$schema": "${AGENT_SKILLS_SCHEMA_V020}" and a "skills" array.`,
+            "Give every entry name (1-64 chars: lowercase letters, digits, single hyphens), type (\"skill-md\" or \"archive\"), description (max 1024 chars), url and digest (\"sha256:\" + 64 lowercase hex of the artifact's raw bytes).",
+            "Write each skill as a SKILL.md with YAML frontmatter (name, description) followed by Markdown instructions; serve it as text/markdown, conventionally at /.well-known/agent-skills/{name}/SKILL.md.",
+            "Describe each skill by the task it accomplishes and when to use it, not by the REST route it wraps.",
+            "Answer GET and HEAD, and return 404 for missing files; recompute the digests on every change to a SKILL.md."
         ],
-        deliverable: "The complete skills index JSON.",
-        acceptance: ["Each skill description would let a model decide, unaided, whether the skill applies to a given request."]
+        deliverable: "The index.json plus one SKILL.md (or .tar.gz/.zip archive with SKILL.md at its root) per skill.",
+        acceptance: [
+            "Every digest matches sha256 of the served bytes, and every SKILL.md frontmatter name equals its index entry name.",
+            "Each skill description would let a model decide, unaided, whether the skill applies to a given request."
+        ]
     },
     "API Catalog": {
         goal: "Publish an RFC 9727 API catalog pointing at the OpenAPI description.",
@@ -1326,6 +1385,265 @@ export function buildPrompt(check, origin) {
     return parts.join('\n');
 }
 
+
+// --- Agent Skills Discovery (Cloudflare RFC, v0.2.0) ---
+// https://github.com/cloudflare/agent-skills-discovery-rfc
+// The index lives at /.well-known/agent-skills/index.json and lists skills as
+// { name, type, description, url, digest }; every artifact is pinned by the
+// SHA-256 of its raw bytes, and SKILL.md files follow the agentskills.io format.
+const AGENT_SKILLS_KNOWN_SCHEMAS = new Set([AGENT_SKILLS_SCHEMA_V020]);
+const AGENT_SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_SKILL_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const AGENT_SKILL_TYPES = new Set(['skill-md', 'archive']);
+// Bound the work a single audit does on someone else's index.
+const AGENT_SKILLS_MAX_VERIFY = 5;
+const AGENT_SKILL_MD_MAX_BYTES = 1024 * 1024;
+const AGENT_SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
+
+export function isValidAgentSkillName(name) {
+    return typeof name === 'string' && name.length >= 1 && name.length <= 64 && AGENT_SKILL_NAME_RE.test(name);
+}
+
+/**
+ * Structural lint of a parsed discovery index. Pure: no network.
+ * Returns the detected version, index-level problems, and the entries that are
+ * well-formed enough to fetch and verify.
+ */
+export function lintAgentSkillsIndex(index) {
+    const result = { version: null, fatal: null, issues: [], entries: [], total: 0 };
+    if (!index || typeof index !== 'object' || Array.isArray(index)) {
+        result.fatal = 'Index is not a JSON object';
+        return result;
+    }
+    const schema = index.$schema;
+    if (schema === undefined) {
+        result.version = '0.1.0';
+    } else if (typeof schema === 'string' && AGENT_SKILLS_KNOWN_SCHEMAS.has(schema)) {
+        result.version = '0.2.0';
+    } else {
+        result.version = 'unknown';
+    }
+    if (!Array.isArray(index.skills)) {
+        result.fatal = 'Missing required "skills" array';
+        return result;
+    }
+    result.total = index.skills.length;
+    const seen = new Set();
+    index.skills.forEach((entry, i) => {
+        const label = entry && typeof entry.name === 'string' && entry.name ? `"${entry.name}"` : `#${i + 1}`;
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            result.issues.push(`skill ${label}: not an object`);
+            return;
+        }
+        const problems = [];
+        if (!isValidAgentSkillName(entry.name)) {
+            problems.push('invalid name (1-64 chars, lowercase letters, digits and single hyphens)');
+        } else if (seen.has(entry.name)) {
+            problems.push('duplicate name');
+        }
+        if (typeof entry.type !== 'string' || !entry.type) {
+            problems.push('missing type');
+        }
+        if (typeof entry.description !== 'string' || !entry.description.trim()) {
+            problems.push('missing description');
+        } else if (entry.description.length > 1024) {
+            problems.push('description over 1024 characters');
+        }
+        if (typeof entry.url !== 'string' || !entry.url.trim()) {
+            problems.push('missing url');
+        }
+        if (typeof entry.digest !== 'string' || !AGENT_SKILL_DIGEST_RE.test(entry.digest)) {
+            problems.push('digest must be "sha256:" + 64 lowercase hex chars');
+        }
+        if (problems.length) {
+            result.issues.push(`skill ${label}: ${problems.join(', ')}`);
+            return;
+        }
+        seen.add(entry.name);
+        if (!AGENT_SKILL_TYPES.has(entry.type)) {
+            // Clients skip unknown types; it is not fatal, but nothing will load it.
+            result.issues.push(`skill ${label}: unknown type "${entry.type}" (clients skip it)`);
+            return;
+        }
+        result.entries.push(entry);
+    });
+    return result;
+}
+
+/** Extracts `name` and `description` from SKILL.md YAML frontmatter. */
+export function parseSkillFrontmatter(text) {
+    if (typeof text !== 'string') return null;
+    const src = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    const m = src.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/);
+    if (!m) return null;
+    const lines = m[1].split('\n');
+    const fields = {};
+    for (let i = 0; i < lines.length; i++) {
+        const kv = lines[i].match(/^([A-Za-z0-9_-]+):[ \t]*(.*)$/);
+        if (!kv) continue;
+        const key = kv[1];
+        let value = kv[2].trim();
+        if (/^[|>][+-]?$/.test(value)) {
+            // Block scalar: gather the indented continuation lines.
+            const block = [];
+            while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]) || lines[i + 1].trim() === '')) {
+                block.push(lines[++i].trim());
+            }
+            value = block.join(value.startsWith('|') ? '\n' : ' ').trim();
+        } else if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+        fields[key] = value;
+    }
+    return { name: fields.name, description: fields.description, body: src.slice(m[0].length) };
+}
+
+export async function sha256Hex(bytes) {
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Reads up to maxBytes of raw body; reports whether the body was cut short. */
+export async function safeReadBytes(response, maxBytes) {
+    if (!response.body || typeof response.body.getReader !== 'function') {
+        const buf = new Uint8Array(await response.arrayBuffer());
+        return buf.byteLength > maxBytes ? { bytes: buf.subarray(0, maxBytes), truncated: true } : { bytes: buf, truncated: false };
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    let truncated = false;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(value);
+            total += chunk.byteLength;
+            if (total > maxBytes) {
+                truncated = true;
+                await reader.cancel().catch(() => {});
+                break;
+            }
+            chunks.push(chunk);
+        }
+    } finally {
+        try { reader.releaseLock(); } catch {}
+    }
+    const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+    let offset = 0;
+    for (const c of chunks) { bytes.set(c, offset); offset += c.byteLength; }
+    return { bytes, truncated };
+}
+
+/**
+ * Fetches one skill artifact and checks it the way a conforming client would:
+ * digest over the raw bytes, media type, and (for skill-md) the frontmatter.
+ * Returns a list of problems; empty means the artifact is usable.
+ */
+async function verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers) {
+    let artifactUrl;
+    try {
+        artifactUrl = new URL(entry.url, indexUrl);
+    } catch {
+        return ['url does not resolve'];
+    }
+    if (artifactUrl.protocol !== 'https:' && artifactUrl.protocol !== 'http:') {
+        return ['url must be http(s)'];
+    }
+    let res;
+    try {
+        res = await fetchFn(artifactUrl.href, { headers, cf: { cacheEverything: false } });
+    } catch {
+        return ['artifact unreachable'];
+    }
+    if (res.status !== 200) return [`artifact returned ${res.status}`];
+    const cType = (res.headers.get('content-type') || '').toLowerCase();
+    const isMd = entry.type === 'skill-md';
+    const { bytes, truncated } = await safeReadBytes(res, isMd ? AGENT_SKILL_MD_MAX_BYTES : AGENT_SKILL_ARCHIVE_MAX_BYTES);
+    if (truncated) return ['artifact too large to verify'];
+
+    const problems = [];
+    const hex = await sha256Hex(bytes);
+    if (`sha256:${hex}` !== entry.digest) problems.push('digest mismatch');
+
+    if (isMd) {
+        if (!cType.includes('text/markdown') && !cType.includes('text/plain')) {
+            problems.push(`served as ${cType.split(';')[0] || 'no content-type'} (expected text/markdown)`);
+        }
+        const fm = parseSkillFrontmatter(new TextDecoder().decode(bytes));
+        if (!fm) {
+            problems.push('SKILL.md has no YAML frontmatter');
+        } else {
+            if (!fm.name) problems.push('frontmatter missing name');
+            else if (fm.name !== entry.name) problems.push(`frontmatter name "${fm.name}" differs from index`);
+            if (!fm.description) problems.push('frontmatter missing description');
+            else if (fm.description.trim() !== entry.description.trim()) problems.push('description differs from frontmatter');
+        }
+    } else {
+        const isGzip = bytes[0] === 0x1f && bytes[1] === 0x8b;
+        const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+        if (!isGzip && !isZip) problems.push('archive is neither .tar.gz nor .zip');
+    }
+    return problems;
+}
+
+/**
+ * Full check of a fetched discovery index response. Returns the audit's
+ * { status, message, code } shape.
+ */
+export async function evaluateAgentSkillsIndex(res, statusCode, cType, indexUrl, fetchFn, headers = {}) {
+    const isSoft404 = statusCode === 200 && cType.includes('text/html');
+    if (isSoft404) return { status: 'err', message: 'Soft 404 (Placeholder page)', code: 'Soft 404' };
+    if ([401, 403].includes(statusCode)) return { status: 'warn', message: 'Authorization required', code: 'Protected' };
+    if (statusCode !== 200) return { status: 'err', message: `Not found (${statusCode})`, code: 'Missing' };
+
+    let index;
+    try {
+        index = JSON.parse(await safeReadText(res, 512 * 1024));
+    } catch {
+        return { status: 'err', message: 'Invalid JSON content', code: 'Invalid JSON' };
+    }
+    const lint = lintAgentSkillsIndex(index);
+    if (lint.fatal) return { status: 'err', message: lint.fatal, code: 'Non-compliant' };
+    if (lint.version === 'unknown') {
+        return { status: 'warn', message: `Unrecognised $schema "${String(index.$schema).slice(0, 80)}" — clients will not process this index (expected ${AGENT_SKILLS_SCHEMA_V020})`, code: 'Unknown Schema' };
+    }
+    if (lint.version === '0.1.0') {
+        return { status: 'warn', message: `No $schema — clients treat this as a legacy v0.1.0 index; migrate to v0.2.0 (${AGENT_SKILLS_SCHEMA_V020}) with type/url/digest per skill`, code: 'Partial' };
+    }
+    if (lint.total === 0) return { status: 'warn', message: 'Index lists no skills', code: 'Empty' };
+
+    const issues = [...lint.issues];
+    if (!cType.includes('application/json')) {
+        issues.unshift(`index served as ${cType.split(';')[0] || 'no content-type'} (must be application/json)`);
+    }
+
+    const toVerify = lint.entries.slice(0, AGENT_SKILLS_MAX_VERIFY);
+    const verified = await Promise.all(toVerify.map(async (entry) => {
+        const problems = await verifyAgentSkillArtifact(entry, indexUrl, fetchFn, headers);
+        return { entry, problems };
+    }));
+    let usable = 0;
+    for (const { entry, problems } of verified) {
+        // A digest failure or a missing artifact means clients MUST NOT use it;
+        // the remaining problems are metadata quality.
+        const fatal = problems.some(p => p === 'digest mismatch' || p.startsWith('artifact') || p.startsWith('url') || p.startsWith('archive') || p.startsWith('SKILL.md'));
+        if (!fatal) usable++;
+        if (problems.length) issues.push(`skill "${entry.name}": ${problems.join(', ')}`);
+    }
+    const unchecked = lint.entries.length - toVerify.length;
+    const n = lint.total;
+
+    if (usable === 0) {
+        return { status: 'err', message: `No usable skills: ${issues.slice(0, 2).join('; ')}`, code: 'Non-compliant' };
+    }
+    if (issues.length) {
+        const more = issues.length > 2 ? ` (+${issues.length - 2} more)` : '';
+        return { status: 'warn', message: `${usable}/${n} skills verified — ${issues.slice(0, 2).join('; ')}${more}`, code: 'Partial' };
+    }
+    const tail = unchecked > 0 ? `, first ${toVerify.length} digests verified` : ', digests verified';
+    return { status: 'ok', message: `Agent Skills v0.2.0 index: ${n} skill${n === 1 ? '' : 's'}${tail}`, code: 'Compliant' };
+}
 
 export async function safeReadText(response, maxBytes = 2 * 1024 * 1024) {
     if (!response.body || typeof response.body.getReader !== 'function') {
@@ -1788,8 +2106,9 @@ export async function handleRequest(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- Static File Routing ---
-        if (request.method === "GET" && STATIC_ROUTES[url.pathname]) {
-            return STATIC_ROUTES[url.pathname](request);
+        if ((request.method === "GET" || request.method === "HEAD") && STATIC_ROUTES[url.pathname]) {
+            const res = await STATIC_ROUTES[url.pathname](request);
+            return request.method === "HEAD" ? new Response(null, { status: res.status, headers: res.headers }) : res;
         }
 
         // --- API Route ---
@@ -2630,8 +2949,10 @@ async function performAudit(baseUrl, requestOrigin, env, ctx) {
             }
         },
         {
-            name: 'Agent Skills', prompt: `Create an Agent Skills index file at /.well-known/agent-skills/index.json that maps my complex REST endpoints into actionable skills for an AI agent.`, path: '/.well-known/agent-skills/index.json', spec: 'https://agentskills.io/home', isJson: true, points: 5,
-            tooltip: `<strong>What it is:</strong> A specialized index documenting actionable machine-skills (e.g. "BuyItem", "SearchDocs").<br/><br/><strong>Why it's critical:</strong> It abstracts complex APIs into simple semantic 'skills' that an LLM brain can invoke.<br/><br/><strong>Impact of missing it:</strong> AI Assistants (like custom GPTs) will not be able to execute any high-level workflows on your platform, severely reducing the business automation capabilities for end-users.<br/><br/><strong>Implementation Example:</strong> Map complex REST endpoints into clean, actionable concepts like <code>FindFlight</code> or <code>CancelOrder</code> under <code>/.well-known/agent-skills/index.json</code>.`
+            name: 'Agent Skills', prompt: `Publish an Agent Skills discovery index at /.well-known/agent-skills/index.json following the Agent Skills Discovery RFC v0.2.0: a top-level $schema of "${AGENT_SKILLS_SCHEMA_V020}" and a skills array whose entries carry name, type (skill-md or archive), description, url and a sha256 digest of the artifact. Write one SKILL.md per skill (YAML frontmatter with name and description) at /.well-known/agent-skills/{name}/SKILL.md.`, path: '/.well-known/agent-skills/index.json', spec: 'https://github.com/cloudflare/agent-skills-discovery-rfc', isJson: true, points: 5,
+            tooltip: `<strong>What it is:</strong> The Agent Skills Discovery index (RFC v0.2.0) at <code>/.well-known/agent-skills/index.json</code>, listing <a href="https://agentskills.io/">Agent Skills</a> (SKILL.md files or archives) an agent can install.<br/><br/><strong>What is checked:</strong> the <code>$schema</code> identifier, each entry's <code>name</code>/<code>type</code>/<code>description</code>/<code>url</code>/<code>digest</code>, then every artifact is fetched and its SHA-256 compared with the declared digest; SKILL.md files must carry YAML frontmatter whose <code>name</code> matches the index.<br/><br/><strong>Impact of missing it:</strong> Agents cannot discover or safely install your skills — and clients MUST discard any artifact whose digest does not match.<br/><br/><strong>Implementation Example:</strong> <code>{"$schema":"https://schemas.agentskills.io/discovery/0.2.0/schema.json","skills":[{"name":"search-docs","type":"skill-md","description":"…","url":"/.well-known/agent-skills/search-docs/SKILL.md","digest":"sha256:…"}]}</code>`,
+            validate: async (req, statusCode, cType, base) =>
+                evaluateAgentSkillsIndex(req, statusCode, cType, `${base}/.well-known/agent-skills/index.json`, iFetch, headersStandard)
         },
         {
             name: 'MCP Server', prompt: `Create a Model Context Protocol (MCP) server manifest at /.well-known/mcp/server-card.json or deploy a live MCP endpoint at /mcp exposing your tools via SSE or Stream.`, path: '/.well-known/mcp/server-card.json', spec: 'https://modelcontextprotocol.io/', isJson: true, points: 5,

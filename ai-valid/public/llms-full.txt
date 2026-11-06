@@ -112,4 +112,4 @@ AI-Valid audits against several emerging and established standards:
 - llms.txt (https://llmstxt.org/)
 - Model Context Protocol (MCP) (https://modelcontextprotocol.io/)
 - RFC 9727 (API Catalog) (https://www.rfc-editor.org/info/rfc9727)
-- Agent Skills (https://agentskills.io/)
+- Agent Skills Discovery (https://github.com/cloudflare/agent-skills-discovery-rfc, https://agentskills.io/)
